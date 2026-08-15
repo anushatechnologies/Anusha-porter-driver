@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "app-store-optimization": {
+      "source": "sickn33/antigravity-awesome-skills",
+      "sourceType": "github",
+      "skillPath": "skills/app-store-optimization/SKILL.md",
+      "computedHash": "6057aeccf4ff1c3d8159cf2783e70e20915334431f3565ebf0e067fe0b945007"
+    },
+    "mobile-design": {
+      "source": "sickn33/antigravity-awesome-skills",
+      "sourceType": "github",
+      "skillPath": "skills/mobile-design/SKILL.md",
+      "computedHash": "69adceeba77c124af3076449992be61ba618ee72ddef2c73d1f59b0d3a9b1188"
+    },
+    "ui-ux-pro-max": {
+      "source": "sickn33/antigravity-awesome-skills",
+      "sourceType": "github",
+      "skillPath": "skills/ui-ux-pro-max/SKILL.md",
+      "computedHash": "a4e96a589717c76181df4c5994de6fb9269afd7e3b82745d80a8aba292c598c1"
+    }
+  }
+}

@@ -1,0 +1,403 @@
+{
+  "project_info": {
+    "project_number": "64875938387",
+    "firebase_url": "https://anushabazaar-2288e-default-rtdb.firebaseio.com",
+    "project_id": "anushabazaar-2288e",
+    "storage_bucket": "anushabazaar-2288e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:64875938387:android:2fabaeb4f2c97134ba7ca6",
+        "android_client_info": {
+          "package_name": "anushaporter.com"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "64875938387-0ldmicli2kndm5dtlebeimpdvbsnt1sf.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "anushaporter.com",
+            "certificate_hash": "937627828753c67ff54c2e3acee936a992de1f4a"
+          }
+        },
+        {
+          "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA5x2ucDW9LBMDvVY_g3dsQRkk2zgvBLWw"
+        },
+        {
+          "current_key": "AIzaSyA1boMLneteAG92WXtgzEOaLLzpBK7j1Lg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "64875938387-ejidmh89bsskgrsjlnjp43mn77b889l2.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.anushabazaar.customer",
+                "app_store_id": "6766501000"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:64875938387:android:c528a7b382fdbb85ba7ca6",
+        "android_client_info": {
+          "package_name": "com.Anushadeliverypartnerapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "64875938387-uqm7vdfpeq1q9d7se81cgbeossvbm55d.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.Anushadeliverypartnerapp",
+            "certificate_hash": "13b3b695f853b8a667b467130b352268585e5063"
+          }
+        },
+        {
+          "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA5x2ucDW9LBMDvVY_g3dsQRkk2zgvBLWw"
+        },
+        {
+          "current_key": "AIzaSyA1boMLneteAG92WXtgzEOaLLzpBK7j1Lg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "64875938387-ejidmh89bsskgrsjlnjp43mn77b889l2.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.anushabazaar.customer",
+                "app_store_id": "6766501000"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:64875938387:android:92945e5b265d394aba7ca6",
+        "android_client_info": {
+          "package_name": "com.anusha.deliveryapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "64875938387-epvohhilh93nhr0qn46gjk8mvp891818.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.anusha.deliveryapp",
+            "certificate_hash": "232d121634a271229244a7de24bc84b066d6f7b8"
+          }
+        },
+        {
+          "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA5x2ucDW9LBMDvVY_g3dsQRkk2zgvBLWw"
+        },
+        {
+          "current_key": "AIzaSyA1boMLneteAG92WXtgzEOaLLzpBK7j1Lg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "64875938387-ejidmh89bsskgrsjlnjp43mn77b889l2.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.anushabazaar.customer",
+                "app_store_id": "6766501000"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:64875938387:android:8031581cc3f8f616ba7ca6",
+        "android_client_info": {
+          "package_name": "com.anushamilktrade"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "64875938387-2ib05mi55ougtbl9vhnia1mudeg6j7ql.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.anushamilktrade",
+            "certificate_hash": "76d3dd00bf83d7156b40d7ab230d74907cdf003f"
+          }
+        },
+        {
+          "client_id": "64875938387-7o2hb0evqu2mhcs324u2hk35ebkv6jg3.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.anushamilktrade",
+            "certificate_hash": "1c7f6741e08404c228f41dac1d5f4ff1e1fd79ca"
+          }
+        },
+        {
+          "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA5x2ucDW9LBMDvVY_g3dsQRkk2zgvBLWw"
+        },
+        {
+          "current_key": "AIzaSyA1boMLneteAG92WXtgzEOaLLzpBK7j1Lg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "64875938387-ejidmh89bsskgrsjlnjp43mn77b889l2.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.anushabazaar.customer",
+                "app_store_id": "6766501000"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:64875938387:android:7709f5da5cbc3e16ba7ca6",
+        "android_client_info": {
+          "package_name": "com.anushamilktrades"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "64875938387-ssgcdppr822e6p94u8h400hh8ff5vp1d.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.anushamilktrades",
+            "certificate_hash": "9053bd755187dd81d5d2ae1f005903c21a4ebaf3"
+          }
+        },
+        {
+          "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA5x2ucDW9LBMDvVY_g3dsQRkk2zgvBLWw"
+        },
+        {
+          "current_key": "AIzaSyA1boMLneteAG92WXtgzEOaLLzpBK7j1Lg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "64875938387-ejidmh89bsskgrsjlnjp43mn77b889l2.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.anushabazaar.customer",
+                "app_store_id": "6766501000"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:64875938387:android:5586d70a55e9651fba7ca6",
+        "android_client_info": {
+          "package_name": "com.anushaporter.driver"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "64875938387-6kha1jqtgvbu3vus1o2rtnjp3c3i33if.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.anushaporter.driver",
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+          }
+        },
+        {
+          "client_id": "64875938387-7e8i1acip4m8f1vrt60sg8pi72tcfc8u.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.anushaporter.driver",
+            "certificate_hash": "380bde6fe5de174b52def986682ea7cd9f338459"
+          }
+        },
+        {
+          "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA5x2ucDW9LBMDvVY_g3dsQRkk2zgvBLWw"
+        },
+        {
+          "current_key": "AIzaSyA1boMLneteAG92WXtgzEOaLLzpBK7j1Lg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "64875938387-ejidmh89bsskgrsjlnjp43mn77b889l2.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.anushabazaar.customer",
+                "app_store_id": "6766501000"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:64875938387:android:8093266dd582087bba7ca6",
+        "android_client_info": {
+          "package_name": "com.hinch"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "64875938387-4ae08s7r5jtmoo4mkpua67i7et58t2pi.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.hinch",
+            "certificate_hash": "169900607e47a7cafd4926f9d1c7e947bd833edb"
+          }
+        },
+        {
+          "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA5x2ucDW9LBMDvVY_g3dsQRkk2zgvBLWw"
+        },
+        {
+          "current_key": "AIzaSyA1boMLneteAG92WXtgzEOaLLzpBK7j1Lg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "64875938387-ejidmh89bsskgrsjlnjp43mn77b889l2.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.anushabazaar.customer",
+                "app_store_id": "6766501000"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:64875938387:android:0fe3fbb973c42640ba7ca6",
+        "android_client_info": {
+          "package_name": "com.kfpclexport"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA5x2ucDW9LBMDvVY_g3dsQRkk2zgvBLWw"
+        },
+        {
+          "current_key": "AIzaSyA1boMLneteAG92WXtgzEOaLLzpBK7j1Lg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "64875938387-biomr976urfrtgkih2etmk1rn29juj0h.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "64875938387-ejidmh89bsskgrsjlnjp43mn77b889l2.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.anushabazaar.customer",
+                "app_store_id": "6766501000"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

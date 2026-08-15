@@ -6,69 +6,81 @@ import {
   StyleSheet,
   Dimensions,
   StatusBar,
+  Image,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { RootStackParamList } from '../../navigation/AppNavigator';
-import Colors from '../../theme/colors';
+import { useTheme } from '../../theme/ThemeContext';
 
 const { width, height } = Dimensions.get('window');
 
 const RoleSelectScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const { colors, theme } = useTheme();
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <StatusBar barStyle={theme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
 
       <View style={styles.header}>
-        <Text style={styles.logoText}>🚚 PORTER</Text>
-        <Text style={styles.headerTitle}>Welcome Back!</Text>
-        <Text style={styles.headerSubtitle}>Choose how you want to continue</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+          <View style={{ width: 44, height: 44, borderRadius: 10, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}>
+            <Image 
+              source={require('../../../assets/splash-icon.png')} 
+              style={{ width: '100%', height: '100%' }} 
+              resizeMode="contain"
+            />
+          </View>
+          <Text style={[styles.logoText, { color: colors.text, marginBottom: 0 }]}>ANUSHA PORTER DRIVER</Text>
+        </View>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>Welcome Back!</Text>
+        <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>Choose how you want to continue</Text>
       </View>
 
       <View style={styles.cardsContainer}>
         {/* Driver Card */}
         <TouchableOpacity
-          style={[styles.roleCard, styles.driverCard]}
+          style={[styles.roleCard, styles.driverCard, { backgroundColor: colors.card, borderColor: colors.border, shadowColor: colors.primary }]}
           onPress={() => navigation.navigate('Login', { role: 'driver' })}
           activeOpacity={0.9}
         >
-          <View style={styles.cardGlow} />
-          <View style={styles.cardIconContainer}>
-            <Text style={styles.cardIcon}>🏍️</Text>
+          <View style={[styles.cardGlow, { backgroundColor: colors.primary }]} />
+          <View style={[styles.cardIconContainer, { backgroundColor: theme === 'dark' ? 'rgba(0,82,255,0.2)' : 'rgba(0,82,255,0.08)' }]}>
+            <MaterialCommunityIcons name="bike" size={32} color={colors.primary} />
           </View>
-          <Text style={styles.cardTitle}>Delivery Partner</Text>
-          <Text style={styles.cardSubtitle}>Accept orders & earn money</Text>
+          <Text style={[styles.cardTitle, { color: colors.text }]}>Delivery Partner</Text>
+          <Text style={[styles.cardSubtitle, { color: colors.textSecondary }]}>Accept orders & earn money</Text>
           <View style={styles.cardFeatures}>
-            <Text style={styles.feature}>✓ Real-time orders</Text>
-            <Text style={styles.feature}>✓ Live earnings</Text>
-            <Text style={styles.feature}>✓ Route navigation</Text>
+            <Text style={[styles.feature, { color: colors.success }]}>✓ Real-time orders</Text>
+            <Text style={[styles.feature, { color: colors.success }]}>✓ Live earnings</Text>
+            <Text style={[styles.feature, { color: colors.success }]}>✓ Route navigation</Text>
           </View>
-          <View style={styles.cardButton}>
-            <Text style={styles.cardButtonText}>Login as Driver →</Text>
+          <View style={[styles.cardButton, { backgroundColor: colors.primary }]}>
+            <Text style={[styles.cardButtonText, { color: '#FFFFFF' }]}>Login as Driver →</Text>
           </View>
         </TouchableOpacity>
 
         {/* Admin Card */}
         <TouchableOpacity
-          style={[styles.roleCard, styles.adminCard]}
+          style={[styles.roleCard, styles.adminCard, { backgroundColor: colors.card, borderColor: colors.border, shadowColor: colors.info }]}
           onPress={() => navigation.navigate('Login', { role: 'admin' })}
           activeOpacity={0.9}
         >
-          <View style={[styles.cardGlow, { backgroundColor: Colors.info }]} />
-          <View style={[styles.cardIconContainer, { backgroundColor: 'rgba(52,152,219,0.2)' }]}>
-            <Text style={styles.cardIcon}>🛡️</Text>
+          <View style={[styles.cardGlow, { backgroundColor: colors.info }]} />
+          <View style={[styles.cardIconContainer, { backgroundColor: theme === 'dark' ? 'rgba(52,152,219,0.2)' : 'rgba(52,152,219,0.08)' }]}>
+            <MaterialCommunityIcons name="shield-account-outline" size={32} color={colors.info} />
           </View>
-          <Text style={styles.cardTitle}>Admin Panel</Text>
-          <Text style={styles.cardSubtitle}>Manage the entire platform</Text>
+          <Text style={[styles.cardTitle, { color: colors.text }]}>Admin Panel</Text>
+          <Text style={[styles.cardSubtitle, { color: colors.textSecondary }]}>Manage the entire platform</Text>
           <View style={styles.cardFeatures}>
-            <Text style={styles.feature}>✓ Order management</Text>
-            <Text style={styles.feature}>✓ Driver control</Text>
-            <Text style={styles.feature}>✓ Analytics</Text>
+            <Text style={[styles.feature, { color: colors.success }]}>✓ Order management</Text>
+            <Text style={[styles.feature, { color: colors.success }]}>✓ Driver control</Text>
+            <Text style={[styles.feature, { color: colors.success }]}>✓ Analytics</Text>
           </View>
-          <View style={[styles.cardButton, { backgroundColor: Colors.info }]}>
-            <Text style={styles.cardButtonText}>Admin Login →</Text>
+          <View style={[styles.cardButton, { backgroundColor: colors.info }]}>
+            <Text style={[styles.cardButtonText, { color: '#FFFFFF' }]}>Admin Login →</Text>
           </View>
         </TouchableOpacity>
       </View>
@@ -76,10 +88,10 @@ const RoleSelectScreen = () => {
       {/* New Driver */}
       <TouchableOpacity
         style={styles.registerLink}
-        onPress={() => navigation.navigate('DriverRegistration')}
+        onPress={() => navigation.navigate('Login', { role: 'driver' })}
       >
-        <Text style={styles.registerText}>New driver? </Text>
-        <Text style={styles.registerTextBold}>Register here →</Text>
+        <Text style={[styles.registerText, { color: colors.textSecondary }]}>New driver? </Text>
+        <Text style={[styles.registerTextBold, { color: colors.primary }]}>Register here →</Text>
       </TouchableOpacity>
     </View>
   );
@@ -88,7 +100,6 @@ const RoleSelectScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.background,
     paddingHorizontal: 20,
   },
   header: {
@@ -99,19 +110,15 @@ const styles = StyleSheet.create({
   logoText: {
     fontSize: 22,
     fontWeight: '900',
-    color: Colors.white,
     letterSpacing: 4,
-    marginBottom: 20,
   },
   headerTitle: {
     fontSize: 30,
     fontWeight: '800',
-    color: Colors.white,
     marginBottom: 8,
   },
   headerSubtitle: {
     fontSize: 15,
-    color: Colors.textSecondary,
   },
   cardsContainer: {
     flex: 1,
@@ -120,13 +127,10 @@ const styles = StyleSheet.create({
   },
   roleCard: {
     flex: 1,
-    backgroundColor: Colors.card,
     borderRadius: 24,
     padding: 24,
     borderWidth: 1,
-    borderColor: Colors.border,
     overflow: 'hidden',
-    shadowColor: Colors.primary,
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.2,
     shadowRadius: 16,
@@ -141,30 +145,23 @@ const styles = StyleSheet.create({
     width: 120,
     height: 120,
     borderRadius: 60,
-    backgroundColor: Colors.primary,
     opacity: 0.15,
   },
   cardIconContainer: {
     width: 64,
     height: 64,
     borderRadius: 18,
-    backgroundColor: 'rgba(255,107,53,0.2)',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
   },
-  cardIcon: {
-    fontSize: 32,
-  },
   cardTitle: {
     fontSize: 22,
     fontWeight: '800',
-    color: Colors.white,
     marginBottom: 6,
   },
   cardSubtitle: {
     fontSize: 13,
-    color: Colors.textSecondary,
     marginBottom: 16,
   },
   cardFeatures: {
@@ -172,18 +169,15 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   feature: {
-    color: Colors.success,
     fontSize: 13,
     fontWeight: '500',
   },
   cardButton: {
-    backgroundColor: Colors.primary,
     borderRadius: 12,
     paddingVertical: 12,
     alignItems: 'center',
   },
   cardButtonText: {
-    color: Colors.white,
     fontWeight: '700',
     fontSize: 15,
   },
@@ -193,11 +187,9 @@ const styles = StyleSheet.create({
     paddingVertical: 24,
   },
   registerText: {
-    color: Colors.textSecondary,
     fontSize: 14,
   },
   registerTextBold: {
-    color: Colors.primary,
     fontSize: 14,
     fontWeight: '700',
   },

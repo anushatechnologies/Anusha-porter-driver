@@ -1,0 +1,728 @@
+﻿================================================================================
+  PORTER DRIVER APP — FRONTEND -> BACKEND API INTEGRATION FLOW
+  For Backend Team | Version: 1.0 | Date: 2026-07-28
+================================================================================
+
+BASE URL  : https://api.anushaporter.com
+ENV VAR   : EXPO_PUBLIC_API_BASE_URL=https://api.anushaporter.com
+AUTH      : Bearer Token (stored in AsyncStorage as "authToken")
+CONTENT   : application/json  (unless noted as multipart/form-data)
+IMAGE HOST: poteranusha.s3.ap-south-2.amazonaws.com
+
+================================================================================
+  APP NAVIGATION STRUCTURE
+================================================================================
+
+  Splash Screen
+    --> Role Select Screen  (Driver / Admin)
+        --> Login Screen
+            |-- [Driver - KYC: verified]  --> Driver Dashboard (Tabs)
+            |-- [Driver - KYC: pending]   --> Approval Pending Screen
+            --> [Driver - KYC: rejected]  --> Driver Registration (re-submit)
+
+  Driver Registration (6 Steps)
+    --> Approval Pending Screen
+
+  Driver Tabs (Bottom Navigation):
+    |-- Tab 1: Dashboard
+    |-- Tab 2: Tasks (Order History)
+    |-- Tab 3: Earnings
+    --> Tab 4: Profile
+    + Stack Screens:
+        |-- Incoming Order (modal popup)
+        |-- Active Order
+        |-- Notifications
+        |-- Support
+        --> Settlement History (Payout History)
+
+  Admin Stack:
+    |-- Admin Dashboard
+    --> Driver Management
+
+================================================================================
+  SECTION 1 -- AUTHENTICATION
+================================================================================
+
+------------------------------------------------------------------------
+  1A. LOGIN
+  Screen   : LoginScreen
+  Trigger  : Driver/Admin taps "Login" button
+------------------------------------------------------------------------
+
+  REQUEST:
+    POST /api/auth/login
+    Content-Type: application/json
+
+    Body:
+    {
+      "username": "rajesh@example.com",
+      "password": "securepassword"
+    }
+
+  NOTE: "username" field contains the EMAIL ADDRESS (lowercased by frontend)
+
+  RESPONSE - Success:
+    {
+      "success": true,
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "user": {
+        "id": 1001,
+        "name": "Rajesh Kumar",
+        "email": "rajesh@example.com",
+        "phone": "9876543210",
+        "role": "Driver"
+      }
+    }
+
+  RESPONSE - Failure:
+    {
+      "success": false,
+      "message": "Invalid credentials"
+    }
+
+  WHAT FRONTEND DOES AFTER LOGIN:
+    1. Saves token   --> AsyncStorage key "authToken"
+    2. Saves email   --> AsyncStorage key "loggedInEmail"
+    3. Calls GET /api/drivers/email/{email}  (see Section 1B)
+    4. Routes based on kyc field:
+       - "verified"  --> Navigate to Driver Dashboard
+       - "pending"   --> Navigate to Approval Pending
+       - "rejected"  --> Navigate to Driver Registration (re-submit flow)
+
+------------------------------------------------------------------------
+  1B. FETCH DRIVER PROFILE BY EMAIL
+  Screen   : LoginScreen, DriverDashboardScreen, DriverProfileScreen
+  Trigger  : After login, on Dashboard load, on Profile screen load
+------------------------------------------------------------------------
+
+  REQUEST:
+    GET /api/drivers/email/{email}
+    Example: GET /api/drivers/email/rajesh%40example.com
+
+  RESPONSE:
+    {
+      "id": 1001,
+      "name": "Rajesh Kumar",
+      "email": "rajesh@example.com",
+      "phone": "9876543210",
+      "dob": "15/08/1989",
+      "gender": "Male",
+      "vehicleType": "Bike",
+      "vehicleNumber": "KA-01-EF-1234",
+      "rcNumber": "RC-987654321",
+      "aadhaarNumber": "1111 2222 3333",
+      "licenseNumber": "DL-1420110005432",
+      "addressLine1": "123, 4th Main, Indira Nagar",
+      "city": "Bangalore",
+      "state": "Karnataka",
+      "pincode": "560038",
+      "bankName": "HDFC Bank",
+      "accountHolderName": "Rajesh Kumar",
+      "accountNumber": "50100200300405",
+      "ifscCode": "HDFC0000123",
+      "kyc": "verified",
+      "rejectedReason": "",
+      "rating": "4.8",
+      "trips": 386,
+      "tenure": "6m",
+      "status": "offline",
+      "location": "Bangalore",
+      "profilePhotoUri": "https://poteranusha.s3.ap-south-2.amazonaws.com/profile/uuid.jpg",
+      "aadhaarUri": "https://poteranusha.s3.ap-south-2.amazonaws.com/aadhaar/uuid.jpg",
+      "licenseUri": "https://poteranusha.s3.ap-south-2.amazonaws.com/license/uuid.jpg",
+      "rcUri": "https://poteranusha.s3.ap-south-2.amazonaws.com/rc/uuid.jpg",
+      "bankPassbookUri": "https://poteranusha.s3.ap-south-2.amazonaws.com/bankpassbook/uuid.jpg"
+    }
+
+  CRITICAL RULES:
+    - "kyc" must be EXACTLY one of: "verified" | "pending" | "rejected"
+    - "rating" is a STRING (e.g. "4.8"), NOT a number
+    - "tenure" is a STRING (e.g. "6m", "1y 2m", "0m")
+    - All image URI fields must be full https:// S3 URLs
+    - Frontend discards any URI that is NOT http:// or https://
+
+------------------------------------------------------------------------
+  1C. CREATE ACCOUNT (SIGNUP)
+  Screen   : DriverRegistrationScreen (Step 6 -- final submit)
+  Trigger  : Called FIRST before driver profile creation
+------------------------------------------------------------------------
+
+  REQUEST:
+    POST /api/auth/signup
+    Content-Type: application/json
+
+    Body:
+    {
+      "fullName": "Rajesh Kumar",
+      "email": "rajesh@example.com",
+      "phone": "9876543210",
+      "password": "securepass123",
+      "company": "Porter Partner Network",
+      "role": "Driver"
+    }
+
+  RESPONSE - Success:
+    {
+      "success": true,
+      "message": "Account created successfully",
+      "userId": 1001
+    }
+
+  RESPONSE - Failure:
+    {
+      "success": false,
+      "message": "Email already registered"
+    }
+
+  NOTE: If "success" is true, frontend immediately calls POST /api/drivers
+
+================================================================================
+  SECTION 2 -- DRIVER ONBOARDING & KYC
+================================================================================
+
+------------------------------------------------------------------------
+  2A. UPLOAD IMAGE / DOCUMENT
+  Screen   : DriverRegistrationScreen
+  Trigger  : Driver uploads selfie, Aadhaar, License, RC, Bank Passbook
+------------------------------------------------------------------------
+
+  REQUEST:
+    POST /api/upload/image
+    Content-Type: multipart/form-data
+
+    Form Fields:
+      file     : (binary image -- JPEG or PNG)
+      category : (string -- see category map below)
+
+  CATEGORY MAP:
+    Selfie / Profile Photo --> "profile"
+    Aadhaar Card           --> "aadhaar"
+    Driving License        --> "license"
+    Vehicle RC             --> "rc"
+    Bank Passbook / Cheque --> "bankpassbook"
+    Other                  --> "misc"
+
+  RESPONSE:
+    { "url": "https://poteranusha.s3.ap-south-2.amazonaws.com/aadhaar/abc-uuid.jpg" }
+    OR
+    { "fileUrl": "https://poteranusha.s3.ap-south-2.amazonaws.com/aadhaar/abc-uuid.jpg" }
+
+  CRITICAL: Must return a FULL https:// URL. NOT a relative path.
+  Frontend reads: data.url || data.fileUrl
+  Timeout: 10 seconds (frontend aborts after 10s)
+
+------------------------------------------------------------------------
+  2B. REGISTER DRIVER PROFILE
+  Screen   : DriverRegistrationScreen (called after signup succeeds)
+  Trigger  : Final onboarding submit
+------------------------------------------------------------------------
+
+  REQUEST:
+    POST /api/drivers
+    Content-Type: application/json
+
+    Body:
+    {
+      "name": "Rajesh Kumar",
+      "phone": "9876543210",
+      "email": "rajesh@example.com",
+      "dob": "15/08/1989",
+      "gender": "Male",
+      "vehicleType": "Bike",
+      "vehicleNumber": "KA01EF1234",
+      "rcNumber": "RC987654321",
+      "aadhaarNumber": "1111 2222 3333",
+      "licenseNumber": "DL1420110005432",
+      "addressLine1": "123, 4th Main, Indira Nagar",
+      "city": "Bangalore",
+      "state": "Karnataka",
+      "pincode": "560038",
+      "bankName": "HDFC Bank",
+      "accountHolderName": "Rajesh Kumar",
+      "accountNumber": "50100200300405",
+      "ifscCode": "HDFC0000123",
+      "profilePhotoUri": "https://poteranusha.s3.ap-south-2.amazonaws.com/profile/uuid.jpg",
+      "aadhaarUri": "https://poteranusha.s3.ap-south-2.amazonaws.com/aadhaar/uuid.jpg",
+      "licenseUri": "https://poteranusha.s3.ap-south-2.amazonaws.com/license/uuid.jpg",
+      "rcUri": "https://poteranusha.s3.ap-south-2.amazonaws.com/rc/uuid.jpg",
+      "bankPassbookUri": "https://poteranusha.s3.ap-south-2.amazonaws.com/bankpassbook/uuid.jpg",
+      "kyc": "pending",
+      "rating": "5.0",
+      "status": "offline",
+      "location": "Bangalore",
+      "trips": 0,
+      "tenure": "0m"
+    }
+
+  RESPONSE - Success (any 2xx):
+    { "id": 1001, "name": "Rajesh Kumar", "kyc": "pending" }
+
+  On HTTP 2xx --> Navigate to ApprovalPending screen
+  On failure  --> Show alert "Registration Failed"
+
+------------------------------------------------------------------------
+  REGISTRATION FORM -- 6 STEPS BREAKDOWN
+------------------------------------------------------------------------
+
+  Step 1 - Personal:
+    profilePhoto (selfie), fullName, mobile (10-digit),
+    email, password (min 6 chars), dob (DD/MM/YYYY), gender
+
+  Step 2 - Address:
+    addressLine1, city, state, pincode (6-digit)
+
+  Step 3 - Vehicle:
+    vehicleType, vehicleNumber, rcNumber
+
+  Step 4 - Documents:
+    aadhaarNumber (12-digit), licenseNumber,
+    aadhaarUri, licenseUri, rcUri (uploaded via 2A first)
+
+  Step 5 - Bank Details:
+    bankName, accountHolderName, accountNumber,
+    ifscCode (11-char), bankPassbookUri
+
+  Step 6 - Review:
+    Shows full summary --> triggers signup (1C) + driver creation (2B)
+
+  VEHICLE TYPE ENUM:
+    "Bike" | "Scooter" | "Auto Rickshaw" | "Mini Truck" | "Tempo"
+
+================================================================================
+  SECTION 3 -- DRIVER DASHBOARD
+================================================================================
+
+------------------------------------------------------------------------
+  3A. FETCH DRIVER PROFILE (for greeting & name)
+  Screen   : DriverDashboardScreen
+  Trigger  : On screen load
+------------------------------------------------------------------------
+
+  REQUEST: GET /api/drivers/email/{email}
+  (Same endpoint as Section 1B)
+
+  FIELDS USED: name, rating, tenure
+
+------------------------------------------------------------------------
+  3B. FETCH ORDER HISTORY (for earnings & trip count)
+  Screen   : DriverDashboardScreen
+  Trigger  : On load AND after each delivery completion
+------------------------------------------------------------------------
+
+  REQUEST:
+    GET /api/drivers/{email}/orders/history
+    Example: GET /api/drivers/rajesh%40example.com/orders/history
+
+  RESPONSE Option 1 (plain array):
+    [
+      {
+        "id": 501,
+        "status": "completed",
+        "amount": 185,
+        "createdAt": "2026-07-28T08:30:00Z",
+        "pickup": "Koramangala, 5th Block",
+        "drop": "BTM Layout, 2nd Stage",
+        "distance": "5.2"
+      }
+    ]
+
+  RESPONSE Option 2 (object with value key):
+    {
+      "value": [ ...same array... ],
+      "Count": 2
+    }
+
+  NOTE: Frontend handles BOTH formats:
+        const orders = Array.isArray(data) ? data : (data.value || [])
+
+  DASHBOARD COMPUTES:
+    - Today's Earnings  = sum of amount for completed orders from today
+    - Completed count   = total completed orders count
+    - Wallet Balance    = sum of ALL completed orders' amount
+
+------------------------------------------------------------------------
+  3C. POLL FOR ACTIVE ORDERS (Real-time assignment)
+  Screen   : DriverDashboardScreen
+  Trigger  : Every 5 SECONDS while driver isOnline = true
+  !! CRITICAL: This is called every 5 seconds -- MUST BE FAST !!
+------------------------------------------------------------------------
+
+  REQUEST:
+    GET /api/drivers/{email}/orders/active
+
+  RESPONSE -- Order assigned:
+    {
+      "id": 601,
+      "status": "assigned",
+      "pickup": "Koramangala, 5th Block, Bangalore",
+      "drop": "BTM Layout, 2nd Stage, Bangalore",
+      "amount": 245,
+      "distance": "4.8",
+      "customerName": "Priya Sharma",
+      "customerPhone": "9123456789",
+      "createdAt": "2026-07-28T14:00:00Z"
+    }
+
+  RESPONSE -- No active order:
+    {}
+
+  IMPORTANT: Return empty object {} NOT 404 or null when no order exists.
+
+  FRONTEND STATE MACHINE:
+    "idle"
+       --> poll returns status: "assigned"
+           --> Shows INCOMING ORDER modal (30 second countdown)
+               |-- Driver ACCEPTS --> PUT /api/orders/{id}/status { "accepted" }
+               |       --> Active Delivery:
+               |       --> Step 1 tap --> PUT status { "picked_up" }
+               |       --> Step 2 tap --> PUT status { "transit" }
+               |       --> Step 4 tap --> PUT status { "completed" }
+               |       --> deliveryState = "idle"
+               --> Driver REJECTS (or 30s expires)
+                       --> PUT /api/orders/{id}/status { "searching" }
+                       --> deliveryState = "idle"
+
+------------------------------------------------------------------------
+  3D. UPDATE ORDER STATUS
+  Screen   : DriverDashboardScreen
+  Trigger  : On each delivery step button tap
+------------------------------------------------------------------------
+
+  REQUEST:
+    PUT /api/orders/{orderId}/status
+    Content-Type: application/json
+
+    Body: { "status": "accepted" }
+
+  STATUS PROGRESSION:
+    Driver Event                   --> Status to Send
+    --------------------------------------------------
+    Driver accepts order           --> "accepted"
+    Driver rejects order           --> "searching"
+    Step 1: Reached Pickup         --> "picked_up"
+    Step 2: Package Loaded         --> "transit"
+    Step 4: Delivery Complete      --> "completed"
+
+  RESPONSE: Any 2xx HTTP status (body not read by frontend)
+
+------------------------------------------------------------------------
+  3E. TOGGLE DRIVER ONLINE / OFFLINE
+  Screen   : DriverDashboardScreen
+  Trigger  : Driver flips the Online toggle switch
+------------------------------------------------------------------------
+
+  REQUEST:
+    PUT /api/drivers/email/{email}/status
+    Content-Type: application/json
+
+    Body (Go Online):  { "status": "online" }
+    Body (Go Offline): { "status": "offline" }
+
+  RESPONSE: Any 2xx HTTP status
+
+================================================================================
+  SECTION 4 -- EARNINGS SCREEN
+================================================================================
+
+  REQUEST:
+    GET /api/drivers/{email}/orders/history
+    (Same endpoint as Section 3B)
+
+  FRONTEND COMPUTES:
+    Period    | Time Range            | Target
+    ----------|----------------------|----------
+    Today     | Since midnight today | Rs. 1,500
+    Weekly    | Last 7 days          | Rs. 10,000
+    Monthly   | Last 30 days         | Rs. 40,000
+    Total     | All time             | Rs. 2,00,000
+
+  WALLET BALANCE = sum of ALL completed orders' amount field
+
+================================================================================
+  SECTION 5 -- ORDER HISTORY (Tasks Tab)
+================================================================================
+
+  REQUEST:
+    GET /api/drivers/{email}/orders/history
+    (Same endpoint as Section 3B)
+
+  STATUS VALUES:
+    Backend "completed"  --> Green "Completed" badge
+    Backend "cancelled"  --> Red "Cancelled" badge
+    Backend "failed"     --> Red "Failed" badge
+
+  FILTER TABS: All | Completed | Cancelled | Failed
+  SORT: Newest First | Highest Payout First
+
+================================================================================
+  SECTION 6 -- SETTLEMENT HISTORY (Payout History)
+================================================================================
+
+  REQUEST:
+    GET /api/drivers/{email}/orders/history
+    (Same endpoint -- frontend filters to status="completed" only)
+
+  MAPPED TO:
+    id     : "TXN" + order.id.toString().slice(-6).toUpperCase()
+    date   : formatted from createdAt
+    amount : "Rs.{amount}"
+    status : "Settled"  (always, for completed orders)
+
+================================================================================
+  SECTION 7 -- DRIVER PROFILE SCREEN
+================================================================================
+
+  REQUEST: GET /api/drivers/email/{email}  (Same as Section 1B)
+
+  FIELDS DISPLAYED:
+    name, phone, email, vehicleType, vehicleNumber, rating, trips, tenure,
+    kyc (badge), profilePhotoUri, aadhaarUri, licenseUri, rcUri,
+    bankPassbookUri, id (shown as "PRT-{id}")
+
+================================================================================
+  SECTION 8 -- NOTIFICATIONS (Future)
+================================================================================
+
+  Currently static. Future endpoint:
+    GET /api/drivers/{email}/notifications
+
+  Suggested Response:
+    [
+      {
+        "id": "notif-001",
+        "title": "New Order Available",
+        "message": "Pickup from Koramangala",
+        "type": "order",
+        "read": false,
+        "createdAt": "2026-07-28T14:00:00Z"
+      }
+    ]
+
+================================================================================
+  SECTION 9 -- SUPPORT (Future)
+================================================================================
+
+  Currently static. Future endpoint:
+    POST /api/support/ticket
+
+  Suggested Request:
+    {
+      "email": "rajesh@example.com",
+      "subject": "Payment not received",
+      "description": "My order #501 completed but payment not reflected."
+    }
+
+================================================================================
+  SECTION 10 -- ADMIN FLOW
+================================================================================
+
+  10A. Fetch Admin Metrics
+    GET /api/admin/metrics
+    Response: {
+      "totalDrivers": 150, "pendingKyc": 12, "activeOrders": 45,
+      "activeDrivers": 32, "totalOrdersToday": 280, "revenueToday": 48500
+    }
+
+  10B. Fetch All Drivers
+    GET /api/admin/drivers
+    GET /api/admin/drivers?status=pending
+    GET /api/admin/drivers?status=verified
+    Response: [{ "id": 1001, "name": "Rajesh Kumar", "kyc": "pending", ... }]
+
+  10C. Approve / Reject KYC
+    PUT /api/admin/drivers/{driverId}/kyc
+
+    Approve: { "status": "verified" }
+    Reject:  { "status": "rejected", "reason": "Aadhaar image is blurry." }
+
+================================================================================
+  SECTION 11 -- ALL API ENDPOINTS SUMMARY
+================================================================================
+
+  #   Method  Endpoint                                   Called From
+  --  ------  -----------------------------------------  --------------------------
+  1   POST    /api/auth/login                            LoginScreen
+  2   POST    /api/auth/signup                           DriverRegistrationScreen
+  3   POST    /api/upload/image                          DriverRegistrationScreen
+  4   POST    /api/drivers                               DriverRegistrationScreen
+  5   GET     /api/drivers/email/{email}                 Login, Dashboard, Profile
+  6   PUT     /api/drivers/email/{email}/status          Dashboard (online toggle)
+  7   GET     /api/drivers/{email}/orders/active         Dashboard (5s poll)
+  8   GET     /api/drivers/{email}/orders/history        Dashboard, Earnings, Tasks
+  9   PUT     /api/orders/{orderId}/status               Dashboard (delivery steps)
+  10  GET     /api/admin/metrics                         AdminDashboard
+  11  GET     /api/admin/drivers                         DriverManagement
+  12  PUT     /api/admin/drivers/{driverId}/kyc          DriverManagement
+
+================================================================================
+  SECTION 12 -- DATA MODELS
+================================================================================
+
+  DRIVER OBJECT:
+  {
+    id                : number        -- numeric ID
+    name              : string        -- full name
+    email             : string
+    phone             : string        -- 10-digit mobile
+    dob               : string        -- "DD/MM/YYYY"
+    gender            : string        -- "Male" | "Female" | "Other"
+    vehicleType       : string        -- "Bike" | "Scooter" | "Auto Rickshaw" | "Mini Truck"
+    vehicleNumber     : string
+    rcNumber          : string
+    aadhaarNumber     : string        -- "XXXX XXXX XXXX" (with spaces)
+    licenseNumber     : string
+    addressLine1      : string
+    city              : string
+    state             : string
+    pincode           : string        -- 6-digit string
+    bankName          : string
+    accountHolderName : string
+    accountNumber     : string
+    ifscCode          : string        -- 11 characters
+    kyc               : string        -- "verified" | "pending" | "rejected"
+    rejectedReason    : string        -- empty string if not rejected
+    status            : string        -- "online" | "offline" | "suspended"
+    rating            : string        -- "4.8" stored as STRING not number
+    trips             : number
+    tenure            : string        -- "6m", "1y 2m", "0m"
+    location          : string
+    profilePhotoUri   : string        -- Full https:// S3 URL
+    aadhaarUri        : string        -- Full https:// S3 URL
+    licenseUri        : string        -- Full https:// S3 URL
+    rcUri             : string        -- Full https:// S3 URL
+    bankPassbookUri   : string        -- Full https:// S3 URL
+  }
+
+  ORDER OBJECT:
+  {
+    id            : number
+    status        : string  -- "assigned"|"accepted"|"picked_up"|"transit"
+                             -- |"completed"|"cancelled"|"failed"|"searching"
+    pickup        : string  -- Pickup address
+    drop          : string  -- Drop address
+    amount        : number  -- Fare in INR (e.g. 185)
+    distance      : string  -- km as string (e.g. "5.2")
+    customerName  : string
+    customerPhone : string
+    createdAt     : string  -- ISO 8601 timestamp
+  }
+
+================================================================================
+  SECTION 13 -- CRITICAL RULES
+================================================================================
+
+  RULE 1: KYC VALUES ARE CASE-SENSITIVE
+    Must be exactly: "verified" | "pending" | "rejected"
+    NOT: "Verified", "VERIFIED", "Approved", "approved"
+    Login routing DEPENDS on this exact value.
+
+  RULE 2: IMAGE URLS MUST BE FULL HTTPS:// URLS
+    Frontend DISCARDS any URI not starting with "http://" or "https://"
+    WRONG:  "/uploads/image.jpg"
+    CORRECT: "https://poteranusha.s3.ap-south-2.amazonaws.com/..."
+
+  RULE 3: RATING FIELD IS A STRING
+    Return: "4.8"  (NOT the number 4.8)
+
+  RULE 4: ORDER HISTORY ACCEPTS BOTH RESPONSE FORMATS
+    Frontend handles: plain array [ ] OR object { "value": [ ], "Count": N }
+
+  RULE 5: /orders/active MUST RETURN {} WHEN NO ORDER
+    Do NOT return 404 or null.
+    Return empty JSON object {} when no active order exists.
+    This endpoint is called every 5 seconds -- must be FAST.
+
+  RULE 6: S3 REGIONAL URL
+    Correct:  poteranusha.s3.ap-south-2.amazonaws.com
+    Wrong:    poteranusha.s3.amazonaws.com
+
+  RULE 7: DRIVER EMAIL AS IDENTIFIER
+    Many endpoints use email as URL path param, not numeric ID.
+    Both lookup methods (email AND numeric ID) must be supported.
+
+  RULE 8: IMAGE UPLOAD TIMEOUT
+    Frontend aborts uploads after 10 seconds.
+    Ensure /api/upload/image responds within 10s.
+
+================================================================================
+  SECTION 14 -- COMPLETE END-TO-END JOURNEY
+================================================================================
+
+  -- NEW DRIVER REGISTRATION --
+
+  1. App opens --> Splash (3s) --> Role Select --> Driver
+  2. Login Screen --> tap Register
+  3. Step 1 (Personal):
+       Selfie --> POST /api/upload/image { category: "profile" }
+       Fill: name, mobile, email, password, DOB, gender
+  4. Step 2 (Address):
+       Fill: addressLine1, city, state, pincode
+  5. Step 3 (Vehicle):
+       Select vehicleType, enter vehicleNumber, rcNumber
+  6. Step 4 (Documents):
+       Aadhaar upload --> POST /api/upload/image { category: "aadhaar" }
+       License upload --> POST /api/upload/image { category: "license" }
+       RC upload      --> POST /api/upload/image { category: "rc" }
+       Fill: aadhaarNumber, licenseNumber
+  7. Step 5 (Bank):
+       Passbook upload --> POST /api/upload/image { category: "bankpassbook" }
+       Fill: bankName, accountNumber, ifscCode, accountHolderName
+  8. Step 6 (Review):
+       Driver reviews, taps Submit
+       Verification animation (7.2 seconds)
+       --> POST /api/auth/signup   (create login account)
+       --> POST /api/drivers       (create driver profile)
+  9. Navigate to Approval Pending Screen
+
+  -- ADMIN KYC APPROVAL --
+
+  10. Admin logs in (role: admin)
+  11. GET /api/admin/metrics              --> see pending count
+  12. GET /api/admin/drivers?status=pending  --> list pending drivers
+  13. Admin reviews:
+      Approve: PUT /api/admin/drivers/{id}/kyc { "status": "verified" }
+      Reject:  PUT /api/admin/drivers/{id}/kyc { "status": "rejected", "reason": "..." }
+
+  -- VERIFIED DRIVER DAILY OPERATIONS --
+
+  14. Driver logs in:
+      POST /api/auth/login
+      GET /api/drivers/email/{email} --> kyc: "verified" --> Dashboard
+  15. Dashboard loads:
+      GET /api/drivers/email/{email}          --> name, rating, tenure
+      GET /api/drivers/{email}/orders/history --> earnings, trips
+  16. Driver goes Online:
+      PUT /api/drivers/email/{email}/status { "status": "online" }
+  17. Frontend polls every 5 seconds:
+      GET /api/drivers/{email}/orders/active
+  18. Backend assigns order --> response: { "status": "assigned", ... }
+  19. Incoming Order modal shown (30s countdown)
+  20. Driver taps Accept:
+      PUT /api/orders/{id}/status { "status": "accepted" }
+  21. Step 1 (Reached Pickup):
+      PUT /api/orders/{id}/status { "status": "picked_up" }
+  22. Step 2 (Package Loaded):
+      PUT /api/orders/{id}/status { "status": "transit" }
+  23. Step 3 (Start Delivery -- no status update, UI only)
+  24. Step 4 (Delivered, OTP collected):
+      PUT /api/orders/{id}/status { "status": "completed" }
+  25. Dashboard refreshes:
+      GET /api/drivers/{email}/orders/history --> updated earnings
+  26. Back to idle, continues polling
+
+  -- EARNINGS & SETTLEMENT --
+
+  27. Driver opens Earnings tab:
+      GET /api/drivers/{email}/orders/history
+      Frontend calculates today/weekly/monthly/total breakdowns
+
+  28. Driver opens Settlement History:
+      GET /api/drivers/{email}/orders/history
+      Filters to completed orders, shows as "Settled" records
+
+================================================================================
+  END OF DOCUMENT
+  Porter Driver App -- Backend Integration Flow v1.0
+  Generated from live frontend source code on 2026-07-28
+  App Base URL: https://api.anushaporter.com
+================================================================================

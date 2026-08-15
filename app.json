@@ -1,25 +1,69 @@
 {
   "expo": {
-    "name": "porter-driver-app",
-    "slug": "porter-driver-app",
-    "version": "1.0.0",
+    "name": "Anusha Porter Driver",
+    "slug": "anusha-porter-driver",
+    "version": "2.0.5",
+    "sdkVersion": "54.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FFFFFF"
+    },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "config": {
+        "googleMapsApiKey": "AIzaSyBMZfGGMXsIOZYBpCRW7lVpPVhaRQnAnjo"
+      }
     },
     "android": {
+      "versionCode": 16,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#FFFFFF"
       },
-      "predictiveBackGestureEnabled": false
+      "package": "com.anushaporter.driver",
+      "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ],
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyBMZfGGMXsIOZYBpCRW7lVpPVhaRQnAnjo"
+        }
+      }
     },
     "web": {
-      "favicon": "./assets/favicon.png"
-    }
+      "favicon": "./assets/logo.png"
+    },
+    "plugins": [
+      "expo-font",
+      "expo-av",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Anusha Porter Driver collects location data to enable real-time driver tracking and delivery services when the app is in use and when the app is closed or not in use.",
+          "locationAlwaysPermission": "Anusha Porter Driver collects location data in the background to provide live tracking during active deliveries.",
+          "locationWhenInUsePermission": "Anusha Porter Driver collects location data to enable real-time driver tracking while navigating and delivering orders.",
+          "isAndroidBackgroundLocationEnabled": true
+        }
+      ],
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "63b52fbc-7d86-4230-853f-03dd7ffefca1"
+      }
+    },
+    "owner": "anushabazaar2"
   }
 }
