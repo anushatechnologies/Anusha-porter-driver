@@ -73,6 +73,15 @@ const SplashScreen = () => {
           try {
             const driverDb = await getDriverProfile();
             if (driverDb) {
+              const cleanDbPhone = (driverDb.phone || '').replace(/\D/g, '').slice(-10);
+              const cleanStoredPhone = (profile.mobile || token || '').replace(/\D/g, '').slice(-10);
+              if (cleanDbPhone && cleanStoredPhone && cleanDbPhone !== cleanStoredPhone) {
+                // Identity mismatch — wipe cross-account cache and force clean login
+                await AsyncStorage.clear();
+                navigation.replace('Login', { role: 'driver' });
+                return;
+              }
+
               currentKyc = driverDb.kyc || profile.kyc || 'verified';
               const rawPhoto = driverDb.profilePhotoUri ||
                                driverDb.documents?.profilePhotoUrl ||

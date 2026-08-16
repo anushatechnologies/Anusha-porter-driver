@@ -11,27 +11,10 @@ import Svg, { Path, Defs, LinearGradient, Stop, Rect, Circle, Ellipse } from 're
 import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import AsyncStorage from '../../services/asyncStorageShim';
-import { verifyFirebaseOtp, getDriverProfile, checkDriverPhone } from '../../services/api';
+import { verifyFirebaseOtp, getDriverProfile, checkDriverPhone, getDriverProfileByPhone } from '../../services/api';
 import { cleanUrl } from '../../utils/urlHelpers';
-// @ts-ignore
-import auth, { getAuth, signInWithPhoneNumber as modularSignInWithPhoneNumber } from '@react-native-firebase/auth';
-
-const getFirebaseAuthInstance = (): any => {
-  try {
-    if (typeof auth === 'function') {
-      return auth();
-    }
-    if (auth && typeof (auth as any).default === 'function') {
-      return (auth as any).default();
-    }
-    if (typeof getAuth === 'function') {
-      return getAuth();
-    }
-  } catch (e) {
-    console.warn('getFirebaseAuthInstance error:', e);
-  }
-  return auth;
-};
+import { validateName, validateMobile } from '../../utils/validators';
+import { getAuth, signInWithPhoneNumber } from '@react-native-firebase/auth';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 type RoutePropType = RouteProp<RootStackParamList, 'Login'>;
@@ -47,6 +30,7 @@ const LoginScreen = () => {
 
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
+  const [errors, setErrors] = useState<{ fullName?: string; phone?: string }>({});
   const [loading, setLoading] = useState(false);
   const [focusedInput, setFocusedInput] = useState<string | null>(null);
   
@@ -72,6 +56,49 @@ const LoginScreen = () => {
     useRef<TextInput>(null), useRef<TextInput>(null), useRef<TextInput>(null)
   ];
 
+  const handleFullNameChange = (text: string) => {
+    // Only letters and spaces allowed
+    const formatted = text.replace(/[^a-zA-Z\s]/g, '');
+    setFullName(formatted);
+    if (errors.fullName) {
+      const res = validateName(formatted, 'Full Name');
+      if (res.isValid) {
+        setErrors(prev => ({ ...prev, fullName: undefined }));
+      } else {
+        setErrors(prev => ({ ...prev, fullName: res.error }));
+      }
+    }
+  };
+
+  const handlePhoneChange = (text: string) => {
+    const cleaned = text.replace(/\D/g, '').slice(0, 10);
+    setPhone(cleaned);
+    setOtpMode(false);
+    if (errors.phone) {
+      const res = validateMobile(cleaned);
+      if (res.isValid) {
+        setErrors(prev => ({ ...prev, phone: undefined }));
+      } else {
+        setErrors(prev => ({ ...prev, phone: res.error }));
+      }
+    }
+  };
+
+  const handleBlur = (field: 'fullName' | 'phone') => {
+    setFocusedInput(null);
+    if (field === 'fullName' && isRegisterMode) {
+      if (fullName.trim()) {
+        const res = validateName(fullName, 'Full Name');
+        setErrors(prev => ({ ...prev, fullName: res.isValid ? undefined : res.error }));
+      }
+    } else if (field === 'phone') {
+      if (phone.trim()) {
+        const res = validateMobile(phone);
+        setErrors(prev => ({ ...prev, phone: res.isValid ? undefined : res.error }));
+      }
+    }
+  };
+
   useEffect(() => {
     const onBackPress = () => {
       if (otpMode) {
@@ -95,115 +122,67 @@ const LoginScreen = () => {
 
   const handleSendOtp = async () => {
     Keyboard.dismiss();
-    const cleanPhone = phone.replace(/\D/g, '');
-    if (cleanPhone.length !== 10 || !/^[6-9]\d{9}$/.test(cleanPhone)) {
-      Alert.alert('Invalid Number', 'Please enter a valid 10-digit mobile number starting with 6-9.');
+    const newErrors: { fullName?: string; phone?: string } = {};
+
+    if (isRegisterMode) {
+      const nameRes = validateName(fullName, 'Full Name');
+      if (!nameRes.isValid) {
+        newErrors.fullName = nameRes.error;
+      }
+    }
+
+    const phoneRes = validateMobile(phone);
+    if (!phoneRes.isValid) {
+      newErrors.phone = phoneRes.error;
+    }
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      Alert.alert('Validation Error', newErrors.fullName || newErrors.phone || 'Please enter valid details.');
       return;
     }
+
+    const cleanPhone = phone.replace(/\D/g, '').slice(-10);
 
     if (loading) return;
     setLoading(true);
 
-    // ── DATABASE SOURCE OF TRUTH CHECK ──────────────────────────────
-    const checkRes = await checkDriverPhone(cleanPhone);
-    
-    if (!checkRes.success) {
-      setLoading(false);
-      Alert.alert(
-        'Unable to Verify',
-        checkRes.error || 'Unable to verify your phone number. Please check your internet connection and try again.'
-      );
-      return;
-    }
-
-    // CASE 1: New User enters phone on Login page -> Redirect to Register Page
-    if (!checkRes.exists) {
-      setLoading(false);
-      Alert.alert(
-        'Account Not Found',
-        'This phone number is not registered yet. Redirecting you to the registration page.',
-        [
-          {
-            text: 'Register Now',
-            onPress: () => {
-              navigation.navigate('DriverRegistration', { mobile: cleanPhone });
-            },
-          },
-        ]
-      );
-      return;
-    }
-
-    // CASE 2: Existing User -> Proceed with Login / OTP flow
     const formattedPhone = `+91${cleanPhone}`;
 
     try {
-      let confirmResult: any = null;
-
-      // Method 1: React Native Firebase v26 modular API (getAuth + signInWithPhoneNumber)
-      try {
-        const authObj = getAuth();
-        if (authObj) {
-          confirmResult = await modularSignInWithPhoneNumber(authObj, formattedPhone);
-        }
-      } catch (modErr) {
-        console.warn('Modular signInWithPhoneNumber attempt notice:', modErr);
-      }
-
-      // Method 2: Standard instance method fallback
-      if (!confirmResult) {
-        const authInst = getFirebaseAuthInstance();
-        if (authInst && typeof authInst.signInWithPhoneNumber === 'function') {
-          confirmResult = await authInst.signInWithPhoneNumber(formattedPhone);
-        } else if (typeof (auth as any)?.signInWithPhoneNumber === 'function') {
-          confirmResult = await (auth as any).signInWithPhoneNumber(formattedPhone);
-        }
-      }
+      console.log('[AUTH] Send OTP started for:', formattedPhone);
+      const auth = getAuth();
+      const confirmResult = await signInWithPhoneNumber(auth, formattedPhone);
 
       if (!confirmResult) {
-        console.warn('[AUTH] Firebase native SMS unfulfilled or reCAPTCHA web error. Activating backend OTP handler.');
-        confirmResult = {
-          confirm: async (enteredOtp: string) => {
-            const code = String(enteredOtp || '').trim();
-            if (code.length === 6) {
-              // Backend validates OTP; generate a session token based on phone number
-              return {
-                user: {
-                  getIdToken: async () => `PHONE_AUTH_${phone}_${Date.now()}`
-                }
-              };
-            }
-            throw new Error('Invalid OTP. Please enter a valid 6-digit OTP code.');
-          }
-        };
+        throw new Error('Firebase Phone Auth service is unavailable. Please check your connection.');
       }
 
+      console.log('[AUTH] Real SMS OTP dispatched via Firebase');
       setConfirmation(confirmResult);
       setLoading(false);
       setOtpMode(true);
       setCountdown(45);
       setTimeout(() => otpRefs[0].current?.focus(), 100);
     } catch (error: any) {
-      console.warn('Firebase SMS error, falling back to seamless OTP handler:', error);
-      const fallbackConfirmation = {
-        confirm: async (enteredOtp: string) => {
-          const code = String(enteredOtp || '').trim();
-          if (code.length === 6) {
-            // Backend validates OTP; generate a session token based on phone number
-            return {
-              user: {
-                getIdToken: async () => `PHONE_AUTH_${phone}_${Date.now()}`
-              }
-            };
-          }
-          throw new Error('Invalid OTP. Please enter a valid 6-digit OTP code.');
-        }
-      };
-      setConfirmation(fallbackConfirmation);
+      console.error('[AUTH] Firebase Send OTP failed:', error);
       setLoading(false);
-      setOtpMode(true);
-      setCountdown(45);
-      setTimeout(() => otpRefs[0].current?.focus(), 100);
+      
+      let errMsg = 'Failed to send OTP via SMS. Please check your mobile number and internet connection.';
+      if (error?.code === 'auth/invalid-phone-number') {
+        errMsg = 'Invalid mobile number format. Please enter a valid 10-digit mobile number.';
+      } else if (error?.code === 'auth/too-many-requests') {
+        errMsg = 'Too many OTP requests from this phone. Please wait a few minutes before trying again.';
+      } else if (error?.code === 'auth/quota-exceeded') {
+        errMsg = 'SMS quota exceeded for today. Please try again later.';
+      } else if (error?.code === 'auth/missing-client-identifier' || error?.code === 'auth/app-not-authorized') {
+        errMsg = 'App verification in progress. Please check your internet connection and tap Send OTP again.';
+      } else if (error?.code === 'auth/network-request-failed') {
+        errMsg = 'Network connection failed. Please check your internet connection and try again.';
+      } else if (error?.message) {
+        errMsg = error.message;
+      }
+      Alert.alert('Send OTP Failed', errMsg);
     }
   };
 
@@ -228,7 +207,7 @@ const LoginScreen = () => {
   const handleLogin = async () => {
     const otpString = otp.join('');
     if (otpString.length < 6) {
-      Alert.alert('Incomplete', 'Please enter the 6-digit OTP.');
+      Alert.alert('Incomplete', 'Please enter the full 6-digit OTP received via SMS.');
       return;
     }
 
@@ -242,29 +221,36 @@ const LoginScreen = () => {
     let firebasePhone = '';
     let firebaseUid = '';
 
+    const cleanPhone = (phone || '').replace(/\D/g, '').slice(-10);
+
     try {
       const firebaseUser = await confirmation.confirm(otpString);
       const userObj = firebaseUser?.user || firebaseUser;
       if (userObj && typeof userObj.getIdToken === 'function') {
         firebaseIdToken = await userObj.getIdToken(true);
-        firebasePhone = userObj.phoneNumber || userObj.phone_number || `+91${phone}`;
+        firebasePhone = userObj.phoneNumber || userObj.phone_number || `+91${cleanPhone}`;
         firebaseUid = userObj.uid || '';
-        console.log('[AUTH] Firebase verified. Phone:', firebasePhone, 'UID:', firebaseUid);
+        console.log('[AUTH] Real Firebase Phone OTP verified! Phone:', firebasePhone, 'UID:', firebaseUid);
       } else {
-        throw new Error('Failed to retrieve user ID token from Firebase.');
+        throw new Error('Firebase Auth token generation failed. Please try again.');
       }
     } catch (fbErr: any) {
+      console.error('[AUTH] Firebase OTP verification failed:', fbErr);
       setLoading(false);
-      console.error('Firebase OTP verification error:', fbErr);
-      Alert.alert(
-        'Verification Failed',
-        fbErr?.message || 'Invalid OTP. Please check the code received via SMS and try again.'
-      );
+      let errMsg = 'Invalid OTP code. Please check the 6-digit SMS code received on your phone and try again.';
+      if (fbErr?.code === 'auth/invalid-verification-code') {
+        errMsg = 'The 6-digit OTP code entered is incorrect. Please re-check your SMS message and try again.';
+      } else if (fbErr?.code === 'auth/session-expired' || fbErr?.code === 'auth/code-expired') {
+        errMsg = 'This OTP has expired. Please tap "Resend OTP" to request a new code.';
+      } else if (fbErr?.message) {
+        errMsg = fbErr.message;
+      }
+      Alert.alert('OTP Verification Failed', errMsg);
       return;
     }
 
     // Phone from Firebase (strip +91 for backend lookup)
-    const cleanPhone = (firebasePhone || `+91${phone}`).replace(/^\+91/, '');
+    const verifiedPhone = (firebasePhone || `+91${cleanPhone}`).replace(/^\+91/, '');
 
     let data: any = null;
     try {
@@ -283,6 +269,9 @@ const LoginScreen = () => {
       ? (data.accessToken || data.token)
       : firebaseIdToken;
 
+    // Completely wipe any previous session to guarantee 100% multi-user isolation
+    await AsyncStorage.clear();
+
     await AsyncStorage.setItem('userToken', cleanPhone || phone);
     await AsyncStorage.setItem('authToken', token);
     if (firebasePhone) await AsyncStorage.setItem('firebasePhone', firebasePhone);
@@ -297,7 +286,6 @@ const LoginScreen = () => {
     // Look up driver by phone first (most reliable — backend ignores Firebase token context)
     let driverDb: any = null;
     try {
-      const { getDriverProfileByPhone } = require('../../services/api');
       driverDb = await getDriverProfileByPhone(cleanPhone || phone);
       console.log('[AUTH] Driver by phone lookup:', driverDb ? 'FOUND' : 'NOT FOUND');
       if (!driverDb) {
@@ -435,50 +423,80 @@ const LoginScreen = () => {
             <Text style={styles.subWelcomeText}>{isRegisterMode ? 'Register to start delivering' : 'Login to continue delivering'}</Text>
 
             {isRegisterMode && (
-              <>
+              <View style={{ marginBottom: 16 }}>
                 <Text style={styles.inputLabel}>Full Name</Text>
                 <Pressable
-                  style={[styles.inputRow, focusedInput === 'fullName' && styles.inputRowFocused]}
+                  style={[
+                    styles.inputRow,
+                    focusedInput === 'fullName' && styles.inputRowFocused,
+                    errors.fullName && styles.inputRowError,
+                  ]}
                   onPress={() => fullNameInputRef.current?.focus()}
                 >
+                  <Ionicons 
+                    name="person-outline" 
+                    size={18} 
+                    color={errors.fullName ? '#EF4444' : focusedInput === 'fullName' ? '#0052FF' : '#94A3B8'} 
+                    style={{ marginLeft: 14, marginRight: 6 }} 
+                  />
                   <TextInput
                     ref={fullNameInputRef}
                     style={styles.inputField}
-                    placeholder="Enter your full name"
+                    placeholder="Enter your full legal name"
                     placeholderTextColor="#94A3B8"
                     value={fullName}
-                    onChangeText={setFullName}
+                    onChangeText={handleFullNameChange}
                     onFocus={() => setFocusedInput('fullName')}
-                    onBlur={() => setFocusedInput(null)}
+                    onBlur={() => handleBlur('fullName')}
+                    autoCapitalize="words"
+                    maxLength={50}
                   />
                 </Pressable>
-              </>
+                {errors.fullName && (
+                  <View style={styles.errorBoxRow}>
+                    <Ionicons name="warning-outline" size={13} color="#EF4444" />
+                    <Text style={styles.errorText}>{errors.fullName}</Text>
+                  </View>
+                )}
+              </View>
             )}
 
-            <Text style={styles.inputLabel}>Mobile Number</Text>
-            <Pressable
-              style={[styles.inputRow, focusedInput === 'phone' && styles.inputRowFocused]}
-              onPress={() => phoneInputRef.current?.focus()}
-            >
-              <View style={styles.countryCodeBox}>
-                <Text style={styles.flagText}>🇮🇳</Text>
-                <Text style={styles.countryCodeText}>+91</Text>
-                <Ionicons name="chevron-down" size={14} color="#64748B" style={{ marginLeft: 4 }} />
-              </View>
-              <View style={styles.inputDivider} />
-              <TextInput
-                ref={phoneInputRef}
-                style={styles.inputField}
-                placeholder="Enter mobile number"
-                placeholderTextColor="#94A3B8"
-                keyboardType="phone-pad"
-                maxLength={10}
-                value={phone}
-                onChangeText={(text) => { setPhone(text); setOtpMode(false); }}
-                onFocus={() => setFocusedInput('phone')}
-                onBlur={() => setFocusedInput(null)}
-              />
-            </Pressable>
+            <View style={{ marginBottom: 8 }}>
+              <Text style={styles.inputLabel}>Mobile Number</Text>
+              <Pressable
+                style={[
+                  styles.inputRow,
+                  focusedInput === 'phone' && styles.inputRowFocused,
+                  errors.phone && styles.inputRowError,
+                ]}
+                onPress={() => phoneInputRef.current?.focus()}
+              >
+                <View style={styles.countryCodeBox}>
+                  <Text style={styles.flagText}>🇮🇳</Text>
+                  <Text style={styles.countryCodeText}>+91</Text>
+                  <Ionicons name="chevron-down" size={14} color="#64748B" style={{ marginLeft: 4 }} />
+                </View>
+                <View style={styles.inputDivider} />
+                <TextInput
+                  ref={phoneInputRef}
+                  style={styles.inputField}
+                  placeholder="Enter 10-digit mobile number"
+                  placeholderTextColor="#94A3B8"
+                  keyboardType="phone-pad"
+                  maxLength={10}
+                  value={phone}
+                  onChangeText={handlePhoneChange}
+                  onFocus={() => setFocusedInput('phone')}
+                  onBlur={() => handleBlur('phone')}
+                />
+              </Pressable>
+              {errors.phone && (
+                <View style={styles.errorBoxRow}>
+                  <Ionicons name="warning-outline" size={13} color="#EF4444" />
+                  <Text style={styles.errorText}>{errors.phone}</Text>
+                </View>
+              )}
+            </View>
 
             {!otpMode && (
               <View style={styles.shieldRow}>
@@ -577,6 +595,7 @@ const LoginScreen = () => {
                 setIsRegisterMode(!isRegisterMode);
                 setFullName('');
                 setPhone('');
+                setErrors({});
                 setOtpMode(false);
                 setOtp(['', '', '', '', '', '']);
               }}
@@ -632,6 +651,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   inputRowFocused: { borderColor: '#0052FF', backgroundColor: '#F8FAFC' },
+  inputRowError: { borderColor: '#EF4444', borderWidth: 1.5 },
+  errorBoxRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, paddingHorizontal: 4 },
+  errorText: { color: '#EF4444', fontSize: 12, fontWeight: '600' },
   countryCodeBox: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12 },
   flagText: { fontSize: 18, marginRight: 6 },
   countryCodeText: { fontSize: 15, fontWeight: '600', color: '#0F172A' },

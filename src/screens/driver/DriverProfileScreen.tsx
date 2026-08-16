@@ -20,8 +20,9 @@ import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import AsyncStorage from '../../services/asyncStorageShim';
 import Svg, { Defs, LinearGradient, Stop, Path } from 'react-native-svg';
-import { getDriverProfile, getOrderHistory, getDriverPayoutAccount } from '../../services/api';
+import { getDriverProfile, getOrderHistory, getDriverPayoutAccount, setDriverOnlineStatus } from '../../services/api';
 import { cleanUrl } from '../../utils/urlHelpers';
+import { getAuth, signOut } from '@react-native-firebase/auth';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 const { width } = Dimensions.get('window');
@@ -38,7 +39,12 @@ const DriverProfileScreen = () => {
     try {
       const data = await AsyncStorage.getItem('driverProfile');
       let localProfile: any = data ? JSON.parse(data) : null;
-      if (localProfile) setProfileData(localProfile);
+      if (localProfile) {
+        if (localProfile.fullName === 'Test Driver') localProfile.fullName = '';
+        if (localProfile.email === 'testdriver@example.com') localProfile.email = '';
+        if (localProfile.vehicleNumber === 'TG01AB1234') localProfile.vehicleNumber = '';
+        setProfileData(localProfile);
+      }
 
       const driverDb = await getDriverProfile();
       if (driverDb) {
@@ -66,22 +72,27 @@ const DriverProfileScreen = () => {
 
         const resolvedPhoto = extractPhoto(driverDb, localProfile);
 
+        const cleanDbName = (driverDb.name || '').replace(/Test Driver/gi, '').trim();
+        const cleanDbEmail = (driverDb.email || '').replace(/testdriver@example\.com/gi, '').trim();
+        const cleanDbVeh = (driverDb.vehicleNumber || '').replace(/TG01AB1234/gi, '').trim();
+
         const merged = {
-          fullName: driverDb.name || localProfile?.fullName || 'Driver Partner',
-          phone: driverDb.phone || localProfile?.phone || '',
-          email: driverDb.email || localProfile?.email || '',
-          vehicleType: driverDb.vehicleType || localProfile?.vehicleType || 'Tata Ace',
-          vehicleNumber: driverDb.vehicleNumber || localProfile?.vehicleNumber || 'TS09AB1234',
-          rating: String(driverDb.rating || localProfile?.rating || '4.8'),
+          fullName: cleanDbName || localProfile?.fullName || 'Driver Partner',
+          mobile: driverDb.phone || localProfile?.mobile || localProfile?.phone || '',
+          phone: driverDb.phone || localProfile?.phone || localProfile?.mobile || '',
+          email: cleanDbEmail || localProfile?.email || '',
+          vehicleType: driverDb.vehicleType || localProfile?.vehicleType || 'Bike',
+          vehicleNumber: cleanDbVeh || localProfile?.vehicleNumber || '',
+          rating: String(driverDb.rating || localProfile?.rating || '5.0'),
           tenure: String(driverDb.tenure || localProfile?.tenure || '0m'),
-          kyc: 'verified',
+          kyc: (driverDb.kyc || driverDb.kycStatus || localProfile?.kyc || 'pending'),
           addressLine1: driverDb.addressLine1 || localProfile?.addressLine1 || '',
           city: driverDb.city || localProfile?.city || '',
           state: driverDb.state || localProfile?.state || '',
           pincode: driverDb.pincode || localProfile?.pincode || '',
-          bankName: payoutAccount?.bankName || driverDb.bankName || localProfile?.bankName || 'State Bank of India',
-          accountNumber: payoutAccount?.accountNumberMasked || (driverDb.accountNumber ? `XXXX XXXX ${driverDb.accountNumber.slice(-4)}` : 'XXXX XXXX 4582'),
-          ifscCode: payoutAccount?.ifscCode || driverDb.ifscCode || localProfile?.ifscCode || 'SBIN0001234',
+          bankName: payoutAccount?.bankName || driverDb.bankName || localProfile?.bankName || '',
+          accountNumber: payoutAccount?.accountNumberMasked || (driverDb.accountNumber ? `XXXX XXXX ${driverDb.accountNumber.slice(-4)}` : (localProfile?.accountNumber ? `XXXX XXXX ${localProfile.accountNumber.slice(-4)}` : '')),
+          ifscCode: payoutAccount?.ifscCode || driverDb.ifscCode || localProfile?.ifscCode || '',
           upiId: payoutAccount?.upiId || localProfile?.upiId || '',
           profilePhotoUri: resolvedPhoto || localProfile?.profilePhotoUri,
           documents: {
@@ -125,8 +136,11 @@ const DriverProfileScreen = () => {
           // Step 1: Load what we have from storage immediately to show something
           const data = await AsyncStorage.getItem('driverProfile');
           let localProfile: any = data ? JSON.parse(data) : null;
-          if (localProfile && isMounted) {
-            setProfileData(localProfile);
+          if (localProfile) {
+            if (localProfile.fullName === 'Test Driver') localProfile.fullName = '';
+            if (localProfile.email === 'testdriver@example.com') localProfile.email = '';
+            if (localProfile.vehicleNumber === 'TG01AB1234') localProfile.vehicleNumber = '';
+            if (isMounted) setProfileData(localProfile);
           }
 
           // Step 2: Get the logged-in email if available
@@ -190,7 +204,7 @@ const DriverProfileScreen = () => {
                 accountHolderName: driverDb.accountHolderName || localProfile?.accountHolderName || '',
                 accountNumber: driverDb.accountNumber || localProfile?.accountNumber || '',
                 ifscCode: driverDb.ifscCode || localProfile?.ifscCode || '',
-                partnerId: 'PRT-' + (driverDb.id || '00000'),
+                partnerId: driverDb.id ? 'PRT-' + driverDb.id : (localProfile?.partnerId || (localProfile?.mobile ? 'PRT-' + localProfile.mobile.slice(-4) : 'PRT-PENDING')),
                 profilePhotoUri: rawPhoto,
                 aadhaarUri: cleanUrl(driverDb.aadhaarUri || driverDb.documents?.aadhaarUrl || localProfile?.aadhaarUri || ''),
                 licenseUri: cleanUrl(driverDb.licenseUri || driverDb.documents?.licenseUrl || localProfile?.licenseUri || ''),
@@ -202,9 +216,9 @@ const DriverProfileScreen = () => {
                 tenure: (() => {
                   const dObj = driverDb as any;
                   const regDate = dObj?.createdAt || dObj?.created_at || dObj?.joinedDate || dObj?.registeredAt || localProfile?.createdAt;
-                  if (!regDate) return '1m';
+                  if (!regDate) return '0m';
                   const d = new Date(regDate);
-                  if (isNaN(d.getTime())) return '1m';
+                  if (isNaN(d.getTime())) return '0m';
                   const days = Math.floor(Math.abs(Date.now() - d.getTime()) / (1000 * 60 * 60 * 24));
                   if (days < 30) return days <= 1 ? '1d' : `${days}d`;
                   const m = Math.floor(days / 30);
@@ -580,12 +594,19 @@ const DriverProfileScreen = () => {
             onPress={() => {
               const performLogout = async () => {
                 try {
-                  await AsyncStorage.removeItem('userToken');
-                  await AsyncStorage.removeItem('driverProfile');
-                  await AsyncStorage.removeItem('authToken');
-                  await AsyncStorage.removeItem('loggedInEmail');
-                  await AsyncStorage.removeItem('firebasePhone');
-                  await AsyncStorage.removeItem('firebaseUid');
+                  // 1. Set driver status to offline on backend
+                  await setDriverOnlineStatus('offline').catch(() => {});
+
+                  // 2. Sign out of Firebase Auth session
+                  try {
+                    const auth = getAuth();
+                    await signOut(auth);
+                  } catch (fbSignOutErr) {
+                    console.warn('Firebase signOut notice:', fbSignOutErr);
+                  }
+
+                  // 3. Completely clear all cached storage keys
+                  await AsyncStorage.clear();
                 } catch (e) {
                   console.warn('Logout storage clear error:', e);
                 }

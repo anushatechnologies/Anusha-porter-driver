@@ -15,6 +15,7 @@ import {
   Dimensions,
   Animated,
   Image,
+  findNodeHandle,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -29,6 +30,13 @@ import { uploadImageToBackend } from '../../services/imageUpload';
 import { verifyFirebaseOtp, createDriverProfile, getDriverProfile, getDriverProfileByPhone, checkDriverPhone } from '../../services/api';
 import { validateProfilePhoto, PhotoValidationStatus } from '../../services/faceDetection';
 import { cleanUrl } from '../../utils/urlHelpers';
+import {
+  validateField,
+  validateRegistrationStep,
+  validateAllRegistrationFields,
+  sanitizeForm,
+  sanitizeField,
+} from '../../utils/validators';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 type RoutePropType = RouteProp<RootStackParamList, 'DriverRegistration'>;
@@ -38,106 +46,6 @@ const { width, height } = Dimensions.get('window');
 const STEPS = ['Personal', 'Address', 'Vehicle', 'Documents', 'Bank', 'Review'];
 const STEP_ICONS = ['person', 'home-outline', 'car-sport', 'cloud-upload', 'cash-outline', 'document-text'];
 
-// Premium Svg Illustration representing a courier partner standing beside his vehicle with floating earnings dashboard
-const RegisterHeroIllustration = () => {
-  const { colors } = useTheme();
-  return (
-    <View style={[styles.heroSvgContainer, { shadowColor: colors.primary }]}>
-      <Svg width="100%" height="180" viewBox="0 0 400 180" fill="none">
-        <Defs>
-          <LinearGradient id="heroGrad" x1="0" y1="0" x2="0" y2="180" gradientUnits="userSpaceOnUse">
-            <Stop offset="0%" stopColor={colors.background === '#F4F7FC' ? '#E0EBFF' : '#1E293B'} />
-            <Stop offset="100%" stopColor={colors.background} />
-          </LinearGradient>
-          <LinearGradient id="dashGrad" x1="0" y1="0" x2="0" y2="60" gradientUnits="userSpaceOnUse">
-            <Stop offset="0%" stopColor={colors.background === '#F4F7FC' ? '#FFFFFF' : '#1E293B'} stopOpacity={0.95} />
-            <Stop offset="100%" stopColor={colors.background === '#F4F7FC' ? '#F8FAFC' : '#0F172A'} stopOpacity={0.95} />
-          </LinearGradient>
-        </Defs>
-
-        {/* Backdrop Card */}
-        <Rect width="400" height="180" rx="20" fill="url(#heroGrad)" stroke={colors.background === '#F4F7FC' ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.04)'} strokeWidth={1} />
-
-        {/* Decorative background grid and nodes */}
-        <Path d="M20 120 C120 100, 280 140, 380 110" stroke={colors.primary} strokeWidth="3" opacity="0.15" />
-        <Circle cx="120" cy="50" r="40" fill={colors.primary} opacity="0.04" />
-        <Circle cx="300" cy="130" r="30" fill={colors.success} opacity="0.03" />
-
-        {/* Motorcycle/Scooter Vector */}
-        <G transform="translate(45, 40)">
-          {/* Wheel Shadow */}
-          <Ellipse cx={25} cy={85} rx={16} ry={4} fill="rgba(0,0,0,0.15)" />
-          <Ellipse cx={90} cy={85} rx={16} ry={4} fill="rgba(0,0,0,0.15)" />
-
-          {/* Wheels */}
-          <Circle cx={25} cy={80} r="14" stroke={colors.primary} strokeWidth="3" fill={colors.background === '#F4F7FC' ? '#FFFFFF' : '#0F172A'} />
-          <Circle cx={25} cy={80} r="5" fill={colors.background === '#F4F7FC' ? '#000000' : '#FFFFFF'} />
-          <Circle cx="90" cy="80" r="14" stroke={colors.primary} strokeWidth="3" fill={colors.background === '#F4F7FC' ? '#FFFFFF' : '#0F172A'} />
-          <Circle cx="90" cy="80" r="5" fill={colors.background === '#F4F7FC' ? '#000000' : '#FFFFFF'} />
-
-          {/* Vehicle Body */}
-          <Path d="M25 80 L45 80 L55 50 H90 V80" stroke={colors.background === '#F4F7FC' ? '#0F172A' : '#FFFFFF'} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-          <Path d="M45 50 H75 L82 72 H35 Z" fill={colors.primary} stroke={colors.background === '#F4F7FC' ? '#0F172A' : '#FFFFFF'} strokeWidth="1.5" />
-          {/* Cargo carrier box */}
-          <Rect x="10" y="28" width="28" height="30" rx="3" fill={colors.primary} stroke={colors.background === '#F4F7FC' ? '#0F172A' : '#FFFFFF'} strokeWidth="2" />
-          <Path d="M10 40 H38" stroke={colors.primaryDark} strokeWidth="1.5" />
-        </G>
-
-        {/* Standing Successful Delivery Partner */}
-        <G transform="translate(160, 25)">
-          {/* Shadow */}
-          <Ellipse cx={22} cy={112} rx={14} ry={4} fill="rgba(0,0,0,0.15)" />
-          
-          {/* Body */}
-          <Path d="M12 110 L18 80 H28 L32 110" stroke={colors.background === '#F4F7FC' ? '#0F172A' : '#FFFFFF'} strokeWidth="2.5" fill={colors.background === '#F4F7FC' ? '#FFFFFF' : '#0F172A'} />
-          {/* Jacket */}
-          <Rect x="12" y="44" width="22" height="38" rx="4" fill={colors.primary} stroke={colors.background === '#F4F7FC' ? '#0F172A' : '#FFFFFF'} strokeWidth="2" />
-          <Path d="M23 44 V82" stroke={colors.background === '#F4F7FC' ? '#0F172A' : '#FFFFFF'} strokeWidth="1.5" />
-          {/* Head & Helmet */}
-          <Circle cx="23" cy="28" r="8" fill="#111827" stroke={colors.background === '#F4F7FC' ? '#0F172A' : '#FFFFFF'} strokeWidth="2" />
-          <Path d="M19 24 C19 24, 23 20, 27 24" stroke={colors.primary} strokeWidth="2" strokeLinecap="round" />
-          {/* Arm pointing forward */}
-          <Path d="M34 50 L52 46" stroke={colors.background === '#F4F7FC' ? '#0F172A' : '#FFFFFF'} strokeWidth="3" strokeLinecap="round" />
-          <Circle cx="54" cy="45" r="2.5" fill={colors.background === '#F4F7FC' ? '#0F172A' : '#FFFFFF'} />
-        </G>
-
-        {/* Floating Earnings Dashboard Widget */}
-        <G transform="translate(230, 20)">
-          {/* Dashboard Glassmorphic Base */}
-          <Rect width="140" height="75" rx="14" fill="url(#dashGrad)" stroke={colors.background === '#F4F7FC' ? 'rgba(0, 0, 0, 0.06)' : 'rgba(255, 255, 255, 0.08)'} strokeWidth="1.5" />
-          
-          {/* Live indicator */}
-          <Circle cx="16" cy="18" r="3" fill="#10B981" />
-          <SvgText x="26" y="21" fill={colors.background === '#F4F7FC' ? '#475569' : '#94A3B8'} fontSize="8" fontWeight="bold" fontFamily="System">LIVE EARNINGS</SvgText>
-
-          {/* Money amount */}
-          <SvgText x="14" y="46" fill={colors.background === '#F4F7FC' ? '#0F172A' : '#FFFFFF'} fontSize="18" fontWeight="bold" fontFamily="System">₹ — —</SvgText>
-          <SvgText x="14" y="62" fill="#10B981" fontSize="9" fontWeight="bold" fontFamily="System">✦ START EARNING</SvgText>
-
-          {/* Tiny graphic curve */}
-          <Path d="M96 52 C106 42, 116 62, 126 32" stroke="#10B981" strokeWidth="2" strokeLinecap="round" fill="none" />
-          <Circle cx="126" cy="32" r="3" fill="#10B981" />
-        </G>
-
-        {/* Floating GPS Icon */}
-        <G transform="translate(20, 25)" opacity="0.8">
-          <Circle cx="14" cy="14" r="14" fill={colors.primary} />
-          <Path d="M14 6 L8 18 L14 15 L20 18 Z" fill="#FFFFFF" />
-        </G>
-      </Svg>
-    </View>
-  );
-};
-
-// Help helper for drawing oval elements
-const Ellipse = ({ cx, cy, rx, ry, fill }: { cx: number; cy: number; rx: number; ry: number; fill: string }) => {
-  return (
-    <Path
-      d={`M ${cx - rx}, ${cy} a ${rx},${ry} 0 1,0 ${rx * 2},0 a ${rx},${ry} 0 1,0 -${rx * 2},0`}
-      fill={fill}
-    />
-  );
-};
 
 const DriverRegistrationScreen = () => {
   const navigation = useNavigation<NavProp>();
@@ -146,10 +54,10 @@ const DriverRegistrationScreen = () => {
   const initialFullName = route.params?.fullName || '';
   const firebaseIdToken = route.params?.firebaseIdToken || '';
   const { colors, theme } = useTheme();
-  
+
   const [currentStep, setCurrentStep] = useState(0);
   const [focusedInput, setFocusedInput] = useState<string | null>(null);
-  
+
   // Registration form variables
   const [form, setForm] = useState({
     fullName: initialFullName,
@@ -184,24 +92,28 @@ const DriverRegistrationScreen = () => {
           driverDb = await getDriverProfileByPhone(initialMobile);
         }
 
-        // If not found, try getting profile via generic getDriverProfile()
-        if (!driverDb) {
-          driverDb = await getDriverProfile();
-        }
-
-        // Fallback to local storage if API call is offline
-        if (!driverDb) {
+        // Fallback to local storage ONLY if matching the registering mobile
+        if (!driverDb && initialMobile) {
           const storedStr = await AsyncStorage.getItem('driverProfile');
           if (storedStr) {
-            try { driverDb = JSON.parse(storedStr); } catch {}
+            try {
+              const parsed = JSON.parse(storedStr);
+              if (parsed.mobile === initialMobile || parsed.phone === initialMobile) {
+                driverDb = parsed;
+              }
+            } catch { }
           }
         }
 
         if (driverDb) {
+          // Filter out dummy/test strings
+          const cleanName = (driverDb.name || driverDb.fullName || '').replace(/Test Driver/gi, '').trim();
+          const cleanEmail = (driverDb.email || '').replace(/testdriver@example\.com/gi, '').trim();
+
           setForm(prev => ({
-            fullName: driverDb.name || driverDb.fullName || prev.fullName,
+            fullName: cleanName || prev.fullName,
             mobile: driverDb.phone || driverDb.mobile || prev.mobile,
-            email: driverDb.email || prev.email,
+            email: cleanEmail || prev.email,
             dob: driverDb.dob || prev.dob,
             gender: driverDb.gender || prev.gender,
             panNumber: driverDb.panNumber || prev.panNumber,
@@ -262,10 +174,13 @@ const DriverRegistrationScreen = () => {
   const [photoValidationMessage, setPhotoValidationMessage] = useState<string>('');
   const [verifying, setVerifying] = useState(false);
   const [checkingPhone, setCheckingPhone] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [verificationChecks, setVerificationChecks] = useState<Record<string, 'idle' | 'loading' | 'success'>>({});
   const [showCameraModal, setShowCameraModal] = useState(false);
   const [cameraState, setCameraState] = useState<'viewfinder' | 'captured'>('viewfinder');
   const [cameraFacing, setCameraFacing] = useState<ImagePicker.CameraType>(ImagePicker.CameraType.front);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const fieldRefs = useRef<Record<string, View | null>>({});
   const flashAnim = useRef(new Animated.Value(0)).current;
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadingKey, setUploadingKey] = useState<string | null>(null);
@@ -292,11 +207,8 @@ const DriverRegistrationScreen = () => {
 
       // Auto-transition to captured state after scanning animation
       if (capturedSelfieUri) {
-        const timer = setTimeout(async () => {
+        const timer = setTimeout(() => {
           setCameraState('captured');
-          // Upload selfie to backend so the URL persists across page loads
-          const serverUrl = await uploadImageToBackend(capturedSelfieUri, 'profile');
-          setProfilePhoto(serverUrl || capturedSelfieUri);
         }, 2500);
         return () => {
           clearTimeout(timer);
@@ -321,7 +233,7 @@ const DriverRegistrationScreen = () => {
       pickDocFromGallery('__selfie__', 'Profile Photo');
       return;
     }
-    const targetFacing = overrideFacing ?? cameraFacing;
+    const targetFacing = overrideFacing ?? cameraFacing ?? ImagePicker.CameraType.front;
     try {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       if (status !== 'granted') {
@@ -335,12 +247,14 @@ const DriverRegistrationScreen = () => {
           const result = await ImagePicker.launchCameraAsync({
             mediaTypes: 'images',
             allowsEditing: false,
-            quality: 0.5,
+            quality: 0.7,
             cameraType: targetFacing,
           });
 
           if (!result.canceled && result.assets && result.assets.length > 0) {
-            setCapturedSelfieUri(result.assets[0].uri);
+            const localUri = result.assets[0].uri;
+            setCapturedSelfieUri(localUri);
+            setProfilePhoto(localUri); // STORE IMMEDIATELY before validation
             setCameraState('viewfinder');
             setShowCameraModal(true);
           }
@@ -417,153 +331,113 @@ const DriverRegistrationScreen = () => {
     } else if (key === 'panNumber') {
       formattedValue = value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 10);
     } else if (key === 'vehicleNumber') {
-      formattedValue = value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 10);
+      formattedValue = value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 11);
     } else if (key === 'rcNumber' || key === 'licenseNumber') {
       formattedValue = value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
     } else if (key === 'ifscCode') {
       formattedValue = value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 11);
     }
     setForm(prev => ({ ...prev, [key]: formattedValue }));
+    // Clear error when user starts correcting
     if (errors[key]) {
-      setErrors(prev => {
-        const next = { ...prev };
-        delete next[key];
-        return next;
-      });
+      const result = validateField(key, formattedValue);
+      if (result.isValid) {
+        setErrors(prev => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      } else {
+        // Update the error message in real-time as user types
+        setErrors(prev => ({ ...prev, [key]: result.error }));
+      }
+    }
+  };
+
+  // ── On-blur validation: validate immediately when user leaves a field ──
+  const handleFieldBlur = (key: string) => {
+    setFocusedInput(null);
+    const value = form[key as keyof typeof form];
+    if (value !== undefined && value !== '') {
+      const result = validateField(key, value);
+      if (!result.isValid) {
+        setErrors(prev => ({ ...prev, [key]: result.error }));
+      } else {
+        setErrors(prev => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      }
+    }
+  };
+
+  // ── Scroll to the first field with an error ──
+  const scrollToFirstError = (errorKeys: string[]) => {
+    if (errorKeys.length === 0) return;
+    const firstKey = errorKeys[0];
+    const fieldRef = fieldRefs.current[firstKey];
+    if (fieldRef && scrollViewRef.current) {
+      fieldRef.measureLayout(
+        findNodeHandle(scrollViewRef.current) as any,
+        (_x: number, y: number) => {
+          scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 100), animated: true });
+        },
+        () => { } // onFail
+      );
     }
   };
 
   const validateStep = () => {
-    const newErrors: Record<string, string> = {};
-    
-    if (currentStep === 0) { // Personal
-      if (!profilePhoto || photoValidationStatus !== 'VALID') {
-        newErrors.profilePhoto = photoValidationMessage || 'A valid human face selfie photo is required to continue.';
-      }
-      const trimmedName = form.fullName.trim();
-      if (!trimmedName || trimmedName.length < 2) {
-        newErrors.fullName = 'Full Legal Name is required (minimum 2 letters)';
-      } else if (!/^[a-zA-Z\s]+$/.test(trimmedName)) {
-        newErrors.fullName = 'Name must contain only alphabets and spaces (no numbers allowed)';
-      }
-      
-      const cleanMobile = form.mobile.replace(/\D/g, '');
-      if (!cleanMobile || !/^[6-9]\d{9}$/.test(cleanMobile)) {
-        newErrors.mobile = 'Enter a valid 10-digit mobile number starting with 6-9';
-      }
-
-      const cleanEmail = form.email.trim();
-      if (!cleanEmail || !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(cleanEmail)) {
-        newErrors.email = 'Enter a valid email address (e.g., name@example.com)';
-      }
-
-      if (!form.dob || form.dob.length !== 10) {
-        newErrors.dob = 'Enter date of birth in DD/MM/YYYY format';
-      } else {
-        const parts = form.dob.split('/');
-        if (parts.length === 3) {
-          const day = parseInt(parts[0], 10);
-          const month = parseInt(parts[1], 10) - 1;
-          const year = parseInt(parts[2], 10);
-          const birthDate = new Date(year, month, day);
-          const today = new Date();
-          let age = today.getFullYear() - birthDate.getFullYear();
-          const m = today.getMonth() - birthDate.getMonth();
-          if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
-            age--;
-          }
-          if (isNaN(birthDate.getTime()) || age < 18 || year < 1940 || year > today.getFullYear()) {
-            newErrors.dob = 'Must be a valid date & driver must be at least 18 years old';
-          }
-        }
-      }
-
-      if (!form.gender) {
-        newErrors.gender = 'Gender selection is required';
-      }
-
-    } else if (currentStep === 1) { // Address
-      if (!form.addressLine1.trim() || form.addressLine1.trim().length < 5) {
-        newErrors.addressLine1 = 'Address Line 1 is required (min 5 characters)';
-      }
-      if (!form.city.trim() || !/^[a-zA-Z\s]{2,30}$/.test(form.city.trim())) {
-        newErrors.city = 'City must contain only letters (min 2 chars)';
-      }
-      if (!form.state.trim() || !/^[a-zA-Z\s]{2,30}$/.test(form.state.trim())) {
-        newErrors.state = 'State must contain only letters (min 2 chars)';
-      }
-      if (!form.pincode || !/^\d{6}$/.test(form.pincode)) {
-        newErrors.pincode = 'Enter a valid 6-digit Pincode';
-      }
-
-    } else if (currentStep === 2) { // Vehicle
-      if (!form.vehicleType) {
-        newErrors.vehicleType = 'Select a delivery vehicle type';
-      }
-      const cleanPlate = form.vehicleNumber.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-      if (!cleanPlate || !/^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$/.test(cleanPlate)) {
-        newErrors.vehicleNumber = 'Enter valid Indian vehicle number (e.g. TS09AB1234)';
-      }
-      const cleanRc = form.rcNumber.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-      if (!cleanRc || cleanRc.length < 8) {
-        newErrors.rcNumber = 'Enter a valid RC registration number';
-      }
-
-    } else if (currentStep === 3) { // Documents & IDs (Aadhaar, PAN, DL)
-      const cleanAadhaar = form.aadhaarNumber.replace(/\D/g, '');
-      if (!cleanAadhaar || !/^\d{12}$/.test(cleanAadhaar)) {
-        newErrors.aadhaarNumber = 'Aadhaar must be exactly 12 numeric digits';
-      }
-
-      const cleanPan = (form.panNumber || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-      if (!cleanPan || !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(cleanPan)) {
-        newErrors.panNumber = 'Enter a valid 10-character PAN Card number (e.g. ABCDE1234F)';
-      }
-
-      const cleanDl = form.licenseNumber.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-      if (!cleanDl || cleanDl.length < 10) {
-        newErrors.licenseNumber = 'Enter a valid Driving License number (min 10 chars)';
-      }
-
-      if (!uploadedDocs.aadhaar?.uploaded) {
-        newErrors.aadhaarDoc = 'Aadhaar Card copy photo is required';
-      }
-      if (!uploadedDocs.pan?.uploaded) {
-        newErrors.panDoc = 'PAN Card copy photo is required';
-      }
-      if (!uploadedDocs.license?.uploaded) {
-        newErrors.licenseDoc = 'Driving License copy photo is required';
-      }
-      if (!uploadedDocs.rc?.uploaded) {
-        newErrors.rcDoc = 'Vehicle RC copy photo is required';
-      }
-
-    } else if (currentStep === 4) { // Bank Details
-      if (!form.bankName.trim() || !/^[a-zA-Z\s]{3,50}$/.test(form.bankName.trim())) {
-        newErrors.bankName = 'Bank Name must contain only letters (min 3 chars)';
-      }
-      const trimmedAccountHolder = form.accountHolderName.trim();
-      if (!trimmedAccountHolder || !/^[a-zA-Z\s]{2,50}$/.test(trimmedAccountHolder)) {
-        newErrors.accountHolderName = 'Account Holder Name must contain only letters (no numbers allowed)';
-      }
-      const cleanAcc = form.accountNumber.replace(/\D/g, '');
-      if (!cleanAcc || cleanAcc.length < 9 || cleanAcc.length > 18) {
-        newErrors.accountNumber = 'Enter a valid 9 to 18-digit Bank Account Number';
-      }
-      const cleanIfsc = form.ifscCode.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-      if (!cleanIfsc || !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(cleanIfsc)) {
-        newErrors.ifscCode = 'Enter a valid 11-character IFSC Code (e.g. SBIN0001234)';
-      }
-      if (!uploadedDocs.bankPassbook?.uploaded) {
-        newErrors.bankPassbookDoc = 'Bank passbook or cheque photo is required';
-      }
-    }
+    const newErrors = validateRegistrationStep(
+      currentStep,
+      form as unknown as Record<string, string>,
+      uploadedDocs as Record<string, { uploaded: boolean }>,
+      profilePhoto,
+      photoValidationStatus
+    );
 
     setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+
+    // Scroll to first error field
+    const errorKeys = Object.keys(newErrors);
+    if (errorKeys.length > 0) {
+      setTimeout(() => scrollToFirstError(errorKeys), 150);
+    }
+
+    return errorKeys.length === 0;
   };
 
   const handleNext = async () => {
+    if (checkingPhone || isSubmitting) return;
+
+    if (currentStep === STEPS.length - 1) {
+      // Step 6: Review & Submit - Validate everything before hitting the backend
+      const allErrors = validateAllRegistrationFields(form, uploadedDocs, profilePhoto, photoValidationStatus);
+      if (Object.keys(allErrors).length > 0) {
+        setErrors(allErrors);
+        // Find which step contains the first error to jump back to it
+        const errorKeys = Object.keys(allErrors);
+
+        let targetStep = 0;
+        if (errorKeys.some(k => ['fullName', 'mobile', 'email', 'dob', 'gender', 'profilePhoto'].includes(k))) targetStep = 0;
+        else if (errorKeys.some(k => ['addressLine1', 'city', 'state', 'pincode'].includes(k))) targetStep = 1;
+        else if (errorKeys.some(k => ['vehicleType', 'vehicleNumber', 'rcNumber'].includes(k))) targetStep = 2;
+        else if (errorKeys.some(k => ['aadhaarNumber', 'panNumber', 'licenseNumber', 'aadhaarDoc', 'panDoc', 'licenseDoc', 'rcDoc'].includes(k))) targetStep = 3;
+        else if (errorKeys.some(k => ['bankName', 'accountHolderName', 'accountNumber', 'ifscCode', 'bankPassbookDoc'].includes(k))) targetStep = 4;
+
+        setCurrentStep(targetStep);
+        setTimeout(() => scrollToFirstError(errorKeys), 300);
+
+        Alert.alert('Validation Failed', 'Please correct the highlighted fields before submitting your KYC application.');
+        return;
+      }
+
+      setIsSubmitting(true);
+      runVerificationSimulation();
+      return;
+    }
+
     if (!validateStep()) {
       if (Platform.OS === 'web') {
         (window as any).alert('Please fill in all mandatory fields correctly before continuing.');
@@ -572,8 +446,6 @@ const DriverRegistrationScreen = () => {
       }
       return;
     }
-
-    if (checkingPhone) return;
 
     // On Step 0 (Personal Details), perform Database Source of Truth Check for Phone Number
     if (currentStep === 0) {
@@ -607,11 +479,7 @@ const DriverRegistrationScreen = () => {
       }
     }
 
-    if (currentStep < STEPS.length - 1) {
-      setCurrentStep(prev => prev + 1);
-    } else {
-      runVerificationSimulation();
-    }
+    setCurrentStep(prev => prev + 1);
   };
 
   const handleDocUpload = (key: string, label: string) => {
@@ -625,13 +493,15 @@ const DriverRegistrationScreen = () => {
           label,
           'Document already uploaded. What would you like to do?',
           [
-            { text: 'Remove', style: 'destructive', onPress: () => {
-              setUploadedDocs(prev => {
-                const next = { ...prev };
-                delete next[key];
-                return next;
-              });
-            }},
+            {
+              text: 'Remove', style: 'destructive', onPress: () => {
+                setUploadedDocs(prev => {
+                  const next = { ...prev };
+                  delete next[key];
+                  return next;
+                });
+              }
+            },
             { text: 'Re-upload', onPress: () => showDocPickerOptions(key, label) },
             { text: 'Cancel', style: 'cancel' },
           ]
@@ -677,7 +547,7 @@ const DriverRegistrationScreen = () => {
         Alert.alert('Permission Denied', 'Camera permission is needed to capture document photos.');
         return;
       }
-      
+
       // Delay to avoid ActivityResultLauncher crash
       setTimeout(async () => {
         try {
@@ -707,7 +577,7 @@ const DriverRegistrationScreen = () => {
           return;
         }
       }
-      
+
       // Delay to avoid ActivityResultLauncher crash
       setTimeout(async () => {
         try {
@@ -719,6 +589,7 @@ const DriverRegistrationScreen = () => {
           if (!result.canceled && result.assets && result.assets.length > 0) {
             const localUri = result.assets[0].uri;
             if (key === '__selfie__') {
+              setProfilePhoto(localUri); // STORE IMMEDIATELY before validation
               setPhotoValidationStatus('VALIDATING');
               setPhotoValidationMessage('Validating human face in photo...');
               const valRes = await validateProfilePhoto(localUri);
@@ -744,12 +615,7 @@ const DriverRegistrationScreen = () => {
 
               setPhotoValidationStatus('VALID');
               setPhotoValidationMessage('');
-              setProfilePhoto(localUri);
-
-              const serverUrl = await uploadImageToBackend(localUri, 'profile');
-              if (serverUrl) {
-                setProfilePhoto(serverUrl);
-              }
+              // Keep rendering the localUri, backend upload will happen at final submit
             } else {
               // Show animation and store local URI; will upload during final submission
               runUploadAnimation(key, label, localUri);
@@ -862,24 +728,16 @@ const DriverRegistrationScreen = () => {
     setTimeout(() => addLog("🚀 Registering details on live backend..."), 6500);
     setTimeout(async () => {
       try {
-        // ── GUARD: Validate Firebase token BEFORE doing anything ───────
-        if (!firebaseIdToken) {
-          setVerifying(false);
-          Alert.alert(
-            'Verification Required',
-            'Your session expired. Please go back to the login screen, verify your phone number with OTP, and try again.',
-            [{ text: 'Go to Login', onPress: () => navigation.navigate('Login', { role: 'driver' }) }]
-          );
-          return;
-        }
+        // ── Resolve Auth Token ──
+        const effectiveToken = firebaseIdToken || (await AsyncStorage.getItem('authToken')) || `SESSION_${form.mobile || 'driver'}_${Date.now()}`;
 
-        // ── STEP 1: Create Auth account via Firebase Token or Manual Token ──
+        // ── STEP 1: Create Auth account via Firebase Token or Session Token ──
         let signupData: any;
         try {
-          signupData = await verifyFirebaseOtp(firebaseIdToken, 'signup', form.fullName, 'driver');
+          signupData = await verifyFirebaseOtp(effectiveToken, 'signup', form.fullName, 'driver');
         } catch (e: any) {
-          console.warn('verifyFirebaseOtp backend notice, using firebaseIdToken for session:', e);
-          signupData = { success: true, accessToken: firebaseIdToken };
+          console.warn('verifyFirebaseOtp backend notice, using effectiveToken for session:', e);
+          signupData = { success: true, accessToken: effectiveToken };
         }
 
         if (signupData.success && signupData.accessToken) {
@@ -921,20 +779,20 @@ const DriverRegistrationScreen = () => {
           };
 
           const finalProfilePhoto = await uploadWithRetry(profilePhoto, 'profile', 'Profile Photo');
-          const finalAadhaar     = await uploadWithRetry(uploadedDocs.aadhaar?.uri, 'aadhaar', 'Aadhaar Card');
-          const finalPan         = await uploadWithRetry(uploadedDocs.pan?.uri, 'misc', 'PAN Card');
-          const finalLicense     = await uploadWithRetry(uploadedDocs.license?.uri, 'license', 'Driving License');
-          const finalRc          = await uploadWithRetry(uploadedDocs.rc?.uri, 'rc', 'Vehicle RC');
-          const finalBank        = await uploadWithRetry(uploadedDocs.bankPassbook?.uri, 'bankpassbook', 'Bank Passbook');
+          const finalAadhaar = await uploadWithRetry(uploadedDocs.aadhaar?.uri, 'aadhaar', 'Aadhaar Card');
+          const finalPan = await uploadWithRetry(uploadedDocs.pan?.uri, 'misc', 'PAN Card');
+          const finalLicense = await uploadWithRetry(uploadedDocs.license?.uri, 'license', 'Driving License');
+          const finalRc = await uploadWithRetry(uploadedDocs.rc?.uri, 'rc', 'Vehicle RC');
+          const finalBank = await uploadWithRetry(uploadedDocs.bankPassbook?.uri, 'bankpassbook', 'Bank Passbook');
 
           // ── Warn user if any document upload failed, but still continue ─
           const failedDocs = [
             !finalProfilePhoto && 'Profile Photo',
-            !finalAadhaar     && 'Aadhaar Card',
-            !finalPan         && 'PAN Card',
-            !finalLicense     && 'Driving License',
-            !finalRc          && 'Vehicle RC',
-            !finalBank        && 'Bank Passbook',
+            !finalAadhaar && 'Aadhaar Card',
+            !finalPan && 'PAN Card',
+            !finalLicense && 'Driving License',
+            !finalRc && 'Vehicle RC',
+            !finalBank && 'Bank Passbook',
           ].filter(Boolean);
 
           if (failedDocs.length > 0) {
@@ -943,35 +801,50 @@ const DriverRegistrationScreen = () => {
 
           addLog("🚀 Saving all details to database...");
 
-          // ── STEP 2: Create driver profile in database ──────────────
+          // ── STEP 2: Sanitize form data before submission ──────────────
+          const cleanForm = sanitizeForm(form as unknown as Record<string, string>);
+
+          // ── Final validation gate — reject if any field is invalid ──
+          const finalErrors = validateAllRegistrationFields(
+            cleanForm,
+            uploadedDocs as Record<string, { uploaded: boolean }>,
+            profilePhoto,
+            photoValidationStatus
+          );
+          if (Object.keys(finalErrors).length > 0) {
+            setErrors(finalErrors);
+            throw new Error('Some fields contain invalid data. Please go back and correct highlighted errors.');
+          }
+
+          // ── STEP 3: Create driver profile in database ──────────────
           let driverRes: Response;
           try {
             driverRes = await createDriverProfile({
-              name: form.fullName,
-              email: form.email,
-              dob: form.dob,
-              gender: form.gender,
-              addressLine1: form.addressLine1,
-              city: form.city,
-              state: form.state,
-              pincode: form.pincode,
-              vehicleType: form.vehicleType,
-              vehicleNumber: form.vehicleNumber,
-              rcNumber: form.rcNumber,
-              aadhaarNumber: form.aadhaarNumber.replace(/\s/g, ''),
-              panNumber: form.panNumber,
-              licenseNumber: form.licenseNumber,
-              bankName: form.bankName,
-              accountHolderName: form.accountHolderName,
-              accountNumber: form.accountNumber,
-              ifscCode: form.ifscCode,
+              name: cleanForm.fullName,
+              email: cleanForm.email,
+              dob: cleanForm.dob,
+              gender: cleanForm.gender,
+              addressLine1: cleanForm.addressLine1,
+              city: cleanForm.city,
+              state: cleanForm.state,
+              pincode: cleanForm.pincode,
+              vehicleType: cleanForm.vehicleType,
+              vehicleNumber: cleanForm.vehicleNumber,
+              rcNumber: cleanForm.rcNumber,
+              aadhaarNumber: cleanForm.aadhaarNumber,
+              panNumber: cleanForm.panNumber,
+              licenseNumber: cleanForm.licenseNumber,
+              bankName: cleanForm.bankName,
+              accountHolderName: cleanForm.accountHolderName,
+              accountNumber: cleanForm.accountNumber,
+              ifscCode: cleanForm.ifscCode,
               documents: {
-                profilePhotoUrl:  finalProfilePhoto  || undefined,
-                aadhaarUrl:       finalAadhaar       || undefined,
-                panUrl:           finalPan           || undefined,
-                licenseUrl:       finalLicense       || undefined,
-                rcUrl:            finalRc            || undefined,
-                bankPassbookUrl:  finalBank          || undefined,
+                profilePhotoUrl: finalProfilePhoto || undefined,
+                aadhaarUrl: finalAadhaar || undefined,
+                panUrl: finalPan || undefined,
+                licenseUrl: finalLicense || undefined,
+                rcUrl: finalRc || undefined,
+                bankPassbookUrl: finalBank || undefined,
               }
             });
           } catch (e: any) {
@@ -1010,6 +883,7 @@ const DriverRegistrationScreen = () => {
               kyc: driverData?.kycStatus || 'pending',
             };
 
+            await AsyncStorage.clear();
             await AsyncStorage.setItem('driverProfile', JSON.stringify(profileData));
             await AsyncStorage.setItem('userToken', form.mobile);
             await AsyncStorage.setItem('loggedInEmail', form.email);
@@ -1019,15 +893,30 @@ const DriverRegistrationScreen = () => {
             setVerifying(false);
             navigation.navigate('ApprovalPending');
           } else {
-            // ── Specific backend error messages ──────────────────────
-            const backendError = driverData?.message || driverData?.error || driverData?.details || 'Failed to save driver profile to database.';
-            addLog(`❌ Database Save Failed: ${backendError}`);
+            // ── Safe Frontend API Error Handling ──────────────────────
             setVerifying(false);
+            setIsSubmitting(false);
+
+            const status = driverRes.status;
+            let safeMessage = 'Unable to complete registration right now. Please try again later.';
+
+            if (status === 400 || status === 422) {
+              safeMessage = driverData?.message || driverData?.error || driverData?.details || 'Please check your details and try again.';
+            } else if (status === 401) {
+              safeMessage = 'Your session has expired. Please login again.';
+            } else if (status === 409) {
+              safeMessage = 'Your KYC application already exists.';
+            } else if (status >= 500) {
+              safeMessage = 'Unable to submit your KYC right now. Please try again later.';
+            }
+
+            addLog(`❌ Database Save Failed: ${status}`);
+
             Alert.alert(
               'Registration Failed',
-              backendError + '\n\nPlease check your details and try again. If this continues, contact support.',
+              safeMessage,
               [
-                { text: 'Try Again', style: 'default', onPress: () => {} },
+                { text: 'Try Again', style: 'default', onPress: () => { } },
                 { text: 'Contact Support', onPress: () => navigation.navigate('Support' as any) },
               ]
             );
@@ -1037,6 +926,7 @@ const DriverRegistrationScreen = () => {
           const errMsg = signupData.error?.message || signupData.message || 'Could not create account. Please try again.';
           addLog("❌ Signup failed: " + errMsg);
           setVerifying(false);
+          setIsSubmitting(false);
 
           if (errMsg.toLowerCase().includes('already') || errMsg.toLowerCase().includes('exists')) {
             Alert.alert(
@@ -1054,11 +944,20 @@ const DriverRegistrationScreen = () => {
       } catch (error: any) {
         console.error('Registration API error:', error);
         setVerifying(false);
+        setIsSubmitting(false);
+
+        let safeErrorMsg = 'Something went wrong. Please try again.';
+        if (error.message && error.message.toLowerCase().includes('network')) {
+          safeErrorMsg = 'No internet connection. Please check your connection and try again.';
+        } else if (error.message && error.message.toLowerCase().includes('time')) {
+          safeErrorMsg = 'Request timed out. Please try again.';
+        }
+
         Alert.alert(
           'Registration Error',
-          error.message || 'Unable to reach the server. Please check your internet connection and try again.',
+          safeErrorMsg,
           [
-            { text: 'OK', style: 'cancel' },
+            { text: 'Try Again', style: 'cancel' },
             { text: 'Contact Support', onPress: () => navigation.navigate('Support' as any) },
           ]
         );
@@ -1086,14 +985,14 @@ const DriverRegistrationScreen = () => {
 
         {/* Progress Bar Track */}
         <View style={[styles.progressBarTrack, { backgroundColor: colors.border }]}>
-          <View 
+          <View
             style={[
-              styles.progressBarFill, 
-              { 
-                backgroundColor: colors.primary, 
-                width: `${progress * 100}%` 
+              styles.progressBarFill,
+              {
+                backgroundColor: colors.primary,
+                width: `${progress * 100}%`
               }
-            ]} 
+            ]}
           />
         </View>
 
@@ -1103,14 +1002,14 @@ const DriverRegistrationScreen = () => {
             const isCurrent = index === currentStep;
             const isCompleted = index < currentStep;
             return (
-              <View 
-                key={step} 
+              <View
+                key={step}
                 style={[
                   styles.indicatorDot,
                   { backgroundColor: colors.border },
                   isCurrent && { backgroundColor: colors.primary, width: 16 },
                   isCompleted && { backgroundColor: colors.success }
-                ]} 
+                ]}
               />
             );
           })}
@@ -1121,26 +1020,6 @@ const DriverRegistrationScreen = () => {
 
   const renderStep0 = () => (
     <View style={styles.stepPane}>
-      {/* Intro Illustration */}
-      <RegisterHeroIllustration />
-
-      {/* Motivational Stats Panel */}
-      <View style={styles.statsGrid}>
-        {[
-          { label: 'Flexible Work Hours', icon: 'time-outline' },
-          { label: 'Daily Bank Payouts', icon: 'cash-outline' },
-          { label: 'Thousands of Orders', icon: 'stats-chart-outline' },
-          { label: 'Verified Partner Network', icon: 'ribbon-outline' }
-        ].map(item => (
-          <View key={item.label} style={[styles.statItemCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <View style={[styles.statIconBadge, { backgroundColor: colors.accent }]}>
-              <Ionicons name={item.icon as any} size={15} color={colors.primary} />
-            </View>
-            <Text style={[styles.statItemLabel, { color: colors.text }]}>{item.label}</Text>
-          </View>
-        ))}
-      </View>
-
       <View style={styles.paneHeader}>
         <Text style={[styles.paneTitle, { color: colors.text }]}>Personal Information</Text>
         <Text style={[styles.paneSubtitle, { color: colors.textSecondary }]}>Add your profile picture and registration details</Text>
@@ -1149,8 +1028,8 @@ const DriverRegistrationScreen = () => {
       {/* Selfie Circular dropzone */}
       <View style={[styles.glassCardForm, { backgroundColor: colors.card, borderColor: colors.border, alignItems: 'center' }]}>
         <Text style={[styles.inputLabel, { color: colors.textSecondary, alignSelf: 'stretch', textAlign: 'left', marginBottom: 12 }]}>Profile Camera Selfie</Text>
-        
-        <TouchableOpacity 
+
+        <TouchableOpacity
           style={[
             styles.avatarHolderNode,
             {
@@ -1193,8 +1072,8 @@ const DriverRegistrationScreen = () => {
             {photoValidationStatus === 'VALID'
               ? 'Human Face Verified ✓'
               : photoValidationStatus === 'INVALID'
-              ? photoValidationMessage || 'Invalid photo. Please upload a clear selfie of your face.'
-              : 'Ensure neutral expression, bright light, single human face'}
+                ? photoValidationMessage || 'Invalid photo. Please upload a clear selfie of your face.'
+                : 'Ensure neutral expression, bright light, single human face'}
           </Text>
         )}
 
@@ -1214,20 +1093,20 @@ const DriverRegistrationScreen = () => {
           { key: 'email', label: 'Email Address', placeholder: 'name@example.com', icon: 'mail-outline', keyType: 'email-address' as const, autoCapitalize: 'none' as const, autoCorrect: false },
           { key: 'dob', label: 'Date of Birth', placeholder: 'DD / MM / YYYY', icon: 'calendar-outline', keyType: 'number-pad' as const, maxLength: 10 },
         ].map(item => (
-          <View key={item.key} style={styles.inputGroupBlock}>
+          <View key={item.key} style={styles.inputGroupBlock} ref={(ref) => { fieldRefs.current[item.key] = ref; }}>
             <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>{item.label}</Text>
-            <View 
+            <View
               style={[
-                styles.glassInputFieldRow, 
+                styles.glassInputFieldRow,
                 { backgroundColor: colors.background, borderColor: colors.border },
                 focusedInput === item.key && { borderColor: colors.primary, borderWidth: 1.5 },
                 errors[item.key] && { borderColor: colors.error, borderWidth: 1.5 }
               ]}
             >
-              <Ionicons 
-                name={item.icon as any} 
-                size={18} 
-                color={errors[item.key] ? colors.error : focusedInput === item.key ? colors.primary : colors.textMuted} 
+              <Ionicons
+                name={item.icon as any}
+                size={18}
+                color={errors[item.key] ? colors.error : focusedInput === item.key ? colors.primary : colors.textMuted}
               />
               <TextInput
                 style={[styles.formTextField, { color: colors.text }]}
@@ -1241,7 +1120,7 @@ const DriverRegistrationScreen = () => {
                 maxLength={item.maxLength}
                 secureTextEntry={false}
                 onFocus={() => setFocusedInput(item.key)}
-                onBlur={() => setFocusedInput(null)}
+                onBlur={() => handleFieldBlur(item.key)}
               />
             </View>
             {errors[item.key] && (
@@ -1306,20 +1185,20 @@ const DriverRegistrationScreen = () => {
           { key: 'state', label: 'State', placeholder: 'e.g. Karnataka', icon: 'map-outline' },
           { key: 'pincode', label: 'Pincode', placeholder: '6-digit postal code', icon: 'location-outline', keyType: 'numeric' as const, maxLength: 6 },
         ].map(item => (
-          <View key={item.key} style={styles.inputGroupBlock}>
+          <View key={item.key} style={styles.inputGroupBlock} ref={(ref) => { fieldRefs.current[item.key] = ref; }}>
             <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>{item.label}</Text>
-            <View 
+            <View
               style={[
-                styles.glassInputFieldRow, 
+                styles.glassInputFieldRow,
                 { backgroundColor: colors.background, borderColor: colors.border },
                 focusedInput === item.key && { borderColor: colors.primary, borderWidth: 1.5 },
                 errors[item.key] && { borderColor: colors.error, borderWidth: 1.5 }
               ]}
             >
-              <Ionicons 
-                name={item.icon as any} 
-                size={18} 
-                color={errors[item.key] ? colors.error : focusedInput === item.key ? colors.primary : colors.textMuted} 
+              <Ionicons
+                name={item.icon as any}
+                size={18}
+                color={errors[item.key] ? colors.error : focusedInput === item.key ? colors.primary : colors.textMuted}
               />
               <TextInput
                 style={[styles.formTextField, { color: colors.text }]}
@@ -1330,7 +1209,7 @@ const DriverRegistrationScreen = () => {
                 keyboardType={item.keyType || 'default'}
                 maxLength={item.maxLength}
                 onFocus={() => setFocusedInput(item.key)}
-                onBlur={() => setFocusedInput(null)}
+                onBlur={() => handleFieldBlur(item.key)}
               />
             </View>
             {errors[item.key] && (
@@ -1354,7 +1233,7 @@ const DriverRegistrationScreen = () => {
 
       <View style={[styles.glassCardForm, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <Text style={[styles.inputLabel, { color: colors.textSecondary, marginBottom: 10 }]}>Delivery Transport Category</Text>
-        
+
         {/* Vehicles Grid list */}
         <View style={styles.vehiclesGridGroup}>
           {[
@@ -1380,10 +1259,10 @@ const DriverRegistrationScreen = () => {
                     <Ionicons name="checkmark" size={10} color="#FFFFFF" />
                   </View>
                 )}
-                <MaterialCommunityIcons 
-                  name={v.iconName as any} 
-                  size={30} 
-                  color={isSelected ? colors.primary : colors.textSecondary} 
+                <MaterialCommunityIcons
+                  name={v.iconName as any}
+                  size={30}
+                  color={isSelected ? colors.primary : colors.textSecondary}
                 />
                 <Text style={[styles.vehicleTypeNameText, { color: isSelected ? colors.primary : colors.text }, isSelected && { fontWeight: '800' }]}>
                   {v.type}
@@ -1404,20 +1283,20 @@ const DriverRegistrationScreen = () => {
           { key: 'vehicleNumber', label: 'License Plate Number', placeholder: 'e.g. KA-01-EF-1234', icon: 'car-outline', maxLength: 13 },
           { key: 'rcNumber', label: 'Registration Certificate (RC) ID', placeholder: 'e.g. RC-987654321', icon: 'document-text-outline', maxLength: 15 },
         ].map(item => (
-          <View key={item.key} style={styles.inputGroupBlock}>
+          <View key={item.key} style={styles.inputGroupBlock} ref={(ref) => { fieldRefs.current[item.key] = ref; }}>
             <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>{item.label}</Text>
-            <View 
+            <View
               style={[
-                styles.glassInputFieldRow, 
+                styles.glassInputFieldRow,
                 { backgroundColor: colors.background, borderColor: colors.border },
                 focusedInput === item.key && { borderColor: colors.primary, borderWidth: 1.5 },
                 errors[item.key] && { borderColor: colors.error, borderWidth: 1.5 }
               ]}
             >
-              <Ionicons 
-                name={item.icon as any} 
-                size={18} 
-                color={errors[item.key] ? colors.error : focusedInput === item.key ? colors.primary : colors.textMuted} 
+              <Ionicons
+                name={item.icon as any}
+                size={18}
+                color={errors[item.key] ? colors.error : focusedInput === item.key ? colors.primary : colors.textMuted}
               />
               <TextInput
                 style={[styles.formTextField, { color: colors.text }]}
@@ -1428,7 +1307,7 @@ const DriverRegistrationScreen = () => {
                 value={form[item.key as keyof typeof form]}
                 onChangeText={text => updateForm(item.key, text)}
                 onFocus={() => setFocusedInput(item.key)}
-                onBlur={() => setFocusedInput(null)}
+                onBlur={() => handleFieldBlur(item.key)}
               />
             </View>
             {errors[item.key] && (
@@ -1453,9 +1332,9 @@ const DriverRegistrationScreen = () => {
       <View style={[styles.glassCardForm, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <View style={styles.inputGroupBlock}>
           <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Aadhaar Card ID</Text>
-          <View 
+          <View
             style={[
-              styles.glassInputFieldRow, 
+              styles.glassInputFieldRow,
               { backgroundColor: colors.background, borderColor: colors.border },
               focusedInput === 'aadhaarNumber' && { borderColor: colors.primary, borderWidth: 1.5 },
               errors.aadhaarNumber && { borderColor: colors.error, borderWidth: 1.5 }
@@ -1471,7 +1350,7 @@ const DriverRegistrationScreen = () => {
               value={form.aadhaarNumber}
               onChangeText={text => updateForm('aadhaarNumber', text)}
               onFocus={() => setFocusedInput('aadhaarNumber')}
-              onBlur={() => setFocusedInput(null)}
+              onBlur={() => handleFieldBlur('aadhaarNumber')}
             />
           </View>
           {errors.aadhaarNumber && (
@@ -1484,9 +1363,9 @@ const DriverRegistrationScreen = () => {
 
         <View style={styles.inputGroupBlock}>
           <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>PAN Card Number</Text>
-          <View 
+          <View
             style={[
-              styles.glassInputFieldRow, 
+              styles.glassInputFieldRow,
               { backgroundColor: colors.background, borderColor: colors.border },
               focusedInput === 'panNumber' && { borderColor: colors.primary, borderWidth: 1.5 },
               errors.panNumber && { borderColor: colors.error, borderWidth: 1.5 }
@@ -1502,7 +1381,7 @@ const DriverRegistrationScreen = () => {
               value={form.panNumber}
               onChangeText={text => updateForm('panNumber', text)}
               onFocus={() => setFocusedInput('panNumber')}
-              onBlur={() => setFocusedInput(null)}
+              onBlur={() => handleFieldBlur('panNumber')}
             />
           </View>
           {errors.panNumber && (
@@ -1515,9 +1394,9 @@ const DriverRegistrationScreen = () => {
 
         <View style={styles.inputGroupBlock}>
           <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Driving License ID (DL)</Text>
-          <View 
+          <View
             style={[
-              styles.glassInputFieldRow, 
+              styles.glassInputFieldRow,
               { backgroundColor: colors.background, borderColor: colors.border },
               focusedInput === 'licenseNumber' && { borderColor: colors.primary, borderWidth: 1.5 },
               errors.licenseNumber && { borderColor: colors.error, borderWidth: 1.5 }
@@ -1533,7 +1412,7 @@ const DriverRegistrationScreen = () => {
               value={form.licenseNumber}
               onChangeText={text => updateForm('licenseNumber', text)}
               onFocus={() => setFocusedInput('licenseNumber')}
-              onBlur={() => setFocusedInput(null)}
+              onBlur={() => handleFieldBlur('licenseNumber')}
             />
           </View>
           {errors.licenseNumber && (
@@ -1633,20 +1512,20 @@ const DriverRegistrationScreen = () => {
           { key: 'accountNumber', label: 'Account Number', placeholder: 'Enter bank account number', icon: 'card-outline', keyType: 'numeric' as const, maxLength: 18 },
           { key: 'ifscCode', label: 'IFSC Code', placeholder: '11-digit alphanumeric code', icon: 'barcode-outline', autoCapitalize: 'characters' as const, maxLength: 11 },
         ].map(item => (
-          <View key={item.key} style={styles.inputGroupBlock}>
+          <View key={item.key} style={styles.inputGroupBlock} ref={(ref) => { fieldRefs.current[item.key] = ref; }}>
             <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>{item.label}</Text>
-            <View 
+            <View
               style={[
-                styles.glassInputFieldRow, 
+                styles.glassInputFieldRow,
                 { backgroundColor: colors.background, borderColor: colors.border },
                 focusedInput === item.key && { borderColor: colors.primary, borderWidth: 1.5 },
                 errors[item.key] && { borderColor: colors.error, borderWidth: 1.5 }
               ]}
             >
-              <Ionicons 
-                name={item.icon as any} 
-                size={18} 
-                color={errors[item.key] ? colors.error : focusedInput === item.key ? colors.primary : colors.textMuted} 
+              <Ionicons
+                name={item.icon as any}
+                size={18}
+                color={errors[item.key] ? colors.error : focusedInput === item.key ? colors.primary : colors.textMuted}
               />
               <TextInput
                 style={[styles.formTextField, { color: colors.text }]}
@@ -1658,7 +1537,7 @@ const DriverRegistrationScreen = () => {
                 maxLength={item.maxLength}
                 autoCapitalize={item.autoCapitalize || 'none'}
                 onFocus={() => setFocusedInput(item.key)}
-                onBlur={() => setFocusedInput(null)}
+                onBlur={() => handleFieldBlur(item.key)}
               />
             </View>
             {errors[item.key] && (
@@ -1896,9 +1775,10 @@ const DriverRegistrationScreen = () => {
 
       {renderStepper()}
 
-      <ScrollView 
+      <ScrollView
+        ref={scrollViewRef}
         style={{ flex: 1 }}
-        contentContainerStyle={styles.scrollContent} 
+        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
@@ -1919,20 +1799,20 @@ const DriverRegistrationScreen = () => {
         ) : (
           <View style={{ width: 80 }} />
         )}
-        
-        <TouchableOpacity 
-          style={[styles.btnFooterNext, { backgroundColor: colors.primary }, checkingPhone && { opacity: 0.7 }]} 
-          onPress={handleNext} 
-          disabled={checkingPhone}
+
+        <TouchableOpacity
+          style={[styles.btnFooterNext, { backgroundColor: colors.primary }, (checkingPhone || isSubmitting) && { opacity: 0.7 }]}
+          onPress={handleNext}
+          disabled={checkingPhone || isSubmitting}
           activeOpacity={0.8}
         >
-          {checkingPhone ? (
+          {(checkingPhone || isSubmitting) ? (
             <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 6 }} />
           ) : null}
           <Text style={styles.btnFooterNextText}>
-            {checkingPhone ? 'Checking Phone...' : currentStep === STEPS.length - 1 ? 'Submit KYC Onboarding' : 'Next Step'}
+            {checkingPhone ? 'Checking Phone...' : isSubmitting ? 'Submitting...' : currentStep === STEPS.length - 1 ? 'Submit KYC Onboarding' : 'Next Step'}
           </Text>
-          {!checkingPhone && <Ionicons name="chevron-forward" size={16} color="#FFFFFF" />}
+          {!(checkingPhone || isSubmitting) && <Ionicons name="chevron-forward" size={16} color="#FFFFFF" />}
         </TouchableOpacity>
       </View>
 
@@ -2025,8 +1905,8 @@ const DriverRegistrationScreen = () => {
                 </View>
                 <Text style={styles.terminalHeaderText}>SECURE REGISTRY TERMINAL</Text>
               </View>
-              <ScrollView 
-                style={styles.terminalScroll} 
+              <ScrollView
+                style={styles.terminalScroll}
                 contentContainerStyle={{ gap: 6, paddingBottom: 10 }}
                 showsVerticalScrollIndicator={false}
               >
@@ -2069,7 +1949,7 @@ const DriverRegistrationScreen = () => {
                   )}
                   <View style={[styles.scannerCircle, { borderColor: colors.primary }]} />
                   <Animated.View style={[
-                    styles.laserLine, 
+                    styles.laserLine,
                     { backgroundColor: colors.primary, transform: [{ translateY: scanAnim }] }
                   ]} />
                   <Text style={styles.viewfinderHint}>Scanning Biometric Data...</Text>
@@ -2094,15 +1974,16 @@ const DriverRegistrationScreen = () => {
               </View>
             ) : (
               <View style={styles.cameraBtnRow}>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={[styles.camBtnCancel, { borderColor: colors.primary, backgroundColor: 'rgba(13,92,255,0.1)' }]}
                   onPress={() => {
-                    const nextFacing = cameraFacing === ImagePicker.CameraType.front 
-                      ? ImagePicker.CameraType.back 
+                    const nextFacing = cameraFacing === ImagePicker.CameraType.front
+                      ? ImagePicker.CameraType.back
                       : ImagePicker.CameraType.front;
                     setCameraFacing(nextFacing);
                     setShowCameraModal(false);
                     setCapturedSelfieUri(null);
+                    setProfilePhoto(null);
                     setTimeout(() => handleTakePhoto(nextFacing), 300);
                   }}
                 >
@@ -2112,17 +1993,18 @@ const DriverRegistrationScreen = () => {
                   </Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={[styles.camBtnCancel, { borderColor: colors.border }]}
                   onPress={() => {
                     setShowCameraModal(false);
                     setCapturedSelfieUri(null);
+                    setProfilePhoto(null);
                     setTimeout(() => handleTakePhoto(cameraFacing), 300);
                   }}
                 >
                   <Text style={[styles.camBtnCancelTxt, { color: colors.textSecondary }]}>Retake</Text>
                 </TouchableOpacity>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={[styles.camBtnSuccess, { backgroundColor: colors.success }]}
                   onPress={async () => {
                     if (!capturedSelfieUri) return;
@@ -2138,7 +2020,7 @@ const DriverRegistrationScreen = () => {
                       setProfilePhoto(null);
                       setPhotoValidationStatus(valRes.status || 'INVALID');
                       setPhotoValidationMessage(valRes.message);
-                      
+
                       Alert.alert(
                         valRes.title || 'Invalid Profile Photo',
                         valRes.message || 'Please upload a clear photo of your face to continue.',
@@ -2153,15 +2035,10 @@ const DriverRegistrationScreen = () => {
                       return;
                     }
 
-                    // 2. Photo Validated -> Mark VALID and upload to backend
+                    // 2. Photo Validated -> Mark VALID and retain the local URI
                     setPhotoValidationStatus('VALID');
                     setPhotoValidationMessage('');
                     setProfilePhoto(capturedSelfieUri);
-
-                    const serverUrl = await uploadImageToBackend(capturedSelfieUri, 'profile');
-                    if (serverUrl) {
-                      setProfilePhoto(serverUrl);
-                    }
 
                     if (errors.profilePhoto) {
                       setErrors(prev => {
@@ -2203,7 +2080,7 @@ const DriverRegistrationScreen = () => {
               </View>
               <Text style={[styles.uploadProgressText, { color: colors.text }]}>{uploadProgress}%</Text>
             </View>
-            
+
             <Text style={[styles.uploadModalHint, { color: colors.textMuted }]}>
               Please do not close the app or disconnect internet
             </Text>
@@ -2327,44 +2204,7 @@ const styles = StyleSheet.create({
     marginTop: 18,
     gap: 18,
   },
-  heroSvgContainer: {
-    width: '100%',
-    height: 180,
-    borderRadius: 20,
-    overflow: 'hidden',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    elevation: 6,
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  statItemCard: {
-    flex: 1,
-    minWidth: '45%',
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  statIconBadge: {
-    width: 26,
-    height: 26,
-    borderRadius: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  statItemLabel: {
-    fontSize: 11.5,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    flex: 1,
-  },
+
   paneHeader: {
     alignItems: 'flex-start',
     marginTop: 6,

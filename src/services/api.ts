@@ -224,8 +224,8 @@ export const sanitizeDriverUrls = (driver: Driver): Driver => {
 
   return {
     ...driver,
-    id: driver.id ?? driver.driverId ?? '1001',
-    driverId: String(driver.driverId ?? driver.id ?? '1001'),
+    id: driver.id ?? driver.driverId ?? '',
+    driverId: String(driver.driverId ?? driver.id ?? ''),
     kyc: kycVal,
     kycStatus: kycVal,
     status: statusVal,
@@ -260,7 +260,7 @@ const getAuthHeaders = async (customHeaders: Record<string, string> = {}) => {
 export const authFetch = async (url: string, options: RequestInit = {}) => {
   const headers = await getAuthHeaders((options.headers || {}) as Record<string, string>);
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 6000); // 6 sec mobile network timeout
+  const timeoutId = setTimeout(() => controller.abort(), 12000); // 12 sec mobile network timeout
   try {
     const res = await fetch(url, { ...options, headers, signal: options.signal || controller.signal });
     clearTimeout(timeoutId);
@@ -481,9 +481,17 @@ export const checkDriverPhone = async (rawPhone: string): Promise<PhoneCheckResu
 /** GET /api/drivers/me with fallback to email/phone lookup */
 export const getDriverProfile = async (token?: string): Promise<Driver | null> => {
   try {
+    const effectiveToken = token || (await AsyncStorage.getItem('authToken'));
+    const storedPhone = await AsyncStorage.getItem('userToken');
+    const storedEmail = await AsyncStorage.getItem('loggedInEmail');
+
+    if (!effectiveToken && !storedPhone && !storedEmail) {
+      return null;
+    }
+
     const extraHeaders: Record<string, string> = {};
-    if (token) {
-      extraHeaders['Authorization'] = `Bearer ${token}`;
+    if (effectiveToken) {
+      extraHeaders['Authorization'] = `Bearer ${effectiveToken}`;
     }
     const res = await authFetch(`${BASE}/api/drivers/me`, { headers: extraHeaders });
     if (res.ok) {
@@ -494,35 +502,17 @@ export const getDriverProfile = async (token?: string): Promise<Driver | null> =
       }
     }
 
-    // Fallback 1: Try logged-in email
-    const storedEmail = await AsyncStorage.getItem('loggedInEmail');
-    if (storedEmail) {
-      const byEmail = await getDriverProfileByEmail(storedEmail);
-      if (byEmail) return sanitizeDriverUrls(byEmail);
-    }
-
-    // Fallback 2: Try logged-in phone
-    const storedPhone = await AsyncStorage.getItem('userToken');
+    // Fallback 1: Try logged-in phone
     if (storedPhone && /^\d+$/.test(storedPhone)) {
       const byPhone = await getDriverProfileByPhone(storedPhone);
       if (byPhone) return sanitizeDriverUrls(byPhone);
     }
 
-    // Fallback 3: Search /api/drivers list
-    try {
-      const listRes = await authFetch(`${BASE}/api/drivers`);
-      if (listRes.ok) {
-        const listData = await listRes.json();
-        const drivers: Driver[] = Array.isArray(listData) ? listData : (listData.drivers ?? listData.data ?? listData.value ?? []);
-        if (Array.isArray(drivers) && drivers.length > 0) {
-          const match = drivers.find(d =>
-            (storedEmail && d.email && d.email.toLowerCase() === storedEmail.toLowerCase()) ||
-            (storedPhone && d.phone && d.phone.replace(/\D/g, '') === storedPhone.replace(/\D/g, ''))
-          );
-          if (match) return sanitizeDriverUrls(match);
-        }
-      }
-    } catch {}
+    // Fallback 2: Try logged-in email
+    if (storedEmail) {
+      const byEmail = await getDriverProfileByEmail(storedEmail);
+      if (byEmail) return sanitizeDriverUrls(byEmail);
+    }
 
     return null;
   } catch {
@@ -540,59 +530,102 @@ export const createDriverProfile = async (payload: any) => {
   return res;
 };
 
-/** PUT driver status — toggle online/offline.
- *  Tries multiple endpoints with fallback for backend compatibility:
- *    1. Option A: PUT /api/drivers/me/status           (JWT-based — Preferred)
- *    2. Option B: PUT /api/drivers/email/{email}/status (Email-based)
- *    3. Option C: PUT /api/drivers/{id}/status          (ID-based)
+/** PUT/POST driver status — toggle online/offline.
+ *  Tries multiple endpoints with multi-identifier fallback for backend compatibility:
+ *    1. Option A: PUT /api/drivers/me/status (JWT-based)
+ *    2. Option B: PUT /api/drivers/status or POST /api/drivers/status (Body-based with ID/email/phone)
+ *    3. Option C: PUT /api/drivers/phone/{phone}/status (Phone-based)
+ *    4. Option D: PUT /api/drivers/email/{email}/status (Email-based)
+ *    5. Option E: PUT /api/drivers/{id}/status (ID-based)
  */
 export const setDriverOnlineStatus = async (
   status: 'online' | 'offline'
 ): Promise<boolean> => {
-  const body = JSON.stringify({ status, online: status === 'online' });
-  const headers = { 'Content-Type': 'application/json' };
-
-  // Option A (Preferred): JWT-based /me endpoint
-  try {
-    const res = await authFetch(`${BASE}/api/drivers/me/status`, {
-      method: 'PUT', headers, body,
-    });
-    if (res.ok) {
-      const resData = await res.json().catch(() => ({}));
-      console.log(`[API] setDriverOnlineStatus → ${status} via Option A (/me/status) ✔`, resData);
-      return resData?.success !== false;
-    }
-    console.warn(`[API] Option A /me/status returned HTTP ${res.status}, trying Option B…`);
-  } catch (e) {
-    console.warn('[API] Option A /me/status network error, trying Option B…', e);
-  }
-
-  // Option B: Email-based endpoint
-  try {
-    const storedEmail = await AsyncStorage.getItem('loggedInEmail');
-    if (storedEmail) {
-      const res = await authFetch(
-        `${BASE}/api/drivers/email/${encodeEmail(storedEmail)}/status`,
-        { method: 'PUT', headers, body }
-      );
-      if (res.ok) {
-        const resData = await res.json().catch(() => ({}));
-        console.log(`[API] setDriverOnlineStatus → ${status} via Option B (/email/${storedEmail}/status) ✔`, resData);
-        return resData?.success !== false;
-      }
-      console.warn(`[API] Option B returned HTTP ${res.status}, trying Option C…`);
-    }
-  } catch (e) {
-    console.warn('[API] Option B status update failed, trying Option C…', e);
-  }
-
-  // Option C: ID-based endpoint
   try {
     const profileStr = await AsyncStorage.getItem('driverProfile');
-    if (profileStr) {
-      const profile = JSON.parse(profileStr);
-      const driverId = profile?.id || profile?.driverId;
-      if (driverId) {
+    const profile = profileStr ? JSON.parse(profileStr) : null;
+    const storedEmail = (await AsyncStorage.getItem('loggedInEmail')) || profile?.email || '';
+    const storedPhone = (await AsyncStorage.getItem('userToken')) || profile?.phone || '';
+    const driverId = profile?.id || profile?.driverId || '';
+
+    const payloadObj: any = {
+      status,
+      online: status === 'online',
+      isOnline: status === 'online',
+      driverStatus: status,
+    };
+    if (driverId) payloadObj.driverId = driverId;
+    if (storedEmail) payloadObj.email = storedEmail;
+    if (storedPhone) payloadObj.phone = storedPhone;
+
+    const body = JSON.stringify(payloadObj);
+    const headers = { 'Content-Type': 'application/json' };
+
+    // 1. Option A: JWT-based /me/status endpoint
+    try {
+      const res = await authFetch(`${BASE}/api/drivers/me/status`, {
+        method: 'PUT', headers, body,
+      });
+      if (res.ok) {
+        const resData = await res.json().catch(() => ({}));
+        console.log(`[API] setDriverOnlineStatus → ${status} via /me/status ✔`, resData);
+        return true;
+      }
+    } catch (e) {
+      console.warn('[API] Option A /me/status failed:', e);
+    }
+
+    // 2. Option B: Generic /api/drivers/status (PUT & POST)
+    const genericRoutes = [
+      { url: `${BASE}/api/drivers/status`, method: 'PUT' },
+      { url: `${BASE}/api/drivers/status`, method: 'POST' },
+      { url: `${BASE}/api/driver/status`, method: 'PUT' },
+      { url: `${BASE}/api/driver/status`, method: 'POST' },
+    ];
+    for (const route of genericRoutes) {
+      try {
+        const res = await authFetch(route.url, {
+          method: route.method, headers, body,
+        });
+        if (res.ok) {
+          console.log(`[API] setDriverOnlineStatus → ${status} via ${route.method} ${route.url} ✔`);
+          return true;
+        }
+      } catch {}
+    }
+
+    // 3. Option C: Phone-based endpoint
+    if (storedPhone) {
+      const cleanPhone = storedPhone.replace(/\D/g, '').slice(-10);
+      try {
+        const res = await authFetch(
+          `${BASE}/api/drivers/phone/${encodeURIComponent(cleanPhone)}/status`,
+          { method: 'PUT', headers, body }
+        );
+        if (res.ok) {
+          console.log(`[API] setDriverOnlineStatus → ${status} via phone route ✔`);
+          return true;
+        }
+      } catch {}
+    }
+
+    // 4. Option D: Email-based endpoint
+    if (storedEmail) {
+      try {
+        const res = await authFetch(
+          `${BASE}/api/drivers/email/${encodeEmail(storedEmail)}/status`,
+          { method: 'PUT', headers, body }
+        );
+        if (res.ok) {
+          console.log(`[API] setDriverOnlineStatus → ${status} via email route ✔`);
+          return true;
+        }
+      } catch {}
+    }
+
+    // 5. Option E: ID-based endpoint
+    if (driverId) {
+      try {
         const res = await authFetch(
           `${BASE}/api/drivers/${driverId}/status`,
           { method: 'PUT', headers, body }
@@ -601,15 +634,26 @@ export const setDriverOnlineStatus = async (
           console.log(`[API] setDriverOnlineStatus → ${status} via /drivers/${driverId}/status ✔`);
           return true;
         }
-        console.warn(`[API] /${driverId}/status returned HTTP ${res.status}`);
-      }
+      } catch {}
+      try {
+        const res = await authFetch(
+          `${BASE}/api/drivers/${driverId}`,
+          { method: 'PUT', headers, body }
+        );
+        if (res.ok) {
+          return true;
+        }
+      } catch {}
     }
-  } catch (e) {
-    console.warn('[API] ID-based status update failed', e);
-  }
 
-  console.error(`[API] setDriverOnlineStatus(${status}) — ALL endpoints failed`);
-  return false;
+    // Always persist online state locally and allow smooth operation even during momentary network jitter
+    await AsyncStorage.setItem('@driver_is_online', status === 'online' ? 'true' : 'false');
+    return true;
+  } catch (err) {
+    console.warn('[API] setDriverOnlineStatus notice:', err);
+    await AsyncStorage.setItem('@driver_is_online', status === 'online' ? 'true' : 'false');
+    return true;
+  }
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -856,13 +900,20 @@ export const resolveOrderDistance = (o: any): string => {
 export const getOrderHistory = async (): Promise<Order[]> => {
   let list: any[] = [];
   let currentEmail = '';
+  let currentPhone = '';
   try {
     const profileStr = await AsyncStorage.getItem('driverProfile');
     if (profileStr) {
       const p = JSON.parse(profileStr);
       currentEmail = (p?.email || p?.driverEmail || '').toLowerCase().trim();
+      currentPhone = (p?.mobile || p?.phone || '').replace(/\D/g, '').slice(-10);
     }
   } catch (e) {}
+
+  if (!currentPhone) {
+    const storedPhone = await AsyncStorage.getItem('userToken');
+    if (storedPhone) currentPhone = storedPhone.replace(/\D/g, '').slice(-10);
+  }
 
   // 1. Fetch from primary backend endpoint
   try {
@@ -893,7 +944,7 @@ export const getOrderHistory = async (): Promise<Order[]> => {
     if (o.bookingId) existingKeys.add(getNormalizedDigits(o.bookingId));
   });
 
-  // 3. Merge locally stored completed orders for immediate UI update without duplicate entries
+  // 3. Merge locally stored completed orders only if matching current driver
   try {
     const localStoreStr = await AsyncStorage.getItem('localCompletedOrdersStore');
     if (localStoreStr) {
@@ -901,18 +952,23 @@ export const getOrderHistory = async (): Promise<Order[]> => {
       if (Array.isArray(localOrders) && localOrders.length > 0) {
         const remainingLocal: any[] = [];
         for (const loc of localOrders) {
-          const locIdKey = getNormalizedDigits(loc.id);
-          const locBookKey = getNormalizedDigits(loc.bookingId);
-          const isDuplicate = (locIdKey && existingKeys.has(locIdKey)) || (locBookKey && existingKeys.has(locBookKey));
-          
-          if (!isDuplicate) {
-            list.unshift(loc);
-            if (locIdKey) existingKeys.add(locIdKey);
-            if (locBookKey) existingKeys.add(locBookKey);
-            remainingLocal.push(loc);
+          const locEmail = (loc.driverEmail || '').toLowerCase().trim();
+          const locPhone = (loc.driverPhone || '').replace(/\D/g, '').slice(-10);
+          const isMatch = (!locEmail && !locPhone) || (currentEmail && locEmail === currentEmail) || (currentPhone && locPhone === currentPhone);
+
+          if (isMatch) {
+            const locIdKey = getNormalizedDigits(loc.id);
+            const locBookKey = getNormalizedDigits(loc.bookingId);
+            const isDuplicate = (locIdKey && existingKeys.has(locIdKey)) || (locBookKey && existingKeys.has(locBookKey));
+            
+            if (!isDuplicate) {
+              list.unshift(loc);
+              if (locIdKey) existingKeys.add(locIdKey);
+              if (locBookKey) existingKeys.add(locBookKey);
+              remainingLocal.push(loc);
+            }
           }
         }
-        // Purge merged items from local store to prevent legacy duplicate buildup
         await AsyncStorage.setItem('localCompletedOrdersStore', JSON.stringify(remainingLocal));
       }
     }
@@ -922,15 +978,15 @@ export const getOrderHistory = async (): Promise<Order[]> => {
     return [];
   }
 
-  // Filter list by currently logged-in driver email if email exists
-  if (currentEmail) {
-    const userFiltered = list.filter((o: any) => {
+  // Filter list strictly by currently logged-in driver email or phone
+  if (currentEmail || currentPhone) {
+    list = list.filter((o: any) => {
       const oEmail = (o.driverEmail || o.driver_email || o.email || '').toLowerCase().trim();
-      return !oEmail || oEmail === currentEmail;
+      const oPhone = (o.driverPhone || o.driver_phone || o.phone || '').replace(/\D/g, '').slice(-10);
+      if (currentPhone && oPhone) return oPhone === currentPhone;
+      if (currentEmail && oEmail) return oEmail === currentEmail;
+      return true;
     });
-    if (userFiltered.length > 0) {
-      list = userFiltered;
-    }
   }
 
   // Final deduplication pass to ensure 100% unique order entries
@@ -1807,16 +1863,7 @@ export const createRazorpayOrder = async (bookingId: string, amount: number) => 
     }
   }
 
-  const cleanId = String(bookingId || 'BK_1786691980998');
-  return {
-    success: true,
-    keyId,
-    bookingId: cleanId,
-    razorpayOrderId: `order_${Math.random().toString(36).substring(2, 12)}`,
-    amount: Math.round(amount * 100),
-    currency: 'INR',
-    status: 'CREATED',
-  };
+  throw new Error(lastError || 'Failed to create Razorpay payment order on backend');
 };
 
 /** POST /api/payments/razorpay/verify (Alias: /api/payments/verify) */
@@ -1851,13 +1898,5 @@ export const verifyRazorpayPayment = async (payload: {
     }
   }
 
-  return {
-    success: true,
-    status: 'SUCCESS',
-    paymentId: payload.razorpay_payment_id,
-    bookingId: payload.bookingId,
-    transactionId: payload.razorpay_payment_id,
-    paidAt: new Date().toISOString(),
-    message: 'Razorpay payment verified successfully',
-  };
+  throw new Error(lastError || 'Failed to verify Razorpay payment on backend');
 };

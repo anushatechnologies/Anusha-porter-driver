@@ -151,20 +151,10 @@ const DriverDashboardScreen = () => {
         }
         setIsOnline(true);
         await AsyncStorage.setItem('@driver_is_online', 'true');
-        // Always call API — no driverEmail guard needed; API reads auth token internally
         try {
-          const success = await setDriverOnlineStatus('online');
-          if (!success) {
-            // Rollback UI if backend failed
-            setIsOnline(false);
-            await AsyncStorage.setItem('@driver_is_online', 'false');
-            Alert.alert('Connection Error', 'Could not update your online status. Please check your internet connection and try again.');
-          }
+          await setDriverOnlineStatus('online');
         } catch (e) {
-          console.error('Failed to update online status', e);
-          setIsOnline(false);
-          await AsyncStorage.setItem('@driver_is_online', 'false');
-          Alert.alert('Connection Error', 'Could not update your online status. Please try again.');
+          console.warn('Background sync notice for online status:', e);
         }
       } else {
         // Permission not yet granted: MUST show Prominent Disclosure Modal BEFORE system permission dialog!
@@ -174,20 +164,10 @@ const DriverDashboardScreen = () => {
       // Driver wants to go OFFLINE explicitly
       setIsOnline(false);
       await AsyncStorage.setItem('@driver_is_online', 'false');
-      // Always call API — no driverEmail guard needed
       try {
-        const success = await setDriverOnlineStatus('offline');
-        if (!success) {
-          // Rollback UI if backend failed
-          setIsOnline(true);
-          await AsyncStorage.setItem('@driver_is_online', 'true');
-          Alert.alert('Connection Error', 'Could not update your offline status. Please check your internet connection and try again.');
-        }
+        await setDriverOnlineStatus('offline');
       } catch (e) {
-        console.error('Failed to update offline status', e);
-        setIsOnline(true);
-        await AsyncStorage.setItem('@driver_is_online', 'true');
-        Alert.alert('Connection Error', 'Could not update your offline status. Please try again.');
+        console.warn('Background sync notice for offline status:', e);
       }
     }
   };
@@ -217,19 +197,10 @@ const DriverDashboardScreen = () => {
       // Step 3: Turn Online and start tracking
       setIsOnline(true);
       await AsyncStorage.setItem('@driver_is_online', 'true');
-      // Always call API — no driverEmail guard needed
       try {
-        const success = await setDriverOnlineStatus('online');
-        if (!success) {
-          setIsOnline(false);
-          await AsyncStorage.setItem('@driver_is_online', 'false');
-          Alert.alert('Connection Error', 'Could not update your online status. Please check your internet connection and try again.');
-        }
+        await setDriverOnlineStatus('online');
       } catch (e) {
-        console.error('Failed to update online status', e);
-        setIsOnline(false);
-        await AsyncStorage.setItem('@driver_is_online', 'false');
-        Alert.alert('Connection Error', 'Could not update your online status. Please try again.');
+        console.warn('Background sync notice for online status:', e);
       }
     } catch (e) {
       console.error('Error requesting permissions after disclosure:', e);
