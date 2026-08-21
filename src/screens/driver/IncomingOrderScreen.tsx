@@ -18,6 +18,8 @@ import { useTheme } from '../../theme/ThemeContext';
 import { updateOrderStatus, acceptOrder } from '../../services/api';
 import { startAlarm, stopAlarm } from '../../services/alarmSound';
 
+import { calculateRouteEstimate, formatDistance, formatDuration } from '../../services/routeService';
+
 const { width, height } = Dimensions.get('window');
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 type IncomingRouteProp = RouteProp<RootStackParamList, 'IncomingOrder'>;
@@ -41,13 +43,20 @@ const IncomingOrderScreen = () => {
   const fare = order?.amount ? `₹${order.amount}` : '₹--';
 
   const resolveOrderDistance = (o: any): string => {
+    // 1. Check distanceKm number first
+    if (o?.distanceKm !== undefined && o?.distanceKm !== null) {
+      const num = parseFloat(String(o.distanceKm));
+      if (!isNaN(num) && num > 0) return `${num.toFixed(1)} km`;
+    }
+
+    // 2. Check distance string fields
     const dVal = o?.distance || o?.tripDistance || o?.totalDistance || o?.dist;
     if (dVal && String(dVal).trim() !== '--' && String(dVal).trim() !== '') {
       const num = parseFloat(String(dVal).replace(/[^0-9.]/g, ''));
       if (!isNaN(num) && num > 0) return `${num.toFixed(1)} km`;
     }
     
-    // Calculate from pickup & drop coordinates if available
+    // 3. Calculate from pickup & drop coordinates if available
     const pLat = parseFloat(o?.pickupLat || o?.pickupLatitude || o?.pickup_lat || 0);
     const pLng = parseFloat(o?.pickupLng || o?.pickupLongitude || o?.pickup_lng || 0);
     const dLat = parseFloat(o?.dropLat || o?.dropLatitude || o?.drop_lat || 0);
@@ -68,19 +77,97 @@ const IncomingOrderScreen = () => {
       if (distKm > 0.1) return `${distKm.toFixed(1)} km`;
     }
 
-    // Estimate from fare if amount is available (e.g., ₹319.19 fare ≈ ~12.8 km)
-    const amt = typeof o?.amount === 'number' ? o.amount : parseFloat(String(o?.amount || 0).replace('₹', '')) || 0;
-    if (amt > 0) {
-      const baseFare = 50;
-      const perKmRate = 22;
-      const estimatedKm = Math.max(1, (amt - baseFare) / perKmRate + 2);
-      return `${estimatedKm.toFixed(1)} km`;
+    // 4. Estimate from fare if amount is available AND distanceKm, distance and coordinates are all missing
+    const hasDistance = (o?.distanceKm !== undefined && o?.distanceKm !== null) ||
+                        (dVal && String(dVal).trim() !== '--' && String(dVal).trim() !== '');
+    const hasCoords = pLat !== 0 && pLng !== 0 && dLat !== 0 && dLng !== 0;
+
+    if (!hasDistance && !hasCoords) {
+      const amt = typeof o?.amount === 'number' ? o.amount : parseFloat(String(o?.amount || 0).replace('₹', '')) || 0;
+      if (amt > 0) {
+        const baseFare = 50;
+        const perKmRate = 22;
+        let estimatedKm = (amt - baseFare) / perKmRate + 2;
+        if (amt < baseFare) {
+          // For test fares or ultra-low promotional fares, scale down distance proportionally
+          estimatedKm = Math.max(0.1, (amt / baseFare) * 2.0);
+        } else {
+          estimatedKm = Math.max(1.0, estimatedKm);
+        }
+        return `${estimatedKm.toFixed(1)} km`;
+      }
     }
 
-    return '5.2 km';
+    return '1.0 km';
   };
 
-  const distance = resolveOrderDistance(order);
+  const [displayDistance, setDisplayDistance] = useState<string>('Calculating...');
+  const [displayEta, setDisplayEta] = useState<string>('Calculating...');
+  const currentOrderKeyRef = useRef<string>('');
+
+  useEffect(() => {
+    let isCancelled = false;
+    const currentKey = String(order?.id || (order as any)?.bookingId || 'new_order');
+    currentOrderKeyRef.current = currentKey;
+
+    const pLat = parseFloat((order as any)?.pickupLat || (order as any)?.pickupLatitude || (order as any)?.pickup_lat || (order as any)?.pickupLocation?.lat || (order as any)?.pickup?.latitude || 0);
+    const pLng = parseFloat((order as any)?.pickupLng || (order as any)?.pickupLongitude || (order as any)?.pickup_lng || (order as any)?.pickupLocation?.lng || (order as any)?.pickup?.longitude || 0);
+    const dLat = parseFloat((order as any)?.dropLat || (order as any)?.dropLatitude || (order as any)?.drop_lat || (order as any)?.dropLocation?.lat || (order as any)?.drop?.latitude || 0);
+    const dLng = parseFloat((order as any)?.dropLng || (order as any)?.dropLongitude || (order as any)?.drop_lng || (order as any)?.dropLocation?.lng || (order as any)?.drop?.longitude || 0);
+
+    const computeEta = async () => {
+      // 1. If backend already sent route duration / ETA directly in order object
+      const backendDurationSec = Number((order as any)?.durationSeconds || (order as any)?.duration_seconds || (order as any)?.duration);
+      const backendDistanceMeters = Number((order as any)?.distanceMeters || (order as any)?.distance_meters);
+      
+      if (!isNaN(backendDurationSec) && backendDurationSec > 0) {
+        if (!isCancelled && currentOrderKeyRef.current === currentKey) {
+          setDisplayEta(formatDuration(backendDurationSec));
+          if (!isNaN(backendDistanceMeters) && backendDistanceMeters > 0) {
+            setDisplayDistance(formatDistance(backendDistanceMeters));
+          } else {
+            setDisplayDistance(resolveOrderDistance(order));
+          }
+        }
+        return;
+      }
+
+      // 2. If coordinates are present, compute via Google Routes API (TWO_WHEELER mode)
+      if (pLat !== 0 && pLng !== 0 && dLat !== 0 && dLng !== 0) {
+        try {
+          const estimate = await calculateRouteEstimate(
+            { latitude: pLat, longitude: pLng },
+            { latitude: dLat, longitude: dLng },
+            currentKey
+          );
+
+          if (!isCancelled && currentOrderKeyRef.current === currentKey) {
+            setDisplayDistance(estimate.formattedDistance);
+            setDisplayEta(estimate.formattedDuration);
+          }
+          return;
+        } catch (e) {
+          console.warn('[IncomingOrder] Route calculation fallback notice:', e);
+        }
+      }
+
+      // 3. Fallback if coordinates missing: calculate dynamic ETA from order distance
+      if (!isCancelled && currentOrderKeyRef.current === currentKey) {
+        const resolvedDist = resolveOrderDistance(order);
+        setDisplayDistance(resolvedDist);
+        const distKmNum = parseFloat(resolvedDist.replace(/[^0-9.]/g, '')) || 1.0;
+        // Two-wheeler city speed ~22 km/h + 1 min pickup/drop buffer
+        const estimatedSec = Math.round((distKmNum / 22) * 3600 + 60);
+        setDisplayEta(formatDuration(estimatedSec));
+      }
+    };
+
+    computeEta();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [order]);
 
   useEffect(() => {
     // Trigger loud siren alarm & voice announcement for new incoming order
@@ -155,9 +242,20 @@ const IncomingOrderScreen = () => {
 
     if (res && res.success === false) {
       setAccepting(false);
+      let alertTitle = 'Order Unavailable';
+      let alertMsg = res.message || 'This order could not be accepted.';
+
+      if (res.statusCode === 409) {
+        alertTitle = 'Order Already Claimed';
+        alertMsg = 'Another driver partner accepted this order a fraction of a second earlier. Returning to dashboard for new incoming orders.';
+      } else if (res.statusCode === 404) {
+        alertTitle = 'Order Expired';
+        alertMsg = 'This order request has expired or was cancelled by the customer.';
+      }
+
       Alert.alert(
-        'Order Already Claimed',
-        res.message || 'This order has already been accepted by another driver.',
+        alertTitle,
+        alertMsg,
         [
           {
             text: 'OK',
@@ -244,13 +342,13 @@ const IncomingOrderScreen = () => {
           <View style={styles.metaItem}>
             <Ionicons name="map-outline" size={16} color={colors.textSecondary} />
             <Text style={[styles.metaLabel, { color: colors.textSecondary }]}>Distance</Text>
-            <Text style={[styles.metaValue, { color: colors.text }]}>{distance}</Text>
+            <Text style={[styles.metaValue, { color: colors.text }]}>{displayDistance}</Text>
           </View>
           <View style={[styles.metaDivider, { backgroundColor: colors.border }]} />
           <View style={styles.metaItem}>
             <Ionicons name="time-outline" size={16} color={colors.textSecondary} />
             <Text style={[styles.metaLabel, { color: colors.textSecondary }]}>Est. Time</Text>
-            <Text style={[styles.metaValue, { color: colors.text }]}>~20 min</Text>
+            <Text style={[styles.metaValue, { color: colors.text }]}>{displayEta}</Text>
           </View>
           <View style={[styles.metaDivider, { backgroundColor: colors.border }]} />
           <View style={styles.metaItem}>

@@ -39,67 +39,15 @@ const NotificationsScreen = () => {
           return !isDummy;
         });
 
-        if (filteredList.length > 0) {
-          const formatted: NotificationItem[] = filteredList.map((item: any) => ({
-            id: String(item.id || Math.random()),
-            type: item.type || 'announcement',
-            title: item.title || 'Notification',
-            body: item.message || item.body || '',
-            time: item.createdAt ? new Date(item.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recently',
-            read: item.read !== undefined ? item.read : false,
-          }));
-          setNotifications(formatted);
-        } else {
-          // Dynamically derive live notifications from driver profile & order history if backend endpoint returns empty
-          const liveNotifs: NotificationItem[] = [];
-          const profile = await getDriverProfile();
-          const orders = await getOrderHistory();
-
-          if (profile) {
-            const kycState = (profile.kyc || profile.kycStatus || 'pending').toUpperCase();
-            liveNotifs.push({
-              id: 'kyc_notif',
-              type: 'announcement',
-              title: `Account KYC Status: ${kycState}`,
-              body: kycState === 'VERIFIED'
-                ? 'Your partner account is verified. You can go online and receive delivery orders.'
-                : 'Your documents are under review by the administration team.',
-              time: 'Today',
-              read: true,
-            });
-          }
-
-          if (Array.isArray(orders) && orders.length > 0) {
-            orders.slice(0, 10).forEach((order: any) => {
-              const amt = typeof order.amount === 'number' ? order.amount : parseFloat(String(order.amount || 0).replace('₹', '')) || 0;
-              const orderIdStr = order.bookingId || `#BK_${order.id}`;
-              const timeStr = order.createdAt ? new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recent';
-              const statusStr = (order.status || 'completed').toLowerCase();
-
-              if (statusStr === 'completed' || statusStr === 'delivered') {
-                liveNotifs.push({
-                  id: `order_${order.id}`,
-                  type: 'order',
-                  title: `Order ${orderIdStr} Delivered`,
-                  body: `Successfully delivered to ${order.drop || 'destination'}. ₹${amt} credited to wallet.`,
-                  time: timeStr,
-                  read: true,
-                });
-              } else if (statusStr === 'cancelled' || statusStr === 'failed') {
-                liveNotifs.push({
-                  id: `order_${order.id}`,
-                  type: 'order',
-                  title: `Order ${orderIdStr} Cancelled`,
-                  body: `Order was cancelled. Pickup: ${order.pickup || 'Location'}.`,
-                  time: timeStr,
-                  read: true,
-                });
-              }
-            });
-          }
-
-          setNotifications(liveNotifs);
-        }
+        const formatted: NotificationItem[] = filteredList.map((item: any) => ({
+          id: String(item.id || Math.random()),
+          type: item.type || 'announcement',
+          title: item.title || 'Notification',
+          body: item.message || item.body || '',
+          time: item.createdAt ? new Date(item.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recently',
+          read: item.read !== undefined ? item.read : false,
+        }));
+        setNotifications(formatted);
       } catch (err) {
         console.warn('Failed to load notifications:', err);
       } finally {

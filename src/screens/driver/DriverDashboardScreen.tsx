@@ -33,7 +33,8 @@ import {
   updateOrderStatus, 
   setDriverOnlineStatus,
   registerDeviceToken,
-  updateDriverLocation 
+  updateDriverLocation,
+  getDriverWallet,
 } from '../../services/api';
 import { startAlarm, stopAlarm } from '../../services/alarmSound';
 import * as Location from 'expo-location';
@@ -81,12 +82,25 @@ const DriverDashboardScreen = () => {
   const [driverTenure, setDriverTenure] = useState('0m');
   const [historyOrders, setHistoryOrders] = useState<any[]>([]);
   const [driverProfilePhoto, setDriverProfilePhoto] = useState<string | null>(null);
+  const [walletBalance, setWalletBalance] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const handleRefresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
+      // 0. Refresh live wallet balance
+      try {
+        const walRes = await getDriverWallet();
+        const bal = walRes?.wallet?.availableBalance ?? (typeof (walRes as any)?.availableBalance === 'number' ? (walRes as any).availableBalance : 0);
+        setWalletBalance(bal);
+        if (bal < 10 && isOnline) {
+          setIsOnline(false);
+          await AsyncStorage.setItem('@driver_is_online', 'false');
+          await setDriverOnlineStatus('offline').catch(() => {});
+        }
+      } catch (wErr) {}
+
       // 1. Refresh driver profile info
       const driverDb = await getDriverProfile();
       if (driverDb) {
@@ -108,21 +122,11 @@ const DriverDashboardScreen = () => {
       }
 
       // 2. Refresh orders & earnings stats
-      const orders = await getOrderHistory();
-      if (Array.isArray(orders)) {
-        setHistoryOrders(orders);
-        let totalEarnings = 0;
-        let totalCompleted = 0;
-        orders.forEach((o: any) => {
-          const s = (o.status || '').toLowerCase().trim();
-          if (['completed', 'delivered', 'done', 'finished', 'closed', 'success'].includes(s)) {
-            totalCompleted++;
-            const amt = typeof o.amount === 'number' ? o.amount : parseFloat(String(o.amount || 0).replace('₹', '')) || 0;
-            totalEarnings += amt;
-          }
-        });
-        setEarnings(totalEarnings);
-        setCompletedTrips(totalCompleted);
+      const historyRes = await getOrderHistory();
+      if (historyRes && historyRes.orders) {
+        setHistoryOrders(historyRes.orders);
+        setEarnings(historyRes.totalEarnings);
+        setCompletedTrips(historyRes.totalOrders);
       }
     } catch (err) {
       if (Platform.OS === 'web') {
@@ -138,17 +142,37 @@ const DriverDashboardScreen = () => {
   // User toggles duty switch
   const handleToggleOnline = async (targetValue: boolean) => {
     if (targetValue) {
+      // Step 0: Strict Wallet Balance Verification (Minimum ₹10 required) before going online
+      try {
+        const walRes = await getDriverWallet().catch(() => null);
+        const balance = walRes?.wallet?.availableBalance ?? (typeof (walRes as any)?.availableBalance === 'number' ? (walRes as any).availableBalance : 0);
+        setWalletBalance(balance);
+        const minReq = 10; // Strictly ₹10 minimum required balance
+        const isEligible = (walRes?.wallet?.isEligible !== false) && balance >= minReq;
+
+        if (!isEligible) {
+          Alert.alert(
+            '⚠ Wallet Recharge Required',
+            `Your wallet balance is ₹${balance.toFixed(2)}. You must maintain a minimum balance of ₹10 to go online and accept delivery orders.`,
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Recharge Now', onPress: () => navigation.navigate('Wallet') },
+            ]
+          );
+          setIsOnline(false);
+          await AsyncStorage.setItem('@driver_is_online', 'false');
+          try {
+            await setDriverOnlineStatus('offline');
+          } catch (e) {}
+          return;
+        }
+      } catch (e) {
+        console.warn('Wallet check error on toggle:', e);
+      }
+
       // Driver wants to go ONLINE: check if foreground location permission is already granted
       const { status: fgStatus } = await Location.getForegroundPermissionsAsync();
       if (fgStatus === 'granted') {
-        try {
-          const { status: bgStatus } = await Location.getBackgroundPermissionsAsync();
-          if (bgStatus !== 'granted') {
-            await Location.requestBackgroundPermissionsAsync();
-          }
-        } catch (e) {
-          console.warn('Background permission check failed', e);
-        }
         setIsOnline(true);
         await AsyncStorage.setItem('@driver_is_online', 'true');
         try {
@@ -176,6 +200,34 @@ const DriverDashboardScreen = () => {
   const handleContinueDisclosure = async () => {
     setShowLocationDisclosure(false);
     try {
+      // Check wallet eligibility (Minimum ₹10 required) before going online
+      try {
+        const walRes = await getDriverWallet().catch(() => null);
+        const balance = walRes?.wallet?.availableBalance ?? (typeof (walRes as any)?.availableBalance === 'number' ? (walRes as any).availableBalance : 0);
+        setWalletBalance(balance);
+        const minReq = 10; // Strictly ₹10 minimum required balance
+        const isEligible = (walRes?.wallet?.isEligible !== false) && balance >= minReq;
+
+        if (!isEligible) {
+          Alert.alert(
+            '⚠ Wallet Recharge Required',
+            `Your wallet balance is ₹${balance.toFixed(2)}. You must maintain a minimum balance of ₹10 to go online and accept delivery orders.`,
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Recharge Now', onPress: () => navigation.navigate('Wallet') },
+            ]
+          );
+          setIsOnline(false);
+          await AsyncStorage.setItem('@driver_is_online', 'false');
+          try {
+            await setDriverOnlineStatus('offline');
+          } catch (e) {}
+          return;
+        }
+      } catch (e) {
+        console.warn('Wallet check error on continue disclosure:', e);
+      }
+
       // Step 1: Request Foreground Location Permission (Android runtime dialog)
       const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
       if (fgStatus !== 'granted') {
@@ -187,14 +239,7 @@ const DriverDashboardScreen = () => {
         return;
       }
 
-      // Step 2: Request Background Location Permission (Android 10+ settings/dialog)
-      try {
-        await Location.requestBackgroundPermissionsAsync();
-      } catch (bgErr) {
-        console.warn('Background location request error:', bgErr);
-      }
-
-      // Step 3: Turn Online and start tracking
+      // Step 2: Turn Online and start tracking
       setIsOnline(true);
       await AsyncStorage.setItem('@driver_is_online', 'true');
       try {
@@ -258,13 +303,26 @@ const DriverDashboardScreen = () => {
             if (driverDb.email) setDriverEmail(driverDb.email);
             if (driverDb.rating) setDriverRating(String(driverDb.rating));
             if (driverDb.tenure) setDriverTenure(String(driverDb.tenure));
-            // Sync online/offline state from backend in BOTH directions
-            if (driverDb.status === 'online') {
+            // Sync online/offline state from backend, ensuring minimum ₹10 wallet balance is present
+            let allowOnline = false;
+            try {
+              const walRes = await getDriverWallet().catch(() => null);
+              const balance = walRes?.wallet?.availableBalance ?? (typeof (walRes as any)?.availableBalance === 'number' ? (walRes as any).availableBalance : 0);
+              setWalletBalance(balance);
+              allowOnline = (walRes?.wallet?.isEligible !== false) && balance >= 10;
+            } catch (wErr) {}
+
+            if (driverDb.status === 'online' && allowOnline) {
               setIsOnline(true);
               await AsyncStorage.setItem('@driver_is_online', 'true');
-            } else if (driverDb.status === 'offline') {
+            } else {
               setIsOnline(false);
               await AsyncStorage.setItem('@driver_is_online', 'false');
+              try {
+                if (driverDb.status === 'online' && !allowOnline) {
+                  await setDriverOnlineStatus('offline');
+                }
+              } catch (e) {}
             }
             const dbPhoto = cleanUrl(
               driverDb.profilePhotoUri ||
@@ -543,21 +601,12 @@ const DriverDashboardScreen = () => {
   useEffect(() => {
     const fetchDashboardHistory = async () => {
       try {
-        const orders = await getOrderHistory();
-        setHistoryOrders(orders);
-        // Calculate stats
-        let totalEarnings = 0;
-        let totalCompleted = 0;
-        orders.forEach((o: any) => {
-          const s = (o.status || '').toLowerCase().trim();
-          if (['completed', 'delivered', 'done', 'finished', 'closed', 'success'].includes(s)) {
-            totalCompleted++;
-            const amt = typeof o.amount === 'number' ? o.amount : parseFloat(String(o.amount || 0).replace('₹', '')) || 0;
-            totalEarnings += amt;
-          }
-        });
-        setEarnings(totalEarnings);
-        setCompletedTrips(totalCompleted);
+        const historyRes = await getOrderHistory();
+        if (historyRes && historyRes.orders) {
+          setHistoryOrders(historyRes.orders);
+          setEarnings(historyRes.totalEarnings);
+          setCompletedTrips(historyRes.totalOrders);
+        }
       } catch (err) {
         console.warn('Dashboard history fetch error', err);
       }
@@ -565,19 +614,35 @@ const DriverDashboardScreen = () => {
     fetchDashboardHistory();
   }, [driverEmail]);
 
-  // Poll backend for active orders using useFocusEffect
+  // Automatically restore active in-progress order or incoming order on focus / recent reopen
   useFocusEffect(
     React.useCallback(() => {
       let interval: NodeJS.Timeout;
-      const pollActiveOrder = async () => {
+
+      const checkAndRestoreActiveOrder = async () => {
         try {
-          const order = await getActiveOrder();
-          if (order) {
-            const status = (order.status || '').toLowerCase();
-            if (['accepted', 'picked_up', 'transit', 'arrived', 'in_transit'].includes(status)) {
-              navigation.navigate('ActiveOrder', { order });
+          // 1. Check local storage for active ongoing delivery
+          const savedActiveId = await AsyncStorage.getItem('@current_active_delivery_id');
+          let savedOrderData: any = null;
+          if (savedActiveId) {
+            const savedDataStr = await AsyncStorage.getItem(`@active_order_data_${savedActiveId}`);
+            if (savedDataStr) {
+              savedOrderData = JSON.parse(savedDataStr);
+            }
+          }
+
+          // 2. Query live backend for active order
+          const liveOrderRes = await getActiveOrder().catch(() => null);
+          const activeOrder = liveOrderRes?.order || liveOrderRes;
+
+          if (activeOrder && activeOrder.id) {
+            const status = (activeOrder.status || '').toLowerCase();
+            if (['accepted', 'picked_up', 'transit', 'arrived', 'in_transit', 'payment_confirmation_pending', 'delivering', 'otp_verified', 'active'].includes(status)) {
+              navigation.navigate('ActiveOrder', { order: activeOrder });
+              return;
             } else if (['assigned', 'pending', 'searching', 'created'].includes(status)) {
-              navigation.navigate('IncomingOrder', { order });
+              navigation.navigate('IncomingOrder', { order: activeOrder });
+              return;
             }
           }
         } catch (e) {
@@ -585,12 +650,13 @@ const DriverDashboardScreen = () => {
         }
       };
 
-      if (isOnline && driverEmail) {
-        pollActiveOrder();
-        interval = setInterval(pollActiveOrder, 5000);
-      }
-      return () => { if (interval) clearInterval(interval); };
-    }, [isOnline, driverEmail, navigation])
+      checkAndRestoreActiveOrder();
+      interval = setInterval(checkAndRestoreActiveOrder, 4000);
+
+      return () => {
+        if (interval) clearInterval(interval);
+      };
+    }, [navigation])
   );
 
   
@@ -605,11 +671,13 @@ const DriverDashboardScreen = () => {
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <View style={styles.avatarContainer}>
-            <View style={[styles.avatar, { backgroundColor: colors.accent, borderColor: colors.primary, overflow: 'hidden' }]}>
+            <View style={[styles.avatar, { backgroundColor: 'rgba(0, 82, 255, 0.12)', borderColor: colors.primary, overflow: 'hidden' }]}>
               {driverProfilePhoto ? (
                 <Image source={{ uri: cleanUrl(driverProfilePhoto) }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
               ) : (
-                <Ionicons name="person" size={20} color={colors.primary} />
+                <Text style={{ fontSize: 18, fontWeight: '900', color: colors.primary }}>
+                  {driverName ? driverName.charAt(0).toUpperCase() : 'D'}
+                </Text>
               )}
             </View>
             <View style={[styles.badgeOnline, { backgroundColor: isOnline ? colors.online : colors.offline, borderColor: colors.background }]} />
@@ -814,15 +882,31 @@ const DriverDashboardScreen = () => {
 
               </View>
             ) : (
-              <View style={[styles.offlineWrapperCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                <View style={[styles.offlineIconContainer, { backgroundColor: colors.accent }]}>
-                  <MaterialCommunityIcons name="bike" size={40} color={colors.textMuted} />
+              <View style={[styles.offlineWrapperCard, { backgroundColor: colors.card, borderColor: (walletBalance !== null && walletBalance < 10) ? '#EF4444' : colors.border }]}>
+                <View style={[styles.offlineIconContainer, { backgroundColor: (walletBalance !== null && walletBalance < 10) ? 'rgba(239,68,68,0.12)' : colors.accent }]}>
+                  <MaterialCommunityIcons name={(walletBalance !== null && walletBalance < 10) ? 'wallet-outline' : 'bike'} size={40} color={(walletBalance !== null && walletBalance < 10) ? '#EF4444' : colors.textMuted} />
                 </View>
-                <Text style={[styles.offlineText, { color: colors.text }]}>You are Offline</Text>
-                <Text style={[styles.offlineSubtext, { color: colors.textSecondary }]}>Toggle the duty switch above to start receiving deliveries and earning payouts</Text>
-                <TouchableOpacity style={[styles.goOnlineBtn, { backgroundColor: colors.primary }]} onPress={() => handleToggleOnline(true)}>
-                  <Text style={styles.goOnlineText}>Go Online Now</Text>
-                </TouchableOpacity>
+                <Text style={[styles.offlineText, { color: (walletBalance !== null && walletBalance < 10) ? '#DC2626' : colors.text, fontWeight: '900' }]}>
+                  {(walletBalance !== null && walletBalance < 10) 
+                    ? (walletBalance <= 0 ? 'WALLET BALANCE EXHAUSTED' : 'WALLET BALANCE INSUFFICIENT')
+                    : 'You are Offline'}
+                </Text>
+                <Text style={[styles.offlineSubtext, { color: colors.textSecondary }]}>
+                  {(walletBalance !== null && walletBalance < 10)
+                    ? (walletBalance <= 0 
+                        ? 'Recharge your operational wallet to continue receiving orders.'
+                        : `Minimum ₹10 balance required to go online. Current balance: ₹${walletBalance.toFixed(2)}.`)
+                    : 'Toggle the duty switch above to start receiving deliveries and earning fares'}
+                </Text>
+                {(walletBalance !== null && walletBalance < 10) ? (
+                  <TouchableOpacity style={[styles.goOnlineBtn, { backgroundColor: '#DC2626' }]} onPress={() => navigation.navigate('Wallet')}>
+                    <Text style={[styles.goOnlineText, { fontWeight: '900', letterSpacing: 0.5 }]}>RECHARGE WALLET</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity style={[styles.goOnlineBtn, { backgroundColor: colors.primary }]} onPress={() => handleToggleOnline(true)}>
+                    <Text style={styles.goOnlineText}>Go Online Now</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             )}
 
@@ -854,12 +938,16 @@ const DriverDashboardScreen = () => {
                   </TouchableOpacity>
                 </View>
 
-                {historyOrders.filter((o: any) => o.status === 'completed').length === 0 ? (
+                {historyOrders.filter((o: any) => ['completed', 'delivered', 'done', 'finished', 'closed', 'success'].includes((o.status || '').toLowerCase())).length === 0 ? (
                   <View style={{ padding: 24, alignItems: 'center' }}>
                     <Text style={{ color: colors.textSecondary, fontSize: 13 }}>No completed tasks found</Text>
                   </View>
                 ) : (
-                  historyOrders.filter((o: any) => o.status === 'completed').slice(0, 3).map((item: any, idx: number, arr: any[]) => {
+                  historyOrders
+                    .filter((o: any) => ['completed', 'delivered', 'done', 'finished', 'closed', 'success'].includes((o.status || '').toLowerCase()))
+                    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+                    .slice(0, 3)
+                    .map((item: any, idx: number, arr: any[]) => {
                     const isLast = idx === arr.length - 1;
                     
                     let timeText = 'Today';

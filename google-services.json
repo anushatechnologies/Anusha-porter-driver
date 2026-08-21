@@ -215,6 +215,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "64875938387-cb7hn1p8av54bagkalfb4iq159cel66c.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.anushamilktrades",
+            "certificate_hash": "76c6ab3567e8a126e69c40b88d875b366e8fff20"
+          }
+        },
+        {
           "client_id": "64875938387-ssgcdppr822e6p94u8h400hh8ff5vp1d.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
@@ -263,11 +271,11 @@
       },
       "oauth_client": [
         {
-          "client_id": "64875938387-6kha1jqtgvbu3vus1o2rtnjp3c3i33if.apps.googleusercontent.com",
+          "client_id": "64875938387-1cejv33hfj78p028fjpqcnm00bo6g1il.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
             "package_name": "com.anushaporter.driver",
-            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+            "certificate_hash": "792baa88c497955a43a4001121ebc7f3b227cecf"
           }
         },
         {
@@ -276,14 +284,6 @@
           "android_info": {
             "package_name": "com.anushaporter.driver",
             "certificate_hash": "380bde6fe5de174b52def986682ea7cd9f338459"
-          }
-        },
-        {
-          "client_id": "64875938387-uploadkeystorehash.apps.googleusercontent.com",
-          "client_type": 1,
-          "android_info": {
-            "package_name": "com.anushaporter.driver",
-            "certificate_hash": "792baa88c497955a43a4001121ebc7f3b227cecf"
           }
         },
         {

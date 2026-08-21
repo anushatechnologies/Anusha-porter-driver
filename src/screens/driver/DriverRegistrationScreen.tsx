@@ -27,7 +27,7 @@ import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import AsyncStorage from '../../services/asyncStorageShim';
 import { uploadImageToBackend } from '../../services/imageUpload';
-import { verifyFirebaseOtp, createDriverProfile, getDriverProfile, getDriverProfileByPhone, checkDriverPhone } from '../../services/api';
+import { verifyFirebaseOtp, createDriverProfile, getDriverProfile, getDriverProfileByPhone, checkDriverPhone, getActiveVehicles, VehicleOption } from '../../services/api';
 import { validateProfilePhoto, PhotoValidationStatus } from '../../services/faceDetection';
 import { cleanUrl } from '../../utils/urlHelpers';
 import {
@@ -66,6 +66,7 @@ const DriverRegistrationScreen = () => {
     dob: '',
     gender: '',
     panNumber: '',
+    vehicleId: '',
     vehicleType: '',
     vehicleNumber: '',
     rcNumber: '',
@@ -80,6 +81,33 @@ const DriverRegistrationScreen = () => {
     accountNumber: '',
     ifscCode: '',
   });
+
+  // Dynamic vehicles list loaded from Admin backend
+  const [vehicleList, setVehicleList] = useState<VehicleOption[]>([]);
+  const [loadingVehicles, setLoadingVehicles] = useState(true);
+  const [vehicleError, setVehicleError] = useState<string | null>(null);
+
+  const fetchVehicles = async () => {
+    setLoadingVehicles(true);
+    setVehicleError(null);
+    try {
+      const res = await getActiveVehicles();
+      if (res.success && res.vehicles && res.vehicles.length > 0) {
+        setVehicleList(res.vehicles);
+      } else {
+        setVehicleList([]);
+        setVehicleError(res.message || 'No vehicle types are currently configured by Admin.');
+      }
+    } catch (err: any) {
+      setVehicleError(err?.message || 'Unable to load vehicle types. Please check your connection.');
+    } finally {
+      setLoadingVehicles(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchVehicles();
+  }, []);
 
   // Pre-populate if driver details exist in backend database or local storage
   useEffect(() => {
@@ -121,6 +149,7 @@ const DriverRegistrationScreen = () => {
             city: driverDb.city || prev.city,
             state: driverDb.state || prev.state,
             pincode: driverDb.pincode || prev.pincode,
+            vehicleId: driverDb.vehicleId || prev.vehicleId || '',
             vehicleType: driverDb.vehicleType || prev.vehicleType,
             vehicleNumber: driverDb.vehicleNumber || prev.vehicleNumber,
             rcNumber: driverDb.rcNumber || prev.rcNumber,
@@ -817,18 +846,29 @@ const DriverRegistrationScreen = () => {
           }
 
           // ── STEP 3: Create driver profile in database ──────────────
+          const selectedVehicleObj = vehicleList.find(
+            v => (form.vehicleId && v.id === form.vehicleId) || v.name === form.vehicleType || v.type === form.vehicleType
+          );
+          const vehicleCategoryName = selectedVehicleObj?.name || cleanForm.vehicleType || form.vehicleType || 'Scooter';
+          const vehicleTypeCode = selectedVehicleObj?.type || (cleanForm.vehicleType ? cleanForm.vehicleType.toLowerCase().replace(/\s+/g, '_') : 'scooter');
+
           let driverRes: Response;
           try {
             driverRes = await createDriverProfile({
               name: cleanForm.fullName,
               email: cleanForm.email,
+              phone: cleanForm.mobile || form.mobile,
               dob: cleanForm.dob,
               gender: cleanForm.gender,
               addressLine1: cleanForm.addressLine1,
               city: cleanForm.city,
               state: cleanForm.state,
               pincode: cleanForm.pincode,
-              vehicleType: cleanForm.vehicleType,
+              vehicle: vehicleCategoryName,
+              vehicleType: vehicleCategoryName,
+              vehicle_type: vehicleTypeCode,
+              vehicleName: vehicleCategoryName,
+              vehicleId: cleanForm.vehicleId || form.vehicleId || selectedVehicleObj?.id,
               vehicleNumber: cleanForm.vehicleNumber,
               rcNumber: cleanForm.rcNumber,
               aadhaarNumber: cleanForm.aadhaarNumber,
@@ -898,28 +938,51 @@ const DriverRegistrationScreen = () => {
             setIsSubmitting(false);
 
             const status = driverRes.status;
-            let safeMessage = 'Unable to complete registration right now. Please try again later.';
-
-            if (status === 400 || status === 422) {
-              safeMessage = driverData?.message || driverData?.error || driverData?.details || 'Please check your details and try again.';
-            } else if (status === 401) {
-              safeMessage = 'Your session has expired. Please login again.';
-            } else if (status === 409) {
-              safeMessage = 'Your KYC application already exists.';
-            } else if (status >= 500) {
-              safeMessage = 'Unable to submit your KYC right now. Please try again later.';
-            }
+            let rawMsg = String(driverData?.message || driverData?.error || driverData?.details || '');
+            let isDuplicateEmail = rawMsg.toLowerCase().includes('duplicate') && (rawMsg.toLowerCase().includes('email') || rawMsg.toLowerCase().includes('@') || rawMsg.toLowerCase().includes('ukre66mdta4hy6pxm2w1rqu08jv'));
+            let isDuplicatePhone = rawMsg.toLowerCase().includes('duplicate') && (rawMsg.toLowerCase().includes('phone') || rawMsg.toLowerCase().includes('mobile'));
 
             addLog(`❌ Database Save Failed: ${status}`);
 
-            Alert.alert(
-              'Registration Failed',
-              safeMessage,
-              [
-                { text: 'Try Again', style: 'default', onPress: () => { } },
-                { text: 'Contact Support', onPress: () => navigation.navigate('Support' as any) },
-              ]
-            );
+            if (isDuplicateEmail) {
+              Alert.alert(
+                'Email Already Registered',
+                `The email address "${cleanForm.email}" is already associated with an existing driver account.\n\nPlease login using your mobile number or enter a different email address.`,
+                [
+                  { text: 'Change Email', style: 'default', onPress: () => setCurrentStep(0) },
+                  { text: 'Go to Login', style: 'default', onPress: () => navigation.navigate('Login', { role: 'driver', phone: form.mobile }) },
+                ]
+              );
+            } else if (isDuplicatePhone) {
+              Alert.alert(
+                'Phone Already Registered',
+                `The mobile number "${cleanForm.mobile}" is already registered.\n\nPlease log in directly to your driver dashboard.`,
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Go to Login', style: 'default', onPress: () => navigation.navigate('Login', { role: 'driver', phone: form.mobile }) },
+                ]
+              );
+            } else {
+              let safeMessage = 'Unable to complete registration right now. Please try again later.';
+              if (status === 400 || status === 422) {
+                safeMessage = rawMsg && !rawMsg.includes('could not execute statement') ? rawMsg : 'Please check your submitted details and try again.';
+              } else if (status === 401) {
+                safeMessage = 'Your session has expired. Please login again.';
+              } else if (status === 409) {
+                safeMessage = 'Your KYC application already exists in our system.';
+              } else if (status >= 500) {
+                safeMessage = rawMsg && !rawMsg.includes('could not execute statement') ? rawMsg : 'Server was unable to save your details right now. Please try again later.';
+              }
+
+              Alert.alert(
+                'Registration Failed',
+                safeMessage,
+                [
+                  { text: 'Try Again', style: 'default', onPress: () => { } },
+                  { text: 'Contact Support', onPress: () => navigation.navigate('Support' as any) },
+                ]
+              );
+            }
           }
         } else {
           // ── Firebase signup failed ─────────────────────────────────
@@ -1234,44 +1297,67 @@ const DriverRegistrationScreen = () => {
       <View style={[styles.glassCardForm, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <Text style={[styles.inputLabel, { color: colors.textSecondary, marginBottom: 10 }]}>Delivery Transport Category</Text>
 
-        {/* Vehicles Grid list */}
-        <View style={styles.vehiclesGridGroup}>
-          {[
-            { type: 'Bike', iconName: 'bike', capacity: 'Load: Up to 20kg' },
-            { type: 'Scooter', iconName: 'scooter', capacity: 'Load: Up to 15kg' },
-            { type: 'Auto', iconName: 'rickshaw', capacity: 'Load: Up to 120kg' },
-            { type: 'Mini Truck', iconName: 'truck-delivery', capacity: 'Load: Up to 600kg' },
-          ].map(v => {
-            const isSelected = form.vehicleType === v.type;
-            return (
-              <TouchableOpacity
-                key={v.type}
-                style={[
-                  styles.vehicleSelectItem,
-                  { backgroundColor: colors.background, borderColor: colors.border },
-                  isSelected && { borderColor: colors.primary, backgroundColor: colors.background === '#F4F7FC' ? 'rgba(0, 82, 255, 0.04)' : 'rgba(0, 82, 255, 0.08)', borderWidth: 2 }
-                ]}
-                onPress={() => updateForm('vehicleType', v.type)}
-                activeOpacity={0.8}
-              >
-                {isSelected && (
-                  <View style={[styles.vehicleCheckBadge, { backgroundColor: colors.primary }]}>
-                    <Ionicons name="checkmark" size={10} color="#FFFFFF" />
-                  </View>
-                )}
-                <MaterialCommunityIcons
-                  name={v.iconName as any}
-                  size={30}
-                  color={isSelected ? colors.primary : colors.textSecondary}
-                />
-                <Text style={[styles.vehicleTypeNameText, { color: isSelected ? colors.primary : colors.text }, isSelected && { fontWeight: '800' }]}>
-                  {v.type}
-                </Text>
-                <Text style={styles.vehicleCapacityLabel}>{v.capacity}</Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
+        {/* Dynamic Vehicles Grid list from Admin */}
+        {loadingVehicles ? (
+          <View style={[styles.vehicleLoadingBox, { borderColor: colors.border }]}>
+            <ActivityIndicator size="small" color={colors.primary} />
+            <Text style={[styles.vehicleLoadingText, { color: colors.textSecondary }]}>
+              Loading vehicle types from server...
+            </Text>
+          </View>
+        ) : vehicleError ? (
+          <View style={[styles.vehicleErrorBox, { borderColor: colors.error }]}>
+            <Ionicons name="alert-circle-outline" size={24} color={colors.error} />
+            <Text style={[styles.vehicleErrorText, { color: colors.error }]}>{vehicleError}</Text>
+            <TouchableOpacity style={[styles.vehicleRetryBtn, { borderColor: colors.primary }]} onPress={fetchVehicles}>
+              <Ionicons name="refresh" size={14} color={colors.primary} />
+              <Text style={[styles.vehicleRetryBtnText, { color: colors.primary }]}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        ) : vehicleList.length === 0 ? (
+          <View style={[styles.vehicleEmptyBox, { borderColor: colors.border }]}>
+            <MaterialCommunityIcons name="car-off" size={26} color={colors.textSecondary} />
+            <Text style={[styles.vehicleEmptyText, { color: colors.textSecondary }]}>
+              No vehicle types are currently available.
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.vehiclesGridGroup}>
+            {vehicleList.map(v => {
+              const isSelected = (form.vehicleId && form.vehicleId === v.id) || form.vehicleType === v.name || form.vehicleType === v.type;
+              return (
+                <TouchableOpacity
+                  key={v.id}
+                  style={[
+                    styles.vehicleSelectItem,
+                    { backgroundColor: colors.background, borderColor: colors.border },
+                    isSelected && { borderColor: colors.primary, backgroundColor: colors.background === '#F4F7FC' ? 'rgba(0, 82, 255, 0.04)' : 'rgba(0, 82, 255, 0.08)', borderWidth: 2 }
+                  ]}
+                  onPress={() => {
+                    updateForm('vehicleId', v.id);
+                    updateForm('vehicleType', v.name);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  {isSelected && (
+                    <View style={[styles.vehicleCheckBadge, { backgroundColor: colors.primary }]}>
+                      <Ionicons name="checkmark" size={10} color="#FFFFFF" />
+                    </View>
+                  )}
+                  <MaterialCommunityIcons
+                    name={v.iconName as any}
+                    size={30}
+                    color={isSelected ? colors.primary : colors.textSecondary}
+                  />
+                  <Text style={[styles.vehicleTypeNameText, { color: isSelected ? colors.primary : colors.text }, isSelected && { fontWeight: '800' }]}>
+                    {v.name}
+                  </Text>
+                  <Text style={styles.vehicleCapacityLabel}>{v.capacity}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
         {errors.vehicleType && (
           <View style={styles.errorBoxRow}>
             <Ionicons name="warning-outline" size={13} color={colors.error} />
@@ -2377,6 +2463,59 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#64748B',
     marginTop: 2,
+  },
+  vehicleLoadingBox: {
+    padding: 24,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginVertical: 8,
+  },
+  vehicleLoadingText: {
+    fontSize: 12.5,
+    fontWeight: '500',
+  },
+  vehicleErrorBox: {
+    padding: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginVertical: 8,
+  },
+  vehicleErrorText: {
+    fontSize: 12.5,
+    textAlign: 'center',
+  },
+  vehicleRetryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 4,
+  },
+  vehicleRetryBtnText: {
+    fontSize: 12.5,
+    fontWeight: '600',
+  },
+  vehicleEmptyBox: {
+    padding: 24,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginVertical: 8,
+  },
+  vehicleEmptyText: {
+    fontSize: 12.5,
+    textAlign: 'center',
   },
   uploadContainerCardList: {
     gap: 6,

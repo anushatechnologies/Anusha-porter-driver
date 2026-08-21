@@ -12,6 +12,7 @@ import {
   Image,
   ActivityIndicator,
   Dimensions,
+  Platform,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '../../theme/ThemeContext';
@@ -202,7 +203,18 @@ const DriverManagementScreen = () => {
                   <View style={styles.driverInfo}>
                     <Text style={[styles.driverName, { color: colors.text }]}>{driver.name || 'Anonymous Partner'}</Text>
                     <Text style={[styles.driverSub, { color: colors.textSecondary }]}>{driver.phone} • {driver.email}</Text>
-                    <Text style={[styles.vehicleLabel, { color: colors.textMuted }]}>{driver.vehicleType || 'Bike'} • {driver.vehicleNumber || 'No Plate'}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                      <View style={{ backgroundColor: 'rgba(0, 82, 255, 0.1)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12 }}>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: colors.primary }}>
+                          {driver.vehicleType || driver.vehicle || driver.vehicle_type || 'Unspecified'}
+                        </Text>
+                      </View>
+                      {driver.vehicleNumber ? (
+                        <Text style={{ fontSize: 11, color: colors.textMuted, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
+                          ({driver.vehicleNumber})
+                        </Text>
+                      ) : null}
+                    </View>
                   </View>
                   <View style={[styles.kycBadge, { backgroundColor: `${kycColors[driver.kyc || 'pending']}15` }]}>
                     <Text style={[styles.kycText, { color: kycColors[driver.kyc || 'pending'] }]}>
@@ -262,7 +274,9 @@ const DriverManagementScreen = () => {
                 <View style={[styles.detailTable, { backgroundColor: colors.cardLight }]}>
                   <View style={styles.tableRow}>
                     <Text style={[styles.rowLabel, { color: colors.textSecondary }]}>Vehicle Type</Text>
-                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.vehicleType}</Text>
+                    <Text style={[styles.rowVal, { color: colors.text }]}>
+                      {selectedDriver.vehicleType || (typeof selectedDriver.vehicle === 'string' ? selectedDriver.vehicle : selectedDriver.vehicle?.name || selectedDriver.vehicle?.type) || selectedDriver.vehicle_type || 'Unspecified'}
+                    </Text>
                   </View>
                   <View style={styles.tableRow}>
                     <Text style={[styles.rowLabel, { color: colors.textSecondary }]}>Vehicle Number</Text>

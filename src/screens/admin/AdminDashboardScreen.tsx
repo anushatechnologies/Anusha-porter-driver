@@ -6,18 +6,19 @@ import {
   StyleSheet,
   ScrollView,
   StatusBar,
+  Modal,
+  FlatList,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import Colors from '../../theme/colors';
-
+import { useTheme } from '../../theme/ThemeContext';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../../navigation/AppNavigator';
 import { getAdminMetrics, getAllOrders, getAdminNotifications, AdminMetrics } from '../../services/api';
-import { Modal, FlatList } from 'react-native';
 
 const AdminDashboardScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const { colors, theme } = useTheme();
   const [metrics, setMetrics] = useState<AdminMetrics | null>(null);
   const [recentOrders, setRecentOrders] = useState<any[]>([]);
   const [adminNotifications, setAdminNotifications] = useState<any[]>([]);
@@ -68,47 +69,47 @@ const AdminDashboardScreen = () => {
   );
 
   const cards = [
-    { label: 'Total Orders', value: metrics?.totalOrdersToday ? metrics.totalOrdersToday.toLocaleString() : '0', icon: 'package-variant-closed', iconType: 'MaterialCommunityIcons', color: Colors.primary, change: '', trend: 'up' },
-    { label: 'Active Orders', value: metrics?.activeOrders !== undefined ? metrics.activeOrders.toString() : '0', icon: 'flash-outline', iconType: 'Ionicons', color: Colors.success, change: '', trend: 'up' },
-    { label: 'Total Drivers', value: metrics?.totalDrivers !== undefined ? metrics.totalDrivers.toString() : '0', icon: 'bike', iconType: 'MaterialCommunityIcons', color: Colors.info, change: '', trend: 'up' },
-    { label: 'Revenue', value: metrics?.revenueToday ? `₹${metrics.revenueToday.toLocaleString()}` : '₹0', icon: 'cash-outline', iconType: 'Ionicons', color: Colors.warning, change: '', trend: 'up' },
-    { label: 'Pending KYC', value: metrics?.pendingKyc !== undefined ? metrics.pendingKyc.toString() : '0', icon: 'clock-outline', iconType: 'MaterialCommunityIcons', color: Colors.error, change: 'Action', trend: 'down' },
+    { label: 'Total Orders', value: metrics?.totalOrdersToday ? metrics.totalOrdersToday.toLocaleString() : '0', icon: 'package-variant-closed', iconType: 'MaterialCommunityIcons', color: colors.primary, change: '', trend: 'up' },
+    { label: 'Active Orders', value: metrics?.activeOrders !== undefined ? metrics.activeOrders.toString() : '0', icon: 'flash-outline', iconType: 'Ionicons', color: colors.success, change: '', trend: 'up' },
+    { label: 'Total Drivers', value: metrics?.totalDrivers !== undefined ? metrics.totalDrivers.toString() : '0', icon: 'bike', iconType: 'MaterialCommunityIcons', color: colors.info, change: '', trend: 'up' },
+    { label: 'Revenue', value: metrics?.revenueToday ? `₹${metrics.revenueToday.toLocaleString()}` : '₹0', icon: 'cash-outline', iconType: 'Ionicons', color: colors.warning, change: '', trend: 'up' },
+    { label: 'Pending KYC', value: metrics?.pendingKyc !== undefined ? metrics.pendingKyc.toString() : '0', icon: 'clock-outline', iconType: 'MaterialCommunityIcons', color: colors.error, change: 'Action', trend: 'down' },
     { label: 'Avg. Rating', value: metrics?.avgRating !== undefined ? `${metrics.avgRating.toFixed(1)}★` : '—', icon: 'star', iconType: 'Ionicons', color: '#FFD700', change: '', trend: 'up' },
   ];
 
   const statusColor: Record<string, string> = {
-    active: Colors.primary,
-    completed: Colors.success,
-    pending: Colors.warning,
-    cancelled: Colors.error,
+    active: colors.primary,
+    completed: colors.success,
+    pending: colors.warning,
+    cancelled: colors.error,
   };
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor={Colors.background} />
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <StatusBar barStyle={theme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
 
       <View style={styles.header}>
         <View>
-          <Text style={styles.greeting}>Admin Panel</Text>
-          <Text style={styles.title}>Dashboard</Text>
+          <Text style={[styles.greeting, { color: colors.primary }]}>Admin Panel</Text>
+          <Text style={[styles.title, { color: colors.text }]}>Dashboard</Text>
         </View>
         <View style={styles.headerRight}>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => setShowNotifModal(true)}>
-            <Ionicons name="notifications-outline" size={22} color={Colors.white} />
-            <View style={styles.notifDot} />
+          <TouchableOpacity style={[styles.iconBtn, { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 }]} onPress={() => setShowNotifModal(true)}>
+            <Ionicons name="notifications-outline" size={22} color={colors.text} />
+            <View style={[styles.notifDot, { backgroundColor: colors.error, borderColor: colors.card }]} />
           </TouchableOpacity>
-          <View style={styles.adminAvatar}>
-            <Ionicons name="shield-checkmark" size={20} color={Colors.info} />
+          <View style={[styles.adminAvatar, { backgroundColor: 'rgba(0,82,255,0.1)', borderColor: colors.primary }]}>
+            <Ionicons name="shield-checkmark" size={20} color={colors.primary} />
           </View>
         </View>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
         {/* Live Stats */}
-        <View style={styles.liveBanner}>
-          <View style={styles.liveDot} />
-          <Text style={styles.liveText}>Live • System Status: Operational</Text>
-          <Text style={styles.liveTime}>Updated just now</Text>
+        <View style={[styles.liveBanner, { backgroundColor: 'rgba(16,185,129,0.1)', borderColor: 'rgba(16,185,129,0.3)' }]}>
+          <View style={[styles.liveDot, { backgroundColor: colors.success }]} />
+          <Text style={[styles.liveText, { color: colors.success }]}>Live • System Status: Operational</Text>
+          <Text style={[styles.liveTime, { color: colors.textMuted }]}>Updated just now</Text>
         </View>
 
         {/* Cards Grid */}
@@ -116,7 +117,7 @@ const AdminDashboardScreen = () => {
           {cards.map(card => (
             <TouchableOpacity
               key={card.label}
-              style={styles.dashCard}
+              style={[styles.dashCard, { backgroundColor: colors.card, borderColor: colors.border }]}
               activeOpacity={0.8}
               onPress={() => {
                 if (card.label === 'Total Drivers' || card.label === 'Pending KYC') {
@@ -134,48 +135,50 @@ const AdminDashboardScreen = () => {
                 ) : (
                   <MaterialCommunityIcons name={card.icon as any} size={24} color={card.color} />
                 )}
-                <View style={[
-                  styles.changeBadge,
-                  { backgroundColor: card.trend === 'up' ? 'rgba(0,200,150,0.2)' : 'rgba(255,71,87,0.2)' },
-                ]}>
-                  <Ionicons
-                    name={card.trend === 'up' ? 'trending-up' : 'trending-down'}
-                    size={10}
-                    color={card.trend === 'up' ? Colors.success : Colors.error}
-                  />
-                  <Text style={[
-                    styles.changeText,
-                    { color: card.trend === 'up' ? Colors.success : Colors.error },
+                {card.change ? (
+                  <View style={[
+                    styles.changeBadge,
+                    { backgroundColor: card.trend === 'up' ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)' },
                   ]}>
-                    {card.change}
-                  </Text>
-                </View>
+                    <Ionicons
+                      name={card.trend === 'up' ? 'trending-up' : 'trending-down'}
+                      size={10}
+                      color={card.trend === 'up' ? colors.success : colors.error}
+                    />
+                    <Text style={[
+                      styles.changeText,
+                      { color: card.trend === 'up' ? colors.success : colors.error },
+                    ]}>
+                      {card.change}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
               <Text style={[styles.cardValue, { color: card.color }]}>{card.value}</Text>
-              <Text style={styles.cardLabel}>{card.label}</Text>
+              <Text style={[styles.cardLabel, { color: colors.textSecondary }]}>{card.label}</Text>
             </TouchableOpacity>
           ))}
         </View>
 
         {/* Revenue Chart Placeholder */}
-        <View style={styles.chartCard}>
+        <View style={[styles.chartCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <View style={styles.chartHeader}>
-            <Text style={styles.chartTitle}>Revenue Overview</Text>
+            <Text style={[styles.chartTitle, { color: colors.text }]}>Revenue Overview</Text>
             <View style={styles.chartPeriod}>
-              <Text style={styles.chartPeriodText}>Monthly</Text>
-              <Ionicons name="chevron-down" size={14} color={Colors.gray} />
+              <Text style={[styles.chartPeriodText, { color: colors.gray }]}>Monthly</Text>
+              <Ionicons name="chevron-down" size={14} color={colors.gray} />
             </View>
           </View>
           <View style={styles.chartArea}>
             {[40, 65, 45, 80, 55, 90, 70, 85, 60, 95, 75, 100].map((h, i) => (
               <View key={i} style={styles.chartBarCol}>
-                <View style={[styles.chartBar, { height: `${h}%`, backgroundColor: i === 11 ? Colors.primary : Colors.surface }]} />
+                <View style={[styles.chartBar, { height: `${h}%`, backgroundColor: i === 11 ? colors.primary : colors.surface }]} />
               </View>
             ))}
           </View>
           <View style={styles.chartMonths}>
             {['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map(m => (
-              <Text key={m} style={styles.chartMonth}>{m}</Text>
+              <Text key={m} style={[styles.chartMonth, { color: colors.textMuted }]}>{m}</Text>
             ))}
           </View>
         </View>
@@ -183,31 +186,31 @@ const AdminDashboardScreen = () => {
         {/* Recent Orders */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Recent Orders</Text>
-            <TouchableOpacity>
-              <Text style={styles.seeAll}>View All</Text>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>Recent Orders</Text>
+            <TouchableOpacity onPress={() => navigation.navigate('OrderManagement')}>
+              <Text style={[styles.seeAll, { color: colors.primary }]}>View All</Text>
             </TouchableOpacity>
           </View>
           {recentOrders.map(order => (
-            <View key={order.id} style={styles.orderRow}>
+            <View key={order.id} style={[styles.orderRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
               <View style={styles.orderLeft}>
-                <View style={[styles.orderStatusDot, { backgroundColor: statusColor[order.status] }]} />
+                <View style={[styles.orderStatusDot, { backgroundColor: statusColor[order.status] || colors.gray }]} />
                 <View>
                   <View style={styles.orderTopRow}>
-                    <Text style={styles.orderId}>{order.id}</Text>
-                    <Text style={styles.orderTime}>{order.time}</Text>
+                    <Text style={[styles.orderId, { color: colors.text }]}>{order.id}</Text>
+                    <Text style={[styles.orderTime, { color: colors.textMuted }]}>{order.time}</Text>
                   </View>
-                  <Text style={styles.orderCustomer}>{order.customer}</Text>
+                  <Text style={[styles.orderCustomer, { color: colors.textSecondary }]}>{order.customer}</Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                    <Ionicons name="person-outline" size={11} color={Colors.textMuted} />
-                    <Text style={styles.orderDriver}>{order.driver}</Text>
+                    <Ionicons name="person-outline" size={11} color={colors.textMuted} />
+                    <Text style={[styles.orderDriver, { color: colors.textMuted }]}>{order.driver}</Text>
                   </View>
                 </View>
               </View>
               <View style={styles.orderRight}>
-                <Text style={styles.orderAmount}>{order.amount}</Text>
-                <View style={[styles.statusBadge, { backgroundColor: `${statusColor[order.status]}22` }]}>
-                  <Text style={[styles.statusText, { color: statusColor[order.status] }]}>
+                <Text style={[styles.orderAmount, { color: colors.text }]}>{order.amount}</Text>
+                <View style={[styles.statusBadge, { backgroundColor: `${statusColor[order.status] || colors.gray}22` }]}>
+                  <Text style={[styles.statusText, { color: statusColor[order.status] || colors.gray }]}>
                     {order.status}
                   </Text>
                 </View>
@@ -218,18 +221,20 @@ const AdminDashboardScreen = () => {
 
         {/* Quick Actions */}
         <View style={styles.quickActions}>
-          <Text style={styles.sectionTitle}>Quick Actions</Text>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Quick Actions</Text>
           <View style={styles.actionGrid}>
             {[
-              { icon: 'people-outline', route: 'DriverManagement', label: 'Drivers', color: Colors.primary },
-              { icon: 'package-variant-closed', route: 'OrderManagement', label: 'Orders', color: Colors.info },
-              { icon: 'cash-outline', route: 'PaymentManagement', label: 'Payments', color: Colors.success },
-              { icon: 'person-outline', route: 'UserManagement', label: 'Users', color: Colors.warning },
-              { icon: 'bar-chart-outline', route: 'Analytics', label: 'Analytics', color: Colors.error },
+              { icon: 'people-outline', route: 'DriverManagement', label: 'Drivers', color: colors.primary },
+              { icon: 'car-sport-outline', route: 'VehicleManagement', label: 'Vehicle Types', color: '#6366F1' },
+              { icon: 'package-variant-closed', route: 'OrderManagement', label: 'Orders', color: colors.info },
+              { icon: 'cash-outline', route: 'PaymentManagement', label: 'Payments', color: colors.success },
+              { icon: 'person-outline', route: 'UserManagement', label: 'Users', color: colors.warning },
+              { icon: 'bar-chart-outline', route: 'Analytics', label: 'Analytics', color: colors.error },
+              { icon: 'wallet-outline', route: 'WalletSettings', label: 'Wallet Config', color: '#10B981' },
             ].map(action => (
-              <TouchableOpacity key={action.label} style={styles.actionCard} onPress={() => navigation.navigate(action.route as any)}>
+              <TouchableOpacity key={action.label} style={[styles.actionCard, { backgroundColor: colors.card, borderColor: colors.border }]} onPress={() => navigation.navigate(action.route as any)}>
                 <Ionicons name={action.icon as any} size={22} color={action.color} />
-                <Text style={styles.actionLabel}>{action.label}</Text>
+                <Text style={[styles.actionLabel, { color: colors.textSecondary }]}>{action.label}</Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -241,14 +246,14 @@ const AdminDashboardScreen = () => {
       {/* Admin Notifications Modal */}
       <Modal visible={showNotifModal} animationType="slide" transparent onRequestClose={() => setShowNotifModal(false)}>
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }}>
-          <View style={{ backgroundColor: Colors.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: '80%', borderWidth: 1, borderColor: Colors.border }}>
+          <View style={{ backgroundColor: colors.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: '80%', borderWidth: 1, borderColor: colors.border }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <Ionicons name="notifications" size={24} color={Colors.primary} />
-                <Text style={{ fontSize: 18, fontWeight: '800', color: Colors.white }}>System Notifications</Text>
+                <Ionicons name="notifications" size={24} color={colors.primary} />
+                <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text }}>System Notifications</Text>
               </View>
               <TouchableOpacity onPress={() => setShowNotifModal(false)}>
-                <Ionicons name="close-circle" size={26} color={Colors.textMuted} />
+                <Ionicons name="close-circle" size={26} color={colors.textMuted} />
               </TouchableOpacity>
             </View>
 
@@ -257,20 +262,20 @@ const AdminDashboardScreen = () => {
               keyExtractor={(item) => String(item.id)}
               showsVerticalScrollIndicator={false}
               renderItem={({ item }) => (
-                <View style={{ backgroundColor: Colors.surface, padding: 14, borderRadius: 14, marginBottom: 10, borderWidth: 1, borderColor: Colors.border }}>
+                <View style={{ backgroundColor: colors.surface, padding: 14, borderRadius: 14, marginBottom: 10, borderWidth: 1, borderColor: colors.border }}>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <Text style={{ fontWeight: '700', fontSize: 14, color: Colors.white }}>{item.title}</Text>
-                    <Text style={{ fontSize: 10, color: Colors.textMuted }}>
+                    <Text style={{ fontWeight: '700', fontSize: 14, color: colors.text }}>{item.title}</Text>
+                    <Text style={{ fontSize: 10, color: colors.textMuted }}>
                       {item.timestamp ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Now'}
                     </Text>
                   </View>
-                  <Text style={{ fontSize: 12, color: Colors.textSecondary, lineHeight: 16 }}>{item.message}</Text>
+                  <Text style={{ fontSize: 12, color: colors.textSecondary, lineHeight: 16 }}>{item.message}</Text>
                 </View>
               )}
               ListEmptyComponent={
                 <View style={{ padding: 30, alignItems: 'center' }}>
-                  <Ionicons name="notifications-off-outline" size={40} color={Colors.textMuted} />
-                  <Text style={{ color: Colors.textMuted, marginTop: 8 }}>No notifications yet</Text>
+                  <Ionicons name="notifications-off-outline" size={40} color={colors.textMuted} />
+                  <Text style={{ color: colors.textMuted, marginTop: 8 }}>No notifications yet</Text>
                 </View>
               }
             />
@@ -284,7 +289,6 @@ const AdminDashboardScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.background,
   },
   header: {
     flexDirection: 'row',
@@ -296,7 +300,6 @@ const styles = StyleSheet.create({
   },
   greeting: {
     fontSize: 12,
-    color: Colors.primary,
     fontWeight: '700',
     letterSpacing: 1,
     textTransform: 'uppercase',
@@ -304,7 +307,6 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 26,
     fontWeight: '900',
-    color: Colors.white,
   },
   headerRight: {
     flexDirection: 'row',
@@ -315,7 +317,6 @@ const styles = StyleSheet.create({
     width: 42,
     height: 42,
     borderRadius: 13,
-    backgroundColor: Colors.card,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
@@ -327,22 +328,15 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: Colors.error,
     borderWidth: 1.5,
-    borderColor: Colors.card,
   },
   adminAvatar: {
     width: 42,
     height: 42,
     borderRadius: 13,
-    backgroundColor: 'rgba(52,152,219,0.2)',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
-    borderColor: Colors.info,
-  },
-  adminAvatarText: {
-    fontSize: 20,
   },
   content: {
     paddingHorizontal: 20,
@@ -352,27 +346,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: 'rgba(0,200,150,0.1)',
     borderRadius: 12,
     padding: 12,
     borderWidth: 1,
-    borderColor: 'rgba(0,200,150,0.3)',
   },
   liveDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: Colors.success,
   },
   liveText: {
     flex: 1,
     fontSize: 13,
-    color: Colors.success,
     fontWeight: '600',
   },
   liveTime: {
     fontSize: 11,
-    color: Colors.textMuted,
   },
   cardsGrid: {
     flexDirection: 'row',
@@ -381,20 +370,15 @@ const styles = StyleSheet.create({
   },
   dashCard: {
     width: '47%',
-    backgroundColor: Colors.card,
     borderRadius: 18,
     padding: 16,
     borderWidth: 1,
-    borderColor: Colors.border,
   },
   cardTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 10,
-  },
-  cardIcon: {
-    fontSize: 24,
   },
   changeBadge: {
     flexDirection: 'row',
@@ -415,15 +399,12 @@ const styles = StyleSheet.create({
   },
   cardLabel: {
     fontSize: 12,
-    color: Colors.textSecondary,
     fontWeight: '500',
   },
   chartCard: {
-    backgroundColor: Colors.card,
     borderRadius: 18,
     padding: 18,
     borderWidth: 1,
-    borderColor: Colors.border,
   },
   chartHeader: {
     flexDirection: 'row',
@@ -433,7 +414,6 @@ const styles = StyleSheet.create({
   chartTitle: {
     fontSize: 16,
     fontWeight: '700',
-    color: Colors.white,
   },
   chartPeriod: {
     flexDirection: 'row',
@@ -442,7 +422,6 @@ const styles = StyleSheet.create({
   },
   chartPeriodText: {
     fontSize: 13,
-    color: Colors.gray,
   },
   chartArea: {
     flexDirection: 'row',
@@ -468,7 +447,6 @@ const styles = StyleSheet.create({
   chartMonth: {
     flex: 1,
     fontSize: 8,
-    color: Colors.textMuted,
     textAlign: 'center',
   },
   section: {
@@ -482,10 +460,8 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 17,
     fontWeight: '700',
-    color: Colors.white,
   },
   seeAll: {
-    color: Colors.primary,
     fontSize: 13,
     fontWeight: '600',
   },
@@ -493,11 +469,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: Colors.card,
     borderRadius: 14,
     padding: 14,
     borderWidth: 1,
-    borderColor: Colors.border,
   },
   orderLeft: {
     flexDirection: 'row',
@@ -519,20 +493,16 @@ const styles = StyleSheet.create({
   orderId: {
     fontSize: 13,
     fontWeight: '700',
-    color: Colors.white,
   },
   orderTime: {
     fontSize: 11,
-    color: Colors.textMuted,
   },
   orderCustomer: {
     fontSize: 12,
-    color: Colors.textSecondary,
     marginTop: 2,
   },
   orderDriver: {
     fontSize: 11,
-    color: Colors.textMuted,
     marginTop: 1,
   },
   orderRight: {
@@ -542,7 +512,6 @@ const styles = StyleSheet.create({
   orderAmount: {
     fontSize: 15,
     fontWeight: '800',
-    color: Colors.white,
   },
   statusBadge: {
     paddingHorizontal: 8,
@@ -559,27 +528,23 @@ const styles = StyleSheet.create({
   },
   actionGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 12,
   },
   actionCard: {
-    flex: 1,
-    backgroundColor: Colors.card,
+    width: '30%',
     borderRadius: 14,
     padding: 14,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: Colors.border,
     gap: 8,
   },
-  actionIcon: {
-    fontSize: 22,
-  },
   actionLabel: {
-    fontSize: 10,
-    color: Colors.textSecondary,
+    fontSize: 11,
     textAlign: 'center',
     fontWeight: '600',
   },
 });
 
 export default AdminDashboardScreen;
+

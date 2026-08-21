@@ -11,10 +11,11 @@ import {
   Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import Colors from '../../theme/colors';
+import { useTheme } from '../../theme/ThemeContext';
 import { getAllUsers, setUserBlock, AppUser } from '../../services/api';
 
 const UserManagementScreen = () => {
+  const { colors, theme } = useTheme();
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'active' | 'blocked'>('all');
   const [users, setUsers] = useState<AppUser[]>([]);
@@ -91,55 +92,54 @@ const UserManagementScreen = () => {
   };
 
   const renderUser = ({ item }: { item: AppUser }) => (
-    <View style={styles.userCard}>
-      <View style={styles.userAvatar}>
+    <View style={[styles.userCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+      <View style={[styles.userAvatar, { backgroundColor: colors.primary }]}>
         <Text style={styles.userAvatarText}>{(item.name || '?')[0].toUpperCase()}</Text>
       </View>
       <View style={styles.userInfo}>
         <View style={styles.userTopRow}>
-          <Text style={styles.userName} numberOfLines={1}>{item.name}</Text>
+          <Text style={[styles.userName, { color: colors.text }]} numberOfLines={1}>{item.name}</Text>
           <View
             style={[
               styles.statusBadge,
-              { backgroundColor: item.status === 'active' ? 'rgba(0,200,150,0.2)' : 'rgba(255,71,87,0.2)' },
+              { backgroundColor: item.status === 'blocked' ? `${colors.error}22` : `${colors.success}22` },
             ]}
           >
             <Text
               style={[
                 styles.statusText,
-                { color: item.status === 'active' ? Colors.success : Colors.error },
+                { color: item.status === 'blocked' ? colors.error : colors.success },
               ]}
             >
               {item.status || 'active'}
             </Text>
           </View>
         </View>
-        <Text style={styles.userId}>
-          #{item.id} • {item.phone || item.email || '—'}
+
+        <Text style={[styles.userId, { color: colors.textSecondary }]}>
+          {item.phone ? item.phone : item.email ? item.email : `#USR-${item.id}`}
         </Text>
+
         <View style={styles.userMeta}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-            <Ionicons name="cube-outline" size={12} color={Colors.textMuted} />
-            <Text style={styles.metaText}>{item.totalOrders ?? 0} orders</Text>
-          </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-            <Ionicons name="calendar-outline" size={12} color={Colors.textMuted} />
-            <Text style={styles.metaText}>{formatDate(item.createdAt)}</Text>
-          </View>
+          <Text style={[styles.metaText, { color: colors.textMuted }]}>
+            Orders: <Text style={{ color: colors.text, fontWeight: '700' }}>{item.totalOrders ?? 0}</Text>
+          </Text>
+          <Text style={[styles.metaText, { color: colors.textMuted }]}>Joined: {formatDate(item.createdAt)}</Text>
         </View>
       </View>
+
       <View style={styles.userActions}>
         {actionId === item.id ? (
-          <ActivityIndicator size="small" color={Colors.primary} />
+          <ActivityIndicator size="small" color={colors.primary} />
         ) : (
           <TouchableOpacity
-            style={[styles.actionBtn, { marginTop: 4 }]}
+            style={[styles.actionBtn, { backgroundColor: colors.surface }]}
             onPress={() => handleToggleBlock(item)}
           >
             <Ionicons
-              name={item.status === 'blocked' ? 'checkmark-circle-outline' : 'ban-outline'}
+              name={item.status === 'blocked' ? 'lock-open-outline' : 'ban-outline'}
               size={18}
-              color={item.status === 'blocked' ? Colors.success : Colors.error}
+              color={item.status === 'blocked' ? colors.success : colors.error}
             />
           </TouchableOpacity>
         )}
@@ -148,29 +148,30 @@ const UserManagementScreen = () => {
   );
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor={Colors.background} />
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <StatusBar barStyle={theme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
 
+      {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>User Management</Text>
-        <View style={styles.countBadge}>
-          <Text style={styles.countText}>{users.length} users</Text>
+        <Text style={[styles.title, { color: colors.text }]}>User Management</Text>
+        <View style={[styles.countBadge, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <Text style={[styles.countText, { color: colors.textSecondary }]}>{users.length} Users</Text>
         </View>
       </View>
 
-      {/* Search */}
-      <View style={styles.searchWrapper}>
-        <Ionicons name="search-outline" size={18} color={Colors.gray} />
+      {/* Search Bar */}
+      <View style={[styles.searchWrapper, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <Ionicons name="search-outline" size={18} color={colors.textMuted} />
         <TextInput
-          style={styles.searchInput}
+          style={[styles.searchInput, { color: colors.text }]}
           placeholder="Search by name, phone or email..."
-          placeholderTextColor={Colors.grayDark}
+          placeholderTextColor={colors.textMuted}
           value={search}
           onChangeText={setSearch}
         />
         {search.length > 0 && (
           <TouchableOpacity onPress={() => setSearch('')}>
-            <Ionicons name="close-circle" size={18} color={Colors.gray} />
+            <Ionicons name="close-circle" size={16} color={colors.textMuted} />
           </TouchableOpacity>
         )}
       </View>
@@ -180,27 +181,40 @@ const UserManagementScreen = () => {
         {(['all', 'active', 'blocked'] as const).map(f => (
           <TouchableOpacity
             key={f}
-            style={[styles.filterBtn, filter === f && styles.filterBtnActive]}
+            style={[
+              styles.filterBtn,
+              { backgroundColor: colors.card, borderColor: colors.border },
+              filter === f && { backgroundColor: colors.primary, borderColor: colors.primary },
+            ]}
             onPress={() => setFilter(f)}
           >
-            <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
-              {f.charAt(0).toUpperCase() + f.slice(1)}
-              {f === 'all' ? ` (${users.length})` : ` (${users.filter(u => u.status === f).length})`}
+            <Text
+              style={[
+                styles.filterText,
+                { color: filter === f ? '#FFFFFF' : colors.gray },
+              ]}
+            >
+              {f.charAt(0).toUpperCase() + f.slice(1)} (
+              {f === 'all'
+                ? users.length
+                : users.filter(u => u.status === f).length}
+              )
             </Text>
           </TouchableOpacity>
         ))}
       </View>
 
+      {/* List */}
       {loading ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          <ActivityIndicator size="large" color={Colors.primary} />
-          <Text style={{ color: Colors.textSecondary, marginTop: 12 }}>Loading users...</Text>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={{ color: colors.textSecondary, marginTop: 12 }}>Loading users...</Text>
         </View>
       ) : filtered.length === 0 ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-          <Ionicons name="people-outline" size={48} color={Colors.textMuted} />
-          <Text style={{ color: Colors.textSecondary, marginTop: 12, fontWeight: '600' }}>
-            {search ? 'No users match your search' : 'No users found'}
+          <Ionicons name="people-outline" size={48} color={colors.textMuted} />
+          <Text style={{ color: colors.textSecondary, marginTop: 12, fontWeight: '600' }}>
+            {search ? 'No users matching your search' : `No ${filter} users found`}
           </Text>
         </View>
       ) : (
@@ -220,7 +234,7 @@ const UserManagementScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
+  container: { flex: 1 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -229,30 +243,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 14,
   },
-  title: { fontSize: 24, fontWeight: '800', color: Colors.white },
+  title: { fontSize: 24, fontWeight: '800' },
   countBadge: {
-    backgroundColor: Colors.surface,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: Colors.border,
   },
-  countText: { color: Colors.textSecondary, fontSize: 13, fontWeight: '600' },
+  countText: { fontSize: 13, fontWeight: '600' },
   searchWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: Colors.card,
     borderRadius: 14,
     marginHorizontal: 20,
     paddingHorizontal: 14,
     height: 48,
     gap: 10,
     borderWidth: 1,
-    borderColor: Colors.border,
     marginBottom: 14,
   },
-  searchInput: { flex: 1, color: Colors.white, fontSize: 15 },
+  searchInput: { flex: 1, fontSize: 15 },
   filterRow: {
     flexDirection: 'row',
     paddingHorizontal: 20,
@@ -264,20 +274,14 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.card,
   },
-  filterBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  filterText: { color: Colors.gray, fontWeight: '600', fontSize: 12 },
-  filterTextActive: { color: Colors.white },
+  filterText: { fontWeight: '600', fontSize: 12 },
   list: { paddingHorizontal: 20, gap: 12 },
   userCard: {
     flexDirection: 'row',
-    backgroundColor: Colors.card,
     borderRadius: 16,
     padding: 14,
     borderWidth: 1,
-    borderColor: Colors.border,
     gap: 12,
     alignItems: 'center',
   },
@@ -285,25 +289,23 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 14,
-    backgroundColor: Colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  userAvatarText: { fontSize: 20, color: Colors.white, fontWeight: '700' },
+  userAvatarText: { fontSize: 20, color: '#FFFFFF', fontWeight: '700' },
   userInfo: { flex: 1 },
   userTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  userName: { fontSize: 15, fontWeight: '700', color: Colors.white, flex: 1, marginRight: 6 },
+  userName: { fontSize: 15, fontWeight: '700', flex: 1, marginRight: 6 },
   statusBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
   statusText: { fontSize: 11, fontWeight: '700', textTransform: 'capitalize' },
-  userId: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  userId: { fontSize: 12, marginTop: 2 },
   userMeta: { flexDirection: 'row', gap: 12, marginTop: 4 },
-  metaText: { fontSize: 12, color: Colors.textMuted },
+  metaText: { fontSize: 12 },
   userActions: { justifyContent: 'center', alignItems: 'center', width: 36 },
   actionBtn: {
     width: 36,
     height: 36,
     borderRadius: 10,
-    backgroundColor: Colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
   },

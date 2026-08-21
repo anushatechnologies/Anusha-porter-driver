@@ -2,8 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, Pressable, StyleSheet, ScrollView,
   StatusBar, Alert, KeyboardAvoidingView, Platform, ActivityIndicator, Dimensions,
-  BackHandler, Keyboard,
+  BackHandler, Keyboard, Image,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -163,7 +164,10 @@ const LoginScreen = () => {
       setLoading(false);
       setOtpMode(true);
       setCountdown(45);
-      setTimeout(() => otpRefs[0].current?.focus(), 100);
+      setTimeout(() => {
+        otpRefs[0].current?.focus();
+        scrollViewRef.current?.scrollToEnd({ animated: true });
+      }, 150);
     } catch (error: any) {
       console.error('[AUTH] Firebase Send OTP failed:', error);
       setLoading(false);
@@ -186,6 +190,8 @@ const LoginScreen = () => {
     }
   };
 
+  const scrollViewRef = useRef<ScrollView>(null);
+
   const handleOtpChange = (text: string, index: number) => {
     const newOtp = [...otp];
     newOtp[index] = text;
@@ -195,6 +201,7 @@ const LoginScreen = () => {
     }
     if (text.length === 1 && index === 5) {
       Keyboard.dismiss();
+      scrollViewRef.current?.scrollToEnd({ animated: true });
     }
   };
 
@@ -308,7 +315,7 @@ const LoginScreen = () => {
         city: String(driverDb.city || ''),
         state: String(driverDb.state || ''),
         pincode: String(driverDb.pincode || ''),
-        vehicleType: String(driverDb.vehicleType || 'Bike'),
+        vehicleType: String(driverDb.vehicleType || ''),
         vehicleNumber: String(driverDb.vehicleNumber || ''),
         rcNumber: String(driverDb.rcNumber || ''),
         aadhaarNumber: String(driverDb.aadhaarNumber || ''),
@@ -358,8 +365,8 @@ const LoginScreen = () => {
   };
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F4F7FC" />
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <StatusBar barStyle="dark-content" backgroundColor="#F5F9FF" />
       
       {/* Background Gradient */}
       <View style={styles.backgroundContainer}>
@@ -376,47 +383,29 @@ const LoginScreen = () => {
       </View>
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-          
-          {/* Top Brand Section */}
-          <View style={styles.topSection}>
-            <View style={styles.brandContainer}>
-              <View style={styles.logoBadge}>
-                <Ionicons name="flash" size={24} color="#FFFFFF" />
-              </View>
-              <Text style={styles.brandTitleAnusha}>ANUSHA</Text>
-              <Text style={styles.brandTitlePorter}>PORTER</Text>
-              <View style={styles.brandSubtitleRow}>
-                <Text style={styles.brandSubtitleDash}>— </Text>
-                <Text style={styles.brandSubtitleText}>DRIVER APP</Text>
-                <Text style={styles.brandSubtitleDash}> —</Text>
-              </View>
-              <Text style={styles.taglineText}>Deliver more.{"\n"}Earn more.{"\n"}Grow together.</Text>
+        <ScrollView 
+          ref={scrollViewRef}
+          style={{ flex: 1 }} 
+          contentContainerStyle={styles.scrollContent} 
+          showsVerticalScrollIndicator={false} 
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Top Brand Header */}
+          <View style={styles.brandHeader}>
+            <View style={styles.logoBadgeContainer}>
+              <Image 
+                source={require('../../../assets/splash-icon.png')} 
+                style={styles.logoImage} 
+                resizeMode="contain"
+              />
             </View>
-
-            {/* Scooter Illustration */}
-            <View style={styles.scooterContainer}>
-              <Svg width="180" height="180" viewBox="0 0 120 120">
-                {/* Shadow */}
-                <Ellipse cx="65" cy="110" rx="45" ry="8" fill="#000000" opacity="0.15" />
-                {/* Wheels */}
-                <Circle cx="32" cy="100" r="14" fill="#1E293B" />
-                <Circle cx="32" cy="100" r="8" fill="#94A3B8" />
-                <Circle cx="94" cy="100" r="14" fill="#1E293B" />
-                <Circle cx="94" cy="100" r="8" fill="#94A3B8" />
-                {/* Body Elements */}
-                <Path d="M22 100 A15 15 0 0 1 42 100 L46 88 L75 88 L80 100 A15 15 0 0 1 106 100" fill="none" stroke="#003BC4" strokeWidth="6" />
-                <Path d="M36 90 L48 40" stroke="#0F172A" strokeWidth="5" strokeLinecap="round" />
-                <Path d="M42 32 L34 35" stroke="#0F172A" strokeWidth="4" strokeLinecap="round" />
-                <Path d="M44 80 L78 80 L74 64 L48 64 Z" fill="#0052FF" />
-                <Path d="M46 54 L36 90" stroke="#0052FF" strokeWidth="10" strokeLinecap="round" />
-                {/* Delivery Box */}
-                <Rect x="68" y="30" width="38" height="34" rx="3" fill="#0052FF" />
-                <Path d="M87 38 L82 46 L87 46 L85 54 L92 44 L87 44 Z" fill="#FFFFFF" />
-              </Svg>
+            <Text style={styles.brandTitle}>ANUSHA PORTER</Text>
+            <View style={styles.roleTag}>
+              <Ionicons name="flash" size={11} color="#0052FF" />
+              <Text style={styles.roleTagText}>DELIVERY PARTNER</Text>
             </View>
           </View>
-
+          
           {/* White Login Card */}
           <View style={styles.loginCard}>
             <Text style={styles.welcomeText}>{isRegisterMode ? 'Create Account' : 'Welcome Back!'}</Text>
@@ -558,33 +547,6 @@ const LoginScreen = () => {
                 </View>
               )}
             </TouchableOpacity>
-
-            {/* 3 Features Footer */}
-            <View style={styles.featuresCard}>
-              <View style={styles.featureItem}>
-                <View style={styles.featureIconBadge}>
-                  <Ionicons name="shield-checkmark" size={16} color="#FFFFFF" />
-                </View>
-                <Text style={styles.featureTitle}>Safe & Secure</Text>
-                <Text style={styles.featureDesc}>Your data is always{"\n"}protected</Text>
-              </View>
-              <View style={styles.featureDivider} />
-              <View style={styles.featureItem}>
-                <View style={styles.featureIconBadge}>
-                  <Ionicons name="location" size={16} color="#FFFFFF" />
-                </View>
-                <Text style={styles.featureTitle}>Live Tracking</Text>
-                <Text style={styles.featureDesc}>Track deliveries{"\n"}in real-time</Text>
-              </View>
-              <View style={styles.featureDivider} />
-              <View style={styles.featureItem}>
-                <View style={styles.featureIconBadge}>
-                  <Ionicons name="wallet" size={16} color="#FFFFFF" />
-                </View>
-                <Text style={styles.featureTitle}>Earn More</Text>
-                <Text style={styles.featureDesc}>Incentives & bonuses{"\n"}on every delivery</Text>
-              </View>
-            </View>
           </View>
 
           {/* New to Anusha Porter */}
@@ -606,36 +568,78 @@ const LoginScreen = () => {
 
         </ScrollView>
       </KeyboardAvoidingView>
-    </View>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F8FAFC' },
   backgroundContainer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
-  topSection: { flexDirection: 'row', paddingTop: 60, paddingHorizontal: 28, height: 280 },
-  brandContainer: { flex: 1.2 },
-  logoBadge: { width: 44, height: 44, borderRadius: 10, backgroundColor: '#0052FF', alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
-  brandTitleAnusha: { fontSize: 28, fontWeight: '900', color: '#0F172A', letterSpacing: 0.5, lineHeight: 32 },
-  brandTitlePorter: { fontSize: 28, fontWeight: '900', color: '#0052FF', letterSpacing: 0.5, lineHeight: 32 },
-  brandSubtitleRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
-  brandSubtitleDash: { fontSize: 11, fontWeight: '800', color: '#0052FF' },
-  brandSubtitleText: { fontSize: 11, fontWeight: '800', color: '#0052FF', letterSpacing: 1.2, marginHorizontal: 4 },
-  taglineText: { fontSize: 13, fontWeight: '600', color: '#475569', marginTop: 16, lineHeight: 20 },
-  scooterContainer: { flex: 1.5, alignItems: 'flex-end', justifyContent: 'center' },
-  
+  scrollContent: {
+    flexGrow: 1,
+    paddingTop: Platform.OS === 'android' ? 16 : 24,
+    paddingBottom: 48,
+    paddingHorizontal: 16,
+  },
+  brandHeader: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  logoBadgeContainer: {
+    width: 60,
+    height: 60,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#0052FF',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 4,
+    marginBottom: 8,
+    overflow: 'hidden',
+  },
+  logoImage: {
+    width: '80%',
+    height: '80%',
+  },
+  brandTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#0F172A',
+    letterSpacing: 1.2,
+  },
+  roleTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 12,
+    marginTop: 4,
+    borderWidth: 1,
+    borderColor: '#DBEAFE',
+  },
+  roleTagText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#0052FF',
+    letterSpacing: 0.8,
+  },
   loginCard: {
     backgroundColor: '#FFFFFF',
-    marginHorizontal: 20,
     borderRadius: 24,
     padding: 24,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 15,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.08,
+    shadowRadius: 18,
     elevation: 8,
-    marginTop: -20,
-    marginBottom: 20,
+    marginVertical: 8,
   },
   welcomeText: { fontSize: 22, fontWeight: '800', color: '#0F172A', textAlign: 'center' },
   subWelcomeText: { fontSize: 13, color: '#64748B', fontWeight: '500', textAlign: 'center', marginTop: 4, marginBottom: 24 },
@@ -694,21 +698,7 @@ const styles = StyleSheet.create({
   btnContent: { flexDirection: 'row', alignItems: 'center' },
   primaryBtnText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
 
-  featuresCard: {
-    flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 16,
-    paddingVertical: 16,
-    paddingHorizontal: 12,
-    marginTop: 28,
-  },
-  featureItem: { flex: 1, alignItems: 'center' },
-  featureDivider: { width: 1, backgroundColor: '#E2E8F0', marginVertical: 4 },
-  featureIconBadge: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#0052FF', alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
-  featureTitle: { fontSize: 10, fontWeight: '800', color: '#0F172A', marginBottom: 4 },
-  featureDesc: { fontSize: 9, fontWeight: '500', color: '#64748B', textAlign: 'center', lineHeight: 12 },
-
-  registerPrompt: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 40 },
+  registerPrompt: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginVertical: 16 },
   registerPromptText: { fontSize: 14, color: '#64748B', fontWeight: '500' },
   registerNowText: { fontSize: 14, color: '#0052FF', fontWeight: '700' },
 });

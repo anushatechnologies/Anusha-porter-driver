@@ -480,22 +480,16 @@ export const validateDrivingLicense = (value: string): ValidationResult => {
   return OK;
 };
 
-// ══════════════════════════════════════════════════════════════
-//  VEHICLE DETAILS
-// ══════════════════════════════════════════════════════════════
-
-const VALID_VEHICLE_TYPES = ['Bike', 'Scooter', 'Auto', 'Mini Truck'];
-
 /**
- * Validate vehicle type — must be one of predefined values.
+ * Validate vehicle type — dynamic check to ensure a vehicle has been selected.
  */
 export const validateVehicleType = (value: string): ValidationResult => {
-  if (!value) {
-    return fail('Please select a delivery vehicle type.');
+  if (!value || typeof value !== 'string' || value.trim().length === 0) {
+    return fail('Please select a delivery vehicle category.');
   }
 
-  if (!VALID_VEHICLE_TYPES.includes(value)) {
-    return fail(`Vehicle type must be one of: ${VALID_VEHICLE_TYPES.join(', ')}.`);
+  if (value.trim().length < 2) {
+    return fail('Please select a valid vehicle category.');
   }
 
   return OK;

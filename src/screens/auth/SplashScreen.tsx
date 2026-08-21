@@ -28,7 +28,7 @@ const SplashScreen = () => {
 
   const logoScale = React.useRef(new Animated.Value(0.3)).current;
   const logoOpacity = React.useRef(new Animated.Value(0)).current;
-  const textOpacity = new Animated.Value(0);
+  const textOpacity = React.useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     // Animate logo entrance

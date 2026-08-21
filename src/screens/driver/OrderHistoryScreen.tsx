@@ -78,18 +78,26 @@ const OrderHistoryScreen = () => {
   const [sortBy, setSortBy] = useState<'newest' | 'highest_payout'>('newest');
   const [selectedOrder, setSelectedOrder] = useState<OrderHistoryItem | null>(null);
   const [orders, setOrders] = useState<OrderHistoryItem[]>([]);
+  const [dbTotalCount, setDbTotalCount] = useState(0);
+  const [dbCompletedCount, setDbCompletedCount] = useState(0);
+  const [dbTotalEarnings, setDbTotalEarnings] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const loadHistoryData = async (showLoadingSpinner = true) => {
     try {
       if (showLoadingSpinner) setLoading(true);
-      const ordersArray = await getOrderHistory();
+      const res = await getOrderHistory();
+      const ordersArray = res?.orders || [];
+      
+      setDbTotalCount(res?.totalOrders ?? ordersArray.length);
+      setDbCompletedCount(res?.completedOrders ?? ordersArray.filter((o: any) => o.status === 'completed').length);
+      setDbTotalEarnings(res?.totalEarnings ?? 0);
 
       const mapped = ordersArray.map((o: any, idx: number) => {
         let uiStatus: 'active' | 'completed' | 'cancelled' | 'failed' = 'completed';
         const s = (o.status || '').toLowerCase();
-        if (['accepted', 'picked_up', 'transit', 'assigned', 'pending', 'searching', 'arrived', 'in_transit'].includes(s)) {
+        if (['accepted', 'picked_up', 'transit', 'assigned', 'pending', 'searching', 'arrived', 'in_transit', 'payment_confirmation_pending', 'payment_pending', 'otp_verified', 'delivering', 'active'].includes(s)) {
           uiStatus = 'active';
         } else if (['cancelled', 'rejected'].includes(s)) {
           uiStatus = 'cancelled';
@@ -126,7 +134,7 @@ const OrderHistoryScreen = () => {
           rawStatus: o.status || 'completed',
           timeTaken: '22 mins',
           rating: 4.8,
-          vehicleType: o.vehicleType || 'Tata Ace',
+          vehicleType: o.vehicleType || '',
           tip: 0,
           customerName: o.customerName || o.customer_name || 'Customer',
           customerPhone: o.customerPhone || o.customer_phone || '',
@@ -173,12 +181,12 @@ const OrderHistoryScreen = () => {
     order => activeTab === 'all' || order.status === activeTab
   );
 
-  const completedCount = orders.filter(o => o.status === 'completed').length;
+  const completedCount = dbCompletedCount > 0 ? dbCompletedCount : orders.filter(o => o.status === 'completed').length;
   const activeCount = orders.filter(o => !['completed', 'cancelled', 'failed'].includes(o.status)).length;
-  const totalCount = orders.length;
+  const totalCount = dbTotalCount > 0 ? dbTotalCount : orders.length;
   const completionRate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 100;
   
-  const totalEarnings = orders.filter(o => o.status === 'completed').reduce((sum, o) => {
+  const totalEarnings = dbTotalEarnings > 0 ? dbTotalEarnings : orders.filter(o => o.status === 'completed').reduce((sum, o) => {
     const val = parseFloat(o.amount.replace('₹', ''));
     return sum + (isNaN(val) ? 0 : val);
   }, 0);
@@ -191,6 +199,13 @@ const OrderHistoryScreen = () => {
       const aVal = parseInt(a.amount.replace(/[^0-9]/g, ''));
       const bVal = parseInt(b.amount.replace(/[^0-9]/g, ''));
       return bVal - aVal;
+    });
+  } else {
+    // Default: Sort by date descending (Newest first)
+    filteredOrders = filteredOrders.sort((a, b) => {
+      const dateA = a.rawOrder?.createdAt ? new Date(a.rawOrder.createdAt).getTime() : 0;
+      const dateB = b.rawOrder?.createdAt ? new Date(b.rawOrder.createdAt).getTime() : 0;
+      return dateB - dateA;
     });
   }
 
@@ -362,7 +377,7 @@ const OrderHistoryScreen = () => {
           <View style={styles.statDivider} />
           <View style={styles.statBox}>
             <Text style={styles.statVal}>{formattedEarnings}</Text>
-            <Text style={styles.statLabel}>Total Payout</Text>
+            <Text style={styles.statLabel}>Total Fare</Text>
           </View>
         </View>
 
@@ -460,8 +475,8 @@ const OrderHistoryScreen = () => {
                 onPress={() => setSortBy('highest_payout')}
                 activeOpacity={0.7}
               >
-                <Ionicons name="wallet" size={18} color={sortBy === 'highest_payout' ? '#FFF' : colors.text} />
-                <Text style={[styles.filterOptionText, sortBy === 'highest_payout' ? { color: '#FFF' } : { color: colors.text }]}>Highest Payout</Text>
+                <Ionicons name="cash" size={18} color={sortBy === 'highest_payout' ? '#FFF' : colors.text} />
+                <Text style={[styles.filterOptionText, sortBy === 'highest_payout' ? { color: '#FFF' } : { color: colors.text }]}>Highest Fare</Text>
               </TouchableOpacity>
             </View>
 
@@ -473,15 +488,15 @@ const OrderHistoryScreen = () => {
               <View style={StyleSheet.absoluteFill}>
                 <Svg width="100%" height="100%" preserveAspectRatio="none">
                   <Defs>
-                    <LinearGradient id="applyGrad" x1="0" y1="0" x2="1" y2="0">
-                      <Stop offset="0%" stopColor="#0D5CFF" />
-                      <Stop offset="100%" stopColor="#003BB3" />
+                    <LinearGradient id="btnGrad" x1="0" y1="0" x2="1" y2="0">
+                      <Stop offset="0%" stopColor="#0D5CFF" stopOpacity="1" />
+                      <Stop offset="100%" stopColor="#00C896" stopOpacity="1" />
                     </LinearGradient>
                   </Defs>
-                  <Rect width="100%" height="100%" fill="url(#applyGrad)" />
+                  <Rect width="100%" height="100%" rx="16" fill="url(#btnGrad)" />
                 </Svg>
               </View>
-              <Text style={styles.applyBtnText}>Apply Filters</Text>
+              <Text style={styles.applyBtnText}>Apply Filter</Text>
             </TouchableOpacity>
           </Animated.View>
         </View>
@@ -529,7 +544,7 @@ const OrderHistoryScreen = () => {
               </View>
 
               <View style={{ alignItems: 'flex-end' }}>
-                <Text style={{ fontSize: 11, color: colors.textMuted, fontWeight: '600' }}>TOTAL PAYOUT</Text>
+                <Text style={{ fontSize: 11, color: colors.textMuted, fontWeight: '600' }}>TOTAL FARE</Text>
                 <Text style={{ fontSize: 18, fontWeight: '800', color: '#10B981', marginTop: 2 }}>
                   {selectedOrder.amount}
                 </Text>

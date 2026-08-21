@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -16,14 +16,14 @@ import {
   ActivityIndicator,
   Image,
 } from 'react-native';
-import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp, CommonActions } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import Svg, { Path, Rect, Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
-import { updateOrderStatus, getActiveOrder, getOrderDetails, sendDeliveryNotification, createPaymentOrder, getPaymentStatus } from '../../services/api';
+import { updateOrderStatus, getActiveOrder, getOrderDetails, sendDeliveryNotification, createPaymentOrder, getPaymentStatus, verifyDeliveryOtpOnly, confirmPaymentAndCompleteOrder, getDriverWallet, setDriverOnlineStatus } from '../../services/api';
 import AsyncStorage from '../../services/asyncStorageShim';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
@@ -185,43 +185,80 @@ const ActiveOrderScreen = () => {
 
   // Payment & Dynamic QR Settlement Modal state
   const [showPaymentQrModal, setShowPaymentQrModal] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<'upi_qr' | 'cash' | 'online'>('upi_qr');
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'online' | null>(null);
+  const [collectedAmount, setCollectedAmount] = useState('');
+  const [commRate, setCommRate] = useState(5);
   const [paymentVerifying, setPaymentVerifying] = useState(false);
+  const [paymentSuccessAnim, setPaymentSuccessAnim] = useState(false);
+  const [isPaymentVerifiedByServer, setIsPaymentVerifiedByServer] = useState(false);
   const [paymentDetails, setPaymentDetails] = useState<{
     grossFare: number;
     commission: number;
     netEarning: number;
     paymentId: string;
-    txnId: string;
-    upiUrl: string;
+    txnId?: string;
+    upiUrl?: string;
     qrImageUrl?: string;
+    gateway?: string;
   } | null>(null);
 
   const [isTransitioning, setIsTransitioning] = useState(false);
 
-  // Restore saved cargo step from storage on mount
+  // Restore saved cargo step and payment modal state from storage on mount
   useEffect(() => {
     let isMounted = true;
-    const loadSavedCargoStep = async () => {
-      if (orderId) {
-        try {
-          const saved = await AsyncStorage.getItem(`@active_cargo_step_${orderId}`);
-          if (saved !== null) {
-            const parsedStep = parseInt(saved, 10);
-            const validSteps = [0, 1, 2, 3];
-            if (validSteps.includes(parsedStep) && isMounted) {
-              console.log('[CARGO] Restored saved cargo step:', parsedStep + 1);
-              setCurrentStep(parsedStep);
-            }
-          }
-        } catch (e) {
-          console.warn('[CARGO] Failed to load saved cargo step:', e);
+
+    const fetchCommissionAndState = async () => {
+      try {
+        const wal = await getDriverWallet().catch(() => null);
+        if (wal && wal.wallet && wal.wallet.commissionPercentage && isMounted) {
+          setCommRate(wal.wallet.commissionPercentage);
         }
+      } catch (e) {}
+
+      try {
+        const currentId = orderId || displayOrderId;
+        if (!currentId) return;
+        const raw = await AsyncStorage.getItem(`@active_order_data_${currentId}`);
+        if (raw && isMounted) {
+          const savedData = JSON.parse(raw);
+          if (savedData.currentStep !== undefined && savedData.currentStep > currentStep) {
+            setCurrentStep(savedData.currentStep);
+          }
+          if (savedData.showPaymentQrModal && savedData.paymentDetails) {
+            setPaymentDetails(savedData.paymentDetails);
+            setShowPaymentQrModal(true);
+          }
+        }
+      } catch (e) {
+        console.warn('[CARGO] Failed to load saved active order state:', e);
       }
     };
-    loadSavedCargoStep();
+
+    fetchCommissionAndState();
     return () => { isMounted = false; };
-  }, [orderId]);
+  }, [orderId, displayOrderId]);
+
+  type DeliveryCompletionState = 'ready' | 'submitting' | 'success' | 'failed';
+  const [completionState, setCompletionState] = useState<DeliveryCompletionState>('ready');
+  const completionTriggered = React.useRef(false);
+
+  // Persist modal and step changes whenever state updates
+  useEffect(() => {
+    const currentKey = String(orderId || displayOrderId || '');
+    if (!currentKey || completed || completionState === 'success') return;
+
+    AsyncStorage.setItem(`@active_cargo_step_${currentKey}`, String(currentStep)).catch(() => {});
+    AsyncStorage.setItem(
+      `@active_order_data_${currentKey}`,
+      JSON.stringify({
+        currentStep,
+        showPaymentQrModal,
+        paymentDetails,
+        updatedAt: Date.now(),
+      })
+    ).catch(() => {});
+  }, [orderId, displayOrderId, currentStep, showPaymentQrModal, paymentDetails, completed, completionState]);
 
   const handleStepComplete = async () => {
     if (isTransitioning) {
@@ -288,9 +325,6 @@ const ActiveOrderScreen = () => {
     }
   };
 
-  type DeliveryCompletionState = 'ready' | 'submitting' | 'success' | 'failed';
-  const [completionState, setCompletionState] = useState<DeliveryCompletionState>('ready');
-  const completionTriggered = React.useRef(false);
 
   useEffect(() => {
     console.log('[DELIVERY] Step 4 screen mounted', {
@@ -348,19 +382,8 @@ const ActiveOrderScreen = () => {
     });
 
     try {
-      const meta = {
-        bookingId: displayOrderId,
-        driverName: driverName || 'Driver',
-        customerName,
-        customerPhone,
-        amount: fare,
-        pickup: pickupAddress,
-        drop: dropAddress,
-        distance: activeOrder?.distance || '',
-      };
-      
-      // Save completed trip directly to Backend Database (Idempotent API call with backend OTP check)
-      const res = await updateOrderStatus(orderId || displayOrderId, 'completed', enteredOtp, meta);
+      // Step 1: Validate Delivery OTP with backend ONLY (without marking order as completed or delivered)
+      const res = await verifyDeliveryOtpOnly(orderId || displayOrderId, enteredOtp);
       if (!res || !res.success) {
         setVerifyingOtp(false);
         completionTriggered.current = false;
@@ -373,117 +396,210 @@ const ActiveOrderScreen = () => {
         return;
       }
 
-      console.log('[DELIVERY] OTP Verification success! Invoking POST /api/payments/create...', { orderId: orderId || displayOrderId });
+      console.log('[DELIVERY] OTP Verified! Moving to PAYMENT_CONFIRMATION_PENDING. Order is NOT marked as delivered yet.');
 
-      // Connect to Live Backend Payment Initiation API (POST /api/payments/create)
-      let payRes: any = null;
-      try {
-        payRes = await createPaymentOrder(orderId || displayOrderId, 'UPI_QR');
-      } catch (payErr) {
-        console.warn('[DELIVERY] Live payment creation fallback notice:', payErr);
-      }
-
-      const grossFare = payRes?.amount || (typeof fare === 'number' ? fare : parseFloat(String(fare || 0)) || 500);
-      const commission = Math.round(grossFare * 0.10); // 10% platform fee
-      const netEarning = grossFare - commission; // Driver 90% net earnings
-      const paymentId = payRes?.paymentId || `PAY_${displayOrderId}_${Date.now().toString().slice(-6)}`;
-      const txnId = payRes?.gatewayOrderId || `TXN_${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-      const upiUrl = payRes?.qrCodeData || `upi://pay?pa=anushaporter@icici&pn=Anusha%20Porter%20Logistics&mc=4214&tr=${paymentId}&tn=Anusha%20Porter%20${encodeURIComponent(displayOrderId)}&am=${grossFare.toFixed(2)}&cu=INR`;
-      const qrImageUrl = payRes?.qrImageUrl || `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(upiUrl)}`;
+      const grossFare = typeof fare === 'number' ? fare : parseFloat(String(fare || 0)) || 500;
+      const commission = Math.round(grossFare * (commRate / 100)); // platform commission
+      const netEarning = grossFare - commission; // Driver net earnings
+      const paymentId = `PAY_${displayOrderId}_${Date.now().toString().slice(-6)}`;
 
       setPaymentDetails({
         grossFare,
         commission,
         netEarning,
         paymentId,
-        txnId,
-        upiUrl,
-        qrImageUrl,
       });
 
+      completionTriggered.current = false;
+      setCompletionState('ready');
       setVerifyingOtp(false);
       setShowOtpModal(false);
-      setShowPaymentQrModal(true); // Automatically opens Payment & Dynamic QR Settlement Modal!
+      setPaymentMethod(null);
+      setCollectedAmount(String(grossFare));
+      setShowPaymentQrModal(true);
 
     } catch (error: any) {
       completionTriggered.current = false;
       setVerifyingOtp(false);
       setCompletionState('failed');
 
-      console.error('[DELIVERY] Completion failed', {
+      console.error('[DELIVERY] OTP verification failed', {
         orderId: orderId || displayOrderId,
         error,
       });
 
-      const errorMsg = error?.message || 'Unable to confirm delivery completion with server.';
+      const errorMsg = error?.message || 'Unable to verify OTP with server.';
       Alert.alert(
-        'Unable to Complete Delivery',
-        `We couldn't confirm this delivery.\n\nYour active delivery has NOT been cancelled.\n\nDetail: ${errorMsg}`,
+        'Unable to Verify OTP',
+        `We couldn't verify the OTP.\n\nYour active delivery has NOT been cancelled.\n\nDetail: ${errorMsg}`,
         [{ text: 'Try Again', onPress: () => setCompletionState('ready') }]
       );
     }
   };
 
-  // Confirm Payment Received & Settle Ride Earnings
+
+
+  const completionIdempotencyKey = useRef<string>('');
+
+  // Handle Driver Tap on Settlement / Verify Button
   const handleSettlePayment = async () => {
     if (paymentVerifying) return;
     setPaymentVerifying(true);
 
+    if (!paymentMethod) {
+      setPaymentVerifying(false);
+      Alert.alert('Selection Required', 'Please select a payment method (Cash or Online).');
+      return;
+    }
+
+    const parsedCollected = parseFloat(collectedAmount) || 0;
+    const dueAmount = paymentDetails?.grossFare || fare;
+
+    if (parsedCollected !== dueAmount) {
+      setPaymentVerifying(false);
+      Alert.alert(
+        'Validation Error',
+        `Collected amount (₹${parsedCollected}) must match the Amount Due (₹${dueAmount}).`
+      );
+      return;
+    }
+
     try {
-      // 1. Clean up active delivery state from storage
-      if (orderId) {
-        await AsyncStorage.removeItem(`@active_cargo_step_${orderId}`);
-        await AsyncStorage.removeItem(`@active_order_${orderId}`);
+      if (!completionIdempotencyKey.current) {
+        completionIdempotencyKey.current = `COMPL_${orderId || displayOrderId}_${Date.now()}`;
       }
 
-      // 2. Dispatch notifications to Admin & Customer
       const meta = {
-        orderNumber: displayOrderId,
+        bookingId: displayOrderId,
+        driverName: driverName || 'Driver',
         customerName,
         customerPhone,
-        amount: paymentDetails?.grossFare || fare,
+        amount: parsedCollected,
+        paymentMethod: paymentMethod === 'cash' ? 'CASH' : 'ONLINE',
         pickup: pickupAddress,
         drop: dropAddress,
         distance: activeOrder?.distance || '',
       };
-      try {
-        await sendDeliveryNotification({
-          orderId: orderId || displayOrderId,
-          status: 'completed',
-          ...meta,
-          customMessage: `🎉 Payment Received & Settlement Verified! Driver ${driverName || 'Driver'} collected ₹${paymentDetails?.grossFare} for ${displayOrderId}. Driver Net Earnings: ₹${paymentDetails?.netEarning}.`
-        });
-      } catch (notifErr) {
-        console.warn('[DELIVERY] Notification dispatch warning:', notifErr);
+
+      // 1. Show immediate visual feedback: Pop Green Checkmark on QR Code
+      setPaymentSuccessAnim(true);
+      setIsPaymentVerifiedByServer(true);
+
+      // 2. Explicit backend call to confirm payment and mark order as DELIVERED in database
+      const res = await confirmPaymentAndCompleteOrder(orderId || displayOrderId, meta, completionIdempotencyKey.current);
+
+      if (!res || !res.success) {
+        setPaymentVerifying(false);
+        setPaymentSuccessAnim(false);
+
+        // If HTTP 422: OTP not verified yet -> Return driver to Step 1 (OTP screen)
+        if (res?.statusCode === 422) {
+          setShowPaymentQrModal(false);
+          setShowOtpModal(true);
+          setDeliveryOtp(['', '', '', '']);
+          Alert.alert(
+            'OTP Required (422)',
+            'Customer OTP is required before confirming payment. Please enter the OTP to continue.',
+            [{ text: 'Enter OTP' }]
+          );
+          return;
+        }
+
+        Alert.alert(
+          'Payment Confirmation Failed',
+          res?.message || 'Could not record payment confirmation on server. Please try again.',
+          [{ text: 'Retry' }]
+        );
+        return;
       }
+
+      // 3. Clean up active delivery state from storage only after backend confirmation
+      const currentKey = String(orderId || displayOrderId || '');
+      await AsyncStorage.removeItem('@current_active_delivery_id');
+      if (currentKey) {
+        await AsyncStorage.removeItem(`@active_cargo_step_${currentKey}`);
+        await AsyncStorage.removeItem(`@active_order_${currentKey}`);
+        await AsyncStorage.removeItem(`@active_order_data_${currentKey}`);
+      }
+
+      // 4. Keep Success Tick Mark Animation visible on QR Code for 2.5 seconds
+      await new Promise(r => setTimeout(r, 2500));
 
       setPaymentVerifying(false);
       setShowPaymentQrModal(false);
+      setPaymentSuccessAnim(false);
       setCompletionState('success');
       setCompleted(true);
 
-      Alert.alert(
-        'Payment Settled & Earnings Credited! 🎉',
-        `Payment Status: SUCCESS ✓\n\nTotal Fare: ₹${paymentDetails?.grossFare}\nPlatform Fee (10%): -₹${paymentDetails?.commission}\nYour Net Earnings: ₹${paymentDetails?.netEarning}\n\nYour earnings have been credited to your wallet balance!`,
-        [
-          { 
-            text: 'Return to Dashboard', 
-            onPress: () => {
-              navigation.reset({
-                index: 0,
-                routes: [{ name: 'DriverTabs' }],
-              });
-            } 
-          }
-        ]
-      );
-    } catch (err) {
+      const gross = res.earnings?.grossFare || paymentDetails?.grossFare || fare;
+      const comm = res.earnings?.platformCommission || paymentDetails?.commission || Math.round(gross * (commRate / 100));
+      const net = res.earnings?.driverNetEarning || paymentDetails?.netEarning || (gross - comm);
+      const driverPct = Math.max(0, 100 - commRate);
+
+      // Check current persistent running wallet balance
+      let remainingWallet = res.updatedBalance;
+      if (remainingWallet === undefined) {
+        const walRes = await getDriverWallet().catch(() => null);
+        remainingWallet = walRes?.wallet?.availableBalance ?? (typeof (walRes as any)?.availableBalance === 'number' ? (walRes as any).availableBalance : 0);
+      }
+      const finalRemainingWallet = typeof remainingWallet === 'number' ? remainingWallet : 0;
+
+      if (finalRemainingWallet < 10) {
+        // Automatically switch driver OFFLINE when balance falls below ₹10
+        await AsyncStorage.setItem('@driver_is_online', 'false');
+        try {
+          await setDriverOnlineStatus('offline');
+        } catch (e) {}
+
+        Alert.alert(
+          finalRemainingWallet <= 0 ? 'WALLET BALANCE EXHAUSTED' : 'WALLET BALANCE INSUFFICIENT',
+          `Delivery Completed!\n\nRide Fare: ₹${gross}\nAdmin Commission (${commRate}%): -₹${comm}\nYour Net Earnings (${driverPct}%): ₹${net}\n\nRemaining Wallet Balance: ₹${finalRemainingWallet.toFixed(2)}\n\nYour balance is below the minimum required ₹10. Recharge your wallet to continue receiving orders.`,
+          [
+            {
+              text: 'Recharge Wallet',
+              onPress: () => {
+                navigation.dispatch(
+                  CommonActions.reset({
+                    index: 0,
+                    routes: [{ name: 'Wallet' as any }],
+                  })
+                );
+              },
+            },
+            {
+              text: 'Go to Dashboard',
+              style: 'cancel',
+              onPress: () => {
+                navigation.dispatch(
+                  CommonActions.reset({
+                    index: 0,
+                    routes: [{ name: 'DriverTabs' as any }],
+                  })
+                );
+              },
+            },
+          ]
+        );
+      } else {
+        Alert.alert(
+          'Payment Received Successfully 🎉',
+          `Delivery Completed!\n\nTotal Fare: ₹${gross}\nPlatform Fee (${commRate}%): -₹${comm}\nYour Net Earnings (${driverPct}%): ₹${net}\n\nRemaining Wallet Balance: ₹${finalRemainingWallet.toFixed(2)}`,
+          [
+            { 
+              text: 'Return to Dashboard', 
+              onPress: () => {
+                navigation.reset({
+                  index: 0,
+                  routes: [{ name: 'DriverTabs' }],
+                });
+              } 
+            }
+          ]
+        );
+      }
+    } catch (err: any) {
       setPaymentVerifying(false);
-      Alert.alert('Settlement Warning', 'Payment recorded. Navigating back to dashboard.');
-      navigation.reset({
-        index: 0,
-        routes: [{ name: 'DriverTabs' }],
-      });
+      Alert.alert('Payment Confirmation Failed', err?.message || 'Network error during payment confirmation. Please try again.');
     }
   };
 
@@ -795,128 +911,161 @@ const ActiveOrderScreen = () => {
         </View>
       </Modal>
 
-      {/* Production Payment & Dynamic QR Settlement Popup Modal */}
+      {/* Simplified Driver Payment Collection Modal */}
       <Modal visible={showPaymentQrModal} transparent animationType="slide" onRequestClose={() => setShowPaymentQrModal(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.paymentQrCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             {/* Header Badge */}
             <View style={styles.qrHeaderRow}>
               <View style={[styles.qrIconBadge, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
-                <Ionicons name="qr-code" size={24} color="#10B981" />
+                <Ionicons name="wallet-outline" size={24} color="#10B981" />
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={[styles.qrTitle, { color: colors.text }]}>Payment & Settlement</Text>
+                  <Text style={[styles.qrTitle, { color: colors.text }]}>Payment Collection</Text>
                   <View style={styles.otpSuccessBadge}>
                     <Ionicons name="checkmark-circle" size={12} color="#10B981" />
                     <Text style={styles.otpSuccessBadgeText}>OTP Verified</Text>
                   </View>
                 </View>
                 <Text style={[styles.qrSub, { color: colors.textMuted }]}>
-                  Order #{displayOrderId} • Collect Payment
+                  Order #{displayOrderId}
                 </Text>
               </View>
             </View>
 
-            {/* Payment Options Segmented Switcher */}
-            <View style={[styles.paymentMethodRow, { backgroundColor: colors.surface }]}>
-              <TouchableOpacity
-                style={[styles.paymentMethodTab, paymentMethod === 'upi_qr' && { backgroundColor: colors.primary }]}
-                onPress={() => setPaymentMethod('upi_qr')}
-              >
-                <Ionicons name="qr-code-outline" size={14} color={paymentMethod === 'upi_qr' ? '#FFFFFF' : colors.textMuted} />
-                <Text style={[styles.paymentMethodTabText, { color: paymentMethod === 'upi_qr' ? '#FFFFFF' : colors.textMuted }]}>Dynamic QR</Text>
-              </TouchableOpacity>
+            {/* Amount Due Section */}
+            <View style={{ width: '100%', marginBottom: 16, backgroundColor: colors.surface, padding: 14, borderRadius: 12, borderWidth: 1, borderColor: colors.border }}>
+              <Text style={{ fontSize: 13, color: colors.textSecondary, marginBottom: 4 }}>Amount Due</Text>
+              <Text style={{ fontSize: 28, fontWeight: '800', color: colors.text }}>₹{paymentDetails?.grossFare || fare}</Text>
+            </View>
 
+            {/* Payment Method Selector */}
+            <Text style={{ width: '100%', fontSize: 13, color: colors.textSecondary, marginBottom: 8, fontWeight: '700' }}>Payment Method</Text>
+            <View style={[styles.paymentMethodRow, { backgroundColor: colors.surface, marginBottom: 16 }]}>
               <TouchableOpacity
                 style={[styles.paymentMethodTab, paymentMethod === 'cash' && { backgroundColor: colors.primary }]}
                 onPress={() => setPaymentMethod('cash')}
               >
-                <Ionicons name="cash-outline" size={14} color={paymentMethod === 'cash' ? '#FFFFFF' : colors.textMuted} />
-                <Text style={[styles.paymentMethodTabText, { color: paymentMethod === 'cash' ? '#FFFFFF' : colors.textMuted }]}>Cash Paid</Text>
+                <Ionicons name="cash-outline" size={16} color={paymentMethod === 'cash' ? '#FFFFFF' : colors.textSecondary} />
+                <Text style={[styles.paymentMethodTabText, { color: paymentMethod === 'cash' ? '#FFFFFF' : colors.textSecondary }]}>Cash</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={[styles.paymentMethodTab, paymentMethod === 'online' && { backgroundColor: colors.primary }]}
                 onPress={() => setPaymentMethod('online')}
               >
-                <Ionicons name="card-outline" size={14} color={paymentMethod === 'online' ? '#FFFFFF' : colors.textMuted} />
-                <Text style={[styles.paymentMethodTabText, { color: paymentMethod === 'online' ? '#FFFFFF' : colors.textMuted }]}>Razorpay Live</Text>
+                <Ionicons name="card-outline" size={16} color={paymentMethod === 'online' ? '#FFFFFF' : colors.textSecondary} />
+                <Text style={[styles.paymentMethodTabText, { color: paymentMethod === 'online' ? '#FFFFFF' : colors.textSecondary }]}>Online</Text>
               </TouchableOpacity>
             </View>
 
-            {/* Dynamic UPI QR Code Display */}
-            {paymentMethod === 'upi_qr' && (
-              <View style={styles.qrDisplayBox}>
-                <View style={styles.qrImageWrapper}>
-                  <Image
-                    source={{
-                      uri: `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(paymentDetails?.upiUrl || '')}`
-                    }}
-                    style={styles.qrImage}
-                    resizeMode="contain"
-                  />
-                </View>
-                <Text style={[styles.upiRefText, { color: colors.textSecondary }]}>
-                  Ref: <Text style={{ fontWeight: '700', color: colors.primary }}>{paymentDetails?.paymentId}</Text>
-                </Text>
-                <Text style={[styles.qrInstructions, { color: colors.textMuted }]}>
-                  Scan with GPay, PhonePe, Paytm, BHIM or any UPI App to Pay ₹{paymentDetails?.grossFare}
-                </Text>
-              </View>
-            )}
+            {/* Collected Amount TextInput */}
+            <Text style={{ width: '100%', fontSize: 13, color: colors.textSecondary, marginBottom: 8, fontWeight: '700' }}>Collected Amount</Text>
+            <View style={{ width: '100%', flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: colors.border, borderRadius: 12, backgroundColor: colors.surface, marginBottom: 16, paddingHorizontal: 12 }}>
+              <Text style={{ fontSize: 18, color: colors.text, fontWeight: '700', marginRight: 4 }}>₹</Text>
+              <TextInput
+                style={{
+                  flex: 1,
+                  height: 48,
+                  fontSize: 18,
+                  fontWeight: '700',
+                  color: colors.text,
+                }}
+                value={collectedAmount}
+                onChangeText={setCollectedAmount}
+                keyboardType="numeric"
+                placeholder="0.00"
+              />
+            </View>
 
+            {/* Explanatory notices depending on selection */}
             {paymentMethod === 'cash' && (
-              <View style={styles.cashNoticeBox}>
-                <Ionicons name="cash" size={44} color="#10B981" />
-                <Text style={[styles.cashNoticeTitle, { color: colors.text }]}>Collect ₹{paymentDetails?.grossFare} Cash</Text>
-                <Text style={[styles.cashNoticeSub, { color: colors.textMuted }]}>
-                  Collect physical cash directly from customer {customerName}. Platform commission will be automatically adjusted.
+              <View style={{ width: '100%', flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(16, 185, 129, 0.1)', padding: 12, borderRadius: 12, marginBottom: 16, gap: 10 }}>
+                <Ionicons name="information-circle" size={20} color="#10B981" />
+                <Text style={{ flex: 1, fontSize: 12, color: colors.textSecondary, lineHeight: 16 }}>
+                  Customer paid physically via Cash. Please confirm you collected ₹{paymentDetails?.grossFare || fare}.
                 </Text>
               </View>
             )}
 
             {paymentMethod === 'online' && (
-              <View style={styles.cashNoticeBox}>
-                <Ionicons name="shield-checkmark" size={44} color={colors.primary} />
-                <Text style={[styles.cashNoticeTitle, { color: colors.text }]}>Razorpay Live Checkout</Text>
-                <Text style={[styles.cashNoticeSub, { color: colors.textMuted }]}>
-                  Live Razorpay Order Created (`Key: rzp_live_TO6q7NUVnPM6bA`). Supported: Credit/Debit Cards, UPI, Netbanking (SBI, HDFC, ICICI, 50+ Banks).
+              <View style={{ width: '100%', flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0, 82, 255, 0.1)', padding: 12, borderRadius: 12, marginBottom: 16, gap: 10 }}>
+                <Ionicons name="information-circle" size={20} color={colors.primary} />
+                <Text style={{ flex: 1, fontSize: 12, color: colors.textSecondary, lineHeight: 16 }}>
+                  Customer paid online/electronically. Please confirm receipt of ₹{paymentDetails?.grossFare || fare}.
                 </Text>
               </View>
             )}
 
-            {/* Itemized Financial Ledger Breakdown */}
-            <View style={[styles.ledgerCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            {!paymentMethod && (
+              <View style={{ width: '100%', flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, padding: 12, borderRadius: 12, marginBottom: 16, gap: 10, borderWidth: 1, borderColor: colors.border, borderStyle: 'dashed' }}>
+                <Ionicons name="alert-circle-outline" size={20} color={colors.textMuted} />
+                <Text style={{ flex: 1, fontSize: 12, color: colors.textMuted, lineHeight: 16 }}>
+                  Please select either Cash or Online to proceed with payment collection.
+                </Text>
+              </View>
+            )}
+
+            {/* Financial Ledger Breakdown */}
+            <View style={[styles.ledgerCard, { backgroundColor: colors.surface, borderColor: colors.border, width: '100%', marginBottom: 16 }]}>
               <View style={styles.ledgerRow}>
                 <Text style={[styles.ledgerLabel, { color: colors.textSecondary }]}>Gross Trip Fare</Text>
-                <Text style={[styles.ledgerVal, { color: colors.text }]}>₹{paymentDetails?.grossFare.toFixed(2)}</Text>
+                <Text style={[styles.ledgerVal, { color: colors.text }]}>₹{(paymentDetails?.grossFare || fare).toFixed(2)}</Text>
               </View>
               <View style={styles.ledgerRow}>
-                <Text style={[styles.ledgerLabel, { color: colors.textSecondary }]}>Platform Commission (10%)</Text>
-                <Text style={[styles.ledgerVal, { color: '#EF4444' }]}>-₹{paymentDetails?.commission.toFixed(2)}</Text>
+                <Text style={[styles.ledgerLabel, { color: colors.textSecondary }]}>Platform Commission ({commRate}%)</Text>
+                <Text style={[styles.ledgerVal, { color: '#EF4444' }]}>-₹{(paymentDetails?.commission || Math.round((paymentDetails?.grossFare || fare) * (commRate / 100))).toFixed(2)}</Text>
               </View>
               <View style={[styles.ledgerDivider, { backgroundColor: colors.border }]} />
               <View style={styles.ledgerRow}>
                 <Text style={[styles.ledgerNetLabel, { color: colors.text }]}>Your Net Earnings</Text>
-                <Text style={styles.ledgerNetVal}>₹{paymentDetails?.netEarning.toFixed(2)}</Text>
+                <Text style={styles.ledgerNetVal}>₹{(paymentDetails?.netEarning || (paymentDetails?.grossFare || fare) - Math.round((paymentDetails?.grossFare || fare) * (commRate / 100))).toFixed(2)}</Text>
               </View>
             </View>
 
             {/* Settlement Action Buttons */}
             <TouchableOpacity
-              style={[styles.modalVerifyBtn, { backgroundColor: '#10B981', marginTop: 10 }]}
+              style={[
+                styles.modalVerifyBtn,
+                {
+                  backgroundColor: !paymentMethod 
+                    ? colors.border 
+                    : (paymentSuccessAnim ? '#059669' : colors.primary)
+                }
+              ]}
               onPress={handleSettlePayment}
-              disabled={paymentVerifying}
+              disabled={paymentVerifying || !paymentMethod}
             >
-              {paymentVerifying ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
+              {paymentSuccessAnim ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" />
+                  <Text style={styles.modalVerifyBtnText}>Payment Verified & Completed! 🎉</Text>
+                </View>
+              ) : paymentVerifying ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                  <Text style={styles.modalVerifyBtnText}>Confirming Payment...</Text>
+                </View>
               ) : (
-                <Text style={styles.modalVerifyBtnText}>Confirm Payment Received & Complete</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="checkmark-done" size={20} color="#FFFFFF" />
+                  <Text style={styles.modalVerifyBtnText}>Confirm Payment</Text>
+                </View>
               )}
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setShowPaymentQrModal(false)}>
+            <TouchableOpacity 
+              style={styles.modalCancelBtn} 
+              onPress={() => {
+                setShowPaymentQrModal(false);
+                setPaymentMethod(null);
+                setCollectedAmount('');
+                setIsPaymentVerifiedByServer(false);
+                setPaymentSuccessAnim(false);
+              }}
+              disabled={paymentVerifying}
+            >
               <Text style={[styles.modalCancelBtnText, { color: colors.textSecondary }]}>Back</Text>
             </TouchableOpacity>
           </View>
@@ -1466,6 +1615,63 @@ const styles = StyleSheet.create({
   qrImage: {
     width: 180,
     height: 180,
+  },
+  qrSuccessOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(16, 185, 129, 0.96)',
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 12,
+    zIndex: 10,
+  },
+  qrSuccessCircle: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: '#059669',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+    marginBottom: 8,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+  },
+  qrSuccessText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    textAlign: 'center',
+  },
+  qrSuccessAmount: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  qrSuccessPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginTop: 8,
+  },
+  qrSuccessPillText: {
+    color: '#10B981',
+    fontSize: 11,
+    fontWeight: '800',
   },
   upiRefText: {
     fontSize: 12,

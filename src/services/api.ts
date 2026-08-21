@@ -22,7 +22,10 @@ export interface Driver {
   phone: string;
   dob?: string;
   gender?: string;
+  vehicle?: string;
   vehicleType?: string;
+  vehicle_type?: string;
+  vehicleName?: string;
   vehicleNumber?: string;
   rcNumber?: string;
   aadhaarNumber?: string;
@@ -75,6 +78,14 @@ export interface Order {
   createdAt?: string;
   otp?: string;
   deliveryOtp?: string;
+}
+
+export interface OrderHistoryResponse {
+  success: boolean;
+  totalOrders: number;
+  completedOrders: number;
+  totalEarnings: number;
+  orders: Order[];
 }
 
 export interface AdminMetrics {
@@ -222,6 +233,14 @@ export const sanitizeDriverUrls = (driver: Driver): Driver => {
   const kycVal = (driver.kyc || driver.kycStatus || dAny.kyc_status || 'pending') as 'verified' | 'pending' | 'rejected';
   const statusVal = (driver.status || dAny.onlineStatus || dAny.online_status || 'offline') as 'online' | 'offline' | 'suspended';
 
+  const resolvedVehicle = (typeof driver.vehicle === 'string' && driver.vehicle.trim()) 
+    ? driver.vehicle.trim() 
+    : (driver.vehicleType || dAny.vehicle_type || dAny.vehicleName || (driver.vehicle as any)?.name || (driver.vehicle as any)?.type || 'Vehicle');
+  const resolvedVehicleType = (typeof driver.vehicleType === 'string' && driver.vehicleType.trim()) 
+    ? driver.vehicleType.trim() 
+    : (driver.vehicle || dAny.vehicle_type || dAny.vehicleName || 'Vehicle');
+  const resolvedVehicleCode = dAny.vehicle_type || dAny.type || dAny.type_code || resolvedVehicleType.toLowerCase().replace(/\s+/g, '_');
+
   return {
     ...driver,
     id: driver.id ?? driver.driverId ?? '',
@@ -229,6 +248,10 @@ export const sanitizeDriverUrls = (driver: Driver): Driver => {
     kyc: kycVal,
     kycStatus: kycVal,
     status: statusVal,
+    vehicle: resolvedVehicle,
+    vehicleType: resolvedVehicleType,
+    vehicle_type: resolvedVehicleCode,
+    vehicleName: resolvedVehicle,
     profilePhotoUri: cleanedPhoto,
     profilePhotoUrl: cleanedPhoto,
     profile_photo_url: cleanedPhoto,
@@ -281,12 +304,20 @@ export const verifyFirebaseOtp = async (firebaseIdToken: string, mode: 'login' |
   if (name) body.name = name;
   if (role) body.role = role;
   
-  const res = await fetch(`${BASE}/api/auth/verify-otp`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  return res.json();
+  try {
+    const res = await fetch(`${BASE}/api/auth/verify-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      return { success: true, ...data };
+    }
+    return { success: false, ...data, message: data?.message || `HTTP ${res.status}` };
+  } catch (e: any) {
+    return { success: false, message: e?.message || 'Network request failed' };
+  }
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -520,14 +551,162 @@ export const getDriverProfile = async (token?: string): Promise<Driver | null> =
   }
 };
 
-/** POST /api/drivers/register — create or update driver profile */
+/** POST /api/drivers/register (or /api/driver/register) — create or update driver profile */
 export const createDriverProfile = async (payload: any) => {
-  const res = await authFetch(`${BASE}/api/drivers/register`, {
+  const routes = [
+    `${BASE}/api/drivers/register`,
+    `${BASE}/api/driver/register`,
+    `${BASE}/api/drivers`,
+  ];
+  let lastRes: Response | null = null;
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (res.status !== 404) {
+        return res;
+      }
+      lastRes = res;
+    } catch (e) {
+      console.warn(`[API] createDriverProfile route ${url} failed:`, e);
+    }
+  }
+  if (lastRes) return lastRes;
+  return await authFetch(`${BASE}/api/drivers/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  return res;
+};
+
+export interface VehicleOption {
+  id: string;
+  name: string;
+  type: string;
+  description?: string;
+  capacity?: string;
+  capacityKg?: number;
+  dimensions?: string;
+  iconName?: string;
+  imageUrl?: string;
+  baseFare?: number;
+  baseKm?: number;
+  perKmRate?: number;
+  status?: string;
+  priority?: number;
+}
+
+export interface VehicleTypeAdmin {
+  id: string | number;
+  name: string;
+  type: string;
+  description?: string;
+  capacity?: string;
+  capacityKg: number;
+  dimensions?: string;
+  iconName?: string;
+  imageUrl?: string;
+  baseFare: number;
+  baseKm: number;
+  perKmRate: number;
+  status: 'active' | 'inactive';
+  priority: number;
+}
+
+/**
+ * GET /api/vehicle-types?status=active or GET /api/vehicles
+ * Retrieves active vehicle types configured dynamically by Admin.
+ */
+export const getActiveVehicles = async (): Promise<{ success: boolean; vehicles: VehicleOption[]; message?: string }> => {
+  const routes = [
+    `${BASE}/api/vehicle-types?status=active`,
+    `${BASE}/api/vehicle-types`,
+    `${BASE}/api/vehicles?status=active`,
+    `${BASE}/api/vehicles`,
+    `${BASE}/api/admin/vehicle-types?status=active`,
+    `${BASE}/api/admin/vehicles`,
+    `${BASE}/api/categories/vehicles`,
+    `${BASE}/api/drivers/vehicles`,
+  ];
+
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        const rawList = Array.isArray(data) ? data : (data.vehicles || data.data || data.value || []);
+        if (Array.isArray(rawList) && rawList.length > 0) {
+          const seenNames = new Set<string>();
+          const activeList: VehicleOption[] = [];
+
+          const sortedRaw = [...rawList].sort((a: any, b: any) => (a.priority || 99) - (b.priority || 99));
+
+          for (const v of sortedRaw) {
+            // Check active status (supports boolean true, string "active", or isActive)
+            let isEnabled = true;
+            if (v.status === false || v.status === 'false' || v.status === 'inactive' || v.status === 'disabled') {
+              isEnabled = false;
+            } else if (typeof v.status === 'string' && v.status.toLowerCase() !== 'active' && v.status !== 'true') {
+              isEnabled = false;
+            } else if (v.isActive !== undefined && !v.isActive) {
+              isEnabled = false;
+            }
+
+            if (!isEnabled) continue;
+
+            const name = (v.name || v.title || v.type || v.vehicleName || 'Vehicle').trim();
+            const normalizedKey = name.toLowerCase();
+
+            if (!seenNames.has(normalizedKey)) {
+              seenNames.add(normalizedKey);
+
+              const type = v.type || v.type_code || v.typeCode || v.vehicleType || name.toLowerCase().replace(/\s+/g, '_');
+              const id = String(v.id || v._id || v.vehicleId || `veh_${type}`);
+              const capKg = Number(v.capacityKg || v.capacity_kg || (v.capacity ? parseInt(String(v.capacity).replace(/\D/g, '')) : 0)) || 0;
+              const capacity = v.capacity || (capKg > 0 ? `Load: Up to ${capKg}kg` : (v.description || 'Standard Load'));
+              
+              // Map icon dynamically based on vehicle name / type
+              let iconName = 'car-side';
+              const s = (name + ' ' + type).toLowerCase();
+              if (s.includes('bike') || s.includes('motorcycle') || s.includes('two')) iconName = 'bike';
+              else if (s.includes('scooter') || s.includes('scooty') || s.includes('moped') || s.includes('ev')) iconName = 'scooter';
+              else if (s.includes('auto') || s.includes('rickshaw') || s.includes('three')) iconName = 'rickshaw';
+              else if (s.includes('truck') || s.includes('ace') || s.includes('pickup') || s.includes('carrier') || s.includes('lorry') || s.includes('407') || s.includes('lpt')) iconName = 'truck-delivery';
+              else if (s.includes('van') || s.includes('omni') || s.includes('eeco')) iconName = 'van-utility';
+              
+              activeList.push({
+                id,
+                name,
+                type,
+                description: v.description || '',
+                capacity,
+                capacityKg: capKg,
+                dimensions: v.dimensions || '',
+                iconName: v.iconName || v.icon_name || iconName,
+                imageUrl: v.imageUrl || v.image_url || v.image || v.icon || '',
+                baseFare: typeof v.baseFare === 'number' ? v.baseFare : (Number(v.base_fare || v.minFare) || 50),
+                baseKm: typeof v.baseKm === 'number' ? v.baseKm : (Number(v.base_km || v.freeDistance || v.minDistance) || 1.0),
+                perKmRate: typeof v.perKmRate === 'number' ? v.perKmRate : (Number(v.per_km_rate || v.pricePerKm) || 15),
+                status: 'active',
+                priority: Number(v.priority || 1),
+              });
+            }
+          }
+
+          if (activeList.length > 0) {
+            return { success: true, vehicles: activeList };
+          }
+        }
+      }
+    } catch (err) {
+      // try next route
+    }
+  }
+
+  return { success: false, vehicles: [], message: 'No active vehicle types configured by Admin.' };
 };
 
 /** PUT/POST driver status — toggle online/offline.
@@ -773,6 +952,12 @@ export const getActiveOrder = async (): Promise<any | null> => {
       amount: rawAmt,
       deliveryOtp: o.deliveryOtp || o.otp,
       otp: o.deliveryOtp || o.otp,
+      distance: o.distance !== undefined ? String(o.distance) : (o.distanceKm !== undefined ? String(o.distanceKm) : (o.tripDistance || o.totalDistance || o.dist)),
+      distanceKm: o.distanceKm !== undefined ? Number(o.distanceKm) : (o.distance !== undefined ? (parseFloat(String(o.distance)) || undefined) : undefined),
+      pickupLat: o.pickupLat !== undefined ? Number(o.pickupLat) : (o.pickupLatitude || o.pickup_lat),
+      pickupLng: o.pickupLng !== undefined ? Number(o.pickupLng) : (o.pickupLongitude || o.pickup_lng),
+      dropLat: o.dropLat !== undefined ? Number(o.dropLat) : (o.dropLatitude || o.drop_lat),
+      dropLng: o.dropLng !== undefined ? Number(o.dropLng) : (o.dropLongitude || o.drop_lng),
     };
   } catch {
     return null;
@@ -830,6 +1015,12 @@ export const getOrderDetails = async (orderId: string | number): Promise<any | n
       dropAddress: o.dropAddress || o.drop,
       amount: rawAmt,
       deliveryOtp: o.deliveryOtp || o.otp,
+      distance: o.distance !== undefined ? String(o.distance) : (o.distanceKm !== undefined ? String(o.distanceKm) : (o.tripDistance || o.totalDistance || o.dist)),
+      distanceKm: o.distanceKm !== undefined ? Number(o.distanceKm) : (o.distance !== undefined ? (parseFloat(String(o.distance)) || undefined) : undefined),
+      pickupLat: o.pickupLat !== undefined ? Number(o.pickupLat) : (o.pickupLatitude || o.pickup_lat),
+      pickupLng: o.pickupLng !== undefined ? Number(o.pickupLng) : (o.pickupLongitude || o.pickup_lng),
+      dropLat: o.dropLat !== undefined ? Number(o.dropLat) : (o.dropLatitude || o.drop_lat),
+      dropLng: o.dropLng !== undefined ? Number(o.dropLng) : (o.dropLongitude || o.drop_lng),
     };
   } catch {
     return null;
@@ -857,13 +1048,21 @@ const getNormalizedDigits = (raw: any): string => {
 
 export const resolveOrderDistance = (o: any): string => {
   if (!o) return '0.0 km';
+
+  // 1. Check distanceKm number first
+  if (o.distanceKm !== undefined && o.distanceKm !== null) {
+    const num = parseFloat(String(o.distanceKm));
+    if (!isNaN(num) && num > 0) return `${num.toFixed(1)} km`;
+  }
+
+  // 2. Check distance string fields
   const dVal = o.distance || o.tripDistance || o.totalDistance || o.dist;
   if (dVal && String(dVal).trim() !== '--' && String(dVal).trim() !== '') {
     const num = parseFloat(String(dVal).replace(/[^0-9.]/g, ''));
     if (!isNaN(num) && num > 0) return `${num.toFixed(1)} km`;
   }
 
-  // Calculate from pickup & drop coordinates if available
+  // 3. Calculate from pickup & drop coordinates if available
   const pLat = parseFloat(o.pickupLat || o.pickupLatitude || o.pickup_lat || 0);
   const pLng = parseFloat(o.pickupLng || o.pickupLongitude || o.pickup_lng || 0);
   const dLat = parseFloat(o.dropLat || o.dropLatitude || o.drop_lat || 0);
@@ -884,42 +1083,47 @@ export const resolveOrderDistance = (o: any): string => {
     if (distKm > 0.1) return `${distKm.toFixed(1)} km`;
   }
 
-  // Estimate from fare if amount is available (e.g., ₹319.19 fare ≈ ~14.2 km)
-  const amt = typeof o.amount === 'number' ? o.amount : parseFloat(String(o.amount || o.fare || o.price || 0).replace('₹', '')) || 0;
-  if (amt > 0) {
-    const baseFare = 50;
-    const perKmRate = 22;
-    const estimatedKm = Math.max(1, (amt - baseFare) / perKmRate + 2);
-    return `${estimatedKm.toFixed(1)} km`;
+  // 4. Estimate from fare if amount is available AND distanceKm, distance and coordinates are all missing
+  const hasDistance = (o.distanceKm !== undefined && o.distanceKm !== null) ||
+                      (dVal && String(dVal).trim() !== '--' && String(dVal).trim() !== '');
+  const hasCoords = pLat !== 0 && pLng !== 0 && dLat !== 0 && dLng !== 0;
+
+  if (!hasDistance && !hasCoords) {
+    const amt = typeof o.amount === 'number' ? o.amount : parseFloat(String(o.amount || o.fare || o.price || 0).replace('₹', '')) || 0;
+    if (amt > 0) {
+      const baseFare = 50;
+      const perKmRate = 22;
+      let estimatedKm = (amt - baseFare) / perKmRate + 2;
+      if (amt < baseFare) {
+        // For test fares or ultra-low promotional fares, scale down distance proportionally
+        estimatedKm = Math.max(0.1, (amt / baseFare) * 2.0);
+      } else {
+        estimatedKm = Math.max(1.0, estimatedKm);
+      }
+      return `${estimatedKm.toFixed(1)} km`;
+    }
   }
 
   return '5.2 km';
 };
 
 /** GET /api/drivers/me/orders */
-export const getOrderHistory = async (): Promise<Order[]> => {
+export const getOrderHistory = async (): Promise<OrderHistoryResponse> => {
   let list: any[] = [];
-  let currentEmail = '';
-  let currentPhone = '';
-  try {
-    const profileStr = await AsyncStorage.getItem('driverProfile');
-    if (profileStr) {
-      const p = JSON.parse(profileStr);
-      currentEmail = (p?.email || p?.driverEmail || '').toLowerCase().trim();
-      currentPhone = (p?.mobile || p?.phone || '').replace(/\D/g, '').slice(-10);
-    }
-  } catch (e) {}
-
-  if (!currentPhone) {
-    const storedPhone = await AsyncStorage.getItem('userToken');
-    if (storedPhone) currentPhone = storedPhone.replace(/\D/g, '').slice(-10);
-  }
+  let apiSuccess = false;
+  let totalOrders = 0;
+  let completedOrders = 0;
+  let totalEarnings = 0;
 
   // 1. Fetch from primary backend endpoint
   try {
     const res = await authFetch(`${BASE}/api/drivers/me/orders`);
     if (res.ok) {
       const data = await res.json();
+      apiSuccess = data.success ?? true;
+      totalOrders = data.totalOrders ?? 0;
+      completedOrders = data.completedOrders ?? 0;
+      totalEarnings = data.totalEarnings ?? 0;
       list = Array.isArray(data) ? data : (data.orders ?? data.value ?? []);
     }
   } catch (e) {
@@ -932,61 +1136,23 @@ export const getOrderHistory = async (): Promise<Order[]> => {
       const res = await authFetch(`${BASE}/api/drivers/me/orders/history`);
       if (res.ok) {
         const data = await res.json();
+        apiSuccess = data.success ?? true;
+        totalOrders = data.totalOrders ?? totalOrders;
+        completedOrders = data.completedOrders ?? completedOrders;
+        totalEarnings = data.totalEarnings ?? totalEarnings;
         list = Array.isArray(data) ? data : (data.orders ?? data.value ?? []);
       }
     } catch (e) {}
   }
 
-  // Build a set of normalized keys for deduplication
-  const existingKeys = new Set<string>();
-  list.forEach((o: any) => {
-    if (o.id) existingKeys.add(getNormalizedDigits(o.id));
-    if (o.bookingId) existingKeys.add(getNormalizedDigits(o.bookingId));
-  });
-
-  // 3. Merge locally stored completed orders only if matching current driver
-  try {
-    const localStoreStr = await AsyncStorage.getItem('localCompletedOrdersStore');
-    if (localStoreStr) {
-      const localOrders: any[] = JSON.parse(localStoreStr);
-      if (Array.isArray(localOrders) && localOrders.length > 0) {
-        const remainingLocal: any[] = [];
-        for (const loc of localOrders) {
-          const locEmail = (loc.driverEmail || '').toLowerCase().trim();
-          const locPhone = (loc.driverPhone || '').replace(/\D/g, '').slice(-10);
-          const isMatch = (!locEmail && !locPhone) || (currentEmail && locEmail === currentEmail) || (currentPhone && locPhone === currentPhone);
-
-          if (isMatch) {
-            const locIdKey = getNormalizedDigits(loc.id);
-            const locBookKey = getNormalizedDigits(loc.bookingId);
-            const isDuplicate = (locIdKey && existingKeys.has(locIdKey)) || (locBookKey && existingKeys.has(locBookKey));
-            
-            if (!isDuplicate) {
-              list.unshift(loc);
-              if (locIdKey) existingKeys.add(locIdKey);
-              if (locBookKey) existingKeys.add(locBookKey);
-              remainingLocal.push(loc);
-            }
-          }
-        }
-        await AsyncStorage.setItem('localCompletedOrdersStore', JSON.stringify(remainingLocal));
-      }
-    }
-  } catch (e) {}
-
   if (!Array.isArray(list) || list.length === 0) {
-    return [];
-  }
-
-  // Filter list strictly by currently logged-in driver email or phone
-  if (currentEmail || currentPhone) {
-    list = list.filter((o: any) => {
-      const oEmail = (o.driverEmail || o.driver_email || o.email || '').toLowerCase().trim();
-      const oPhone = (o.driverPhone || o.driver_phone || o.phone || '').replace(/\D/g, '').slice(-10);
-      if (currentPhone && oPhone) return oPhone === currentPhone;
-      if (currentEmail && oEmail) return oEmail === currentEmail;
-      return true;
-    });
+    return {
+      success: apiSuccess,
+      totalOrders: 0,
+      completedOrders: 0,
+      totalEarnings: 0,
+      orders: []
+    };
   }
 
   // Final deduplication pass to ensure 100% unique order entries
@@ -1001,7 +1167,7 @@ export const getOrderHistory = async (): Promise<Order[]> => {
     }
   });
 
-  return uniqueList.map((o: any, idx: number) => {
+  const mappedOrders = uniqueList.map((o: any, idx: number) => {
     const rawAmt = typeof o.amount === 'number' 
       ? o.amount 
       : parseFloat(String(o.amount || o.fare || o.price || o.totalAmount || o.totalFare || o.payout || '0').replace('₹', '')) || 0;
@@ -1024,18 +1190,56 @@ export const getOrderHistory = async (): Promise<Order[]> => {
       deliveryOtp: o.deliveryOtp || o.otp,
     };
   });
+
+  // Dynamically calculate metadata totals if they were not returned or to count local merged orders
+  const completedList = mappedOrders.filter((o: any) => {
+    const s = (o.status || '').toLowerCase().trim();
+    return ['completed', 'delivered', 'done', 'finished', 'closed', 'success'].includes(s);
+  });
+  
+  if (totalOrders === 0 || totalOrders < mappedOrders.length) {
+    totalOrders = mappedOrders.length;
+  }
+  if (completedOrders === 0 || completedOrders < completedList.length) {
+    completedOrders = completedList.length;
+  }
+  if (totalEarnings === 0) {
+    totalEarnings = completedList.reduce((sum: number, o: any) => sum + (o.amount || 0), 0);
+  }
+
+  return {
+    success: apiSuccess || true,
+    totalOrders,
+    completedOrders,
+    totalEarnings,
+    orders: mappedOrders
+  };
 };
 
 /** 
- * Dedicated Order Accept Endpoint
- * 1. Recommended: PUT /api/orders/{id}/accept (also supports POST)
- * 2. Option 2: PUT /api/driver/orders/{bookingId}/accept
- * 3. Option 3: PUT /api/orders/{id}/status with {"status": "accepted"}
+ * Dedicated Atomic Single-Driver Order Accept Endpoint
+ * Implements Multi-Driver Collision & Race Condition Resolution:
+ * 1. PUT /api/orders/{id}/accept
+ * 2. POST /api/orders/{id}/accept
+ * 3. PUT /api/driver/orders/{bookingId}/accept
+ * 4. POST /api/driver/orders/{bookingId}/accept
+ * 5. PUT /api/drivers/orders/{bookingId}/accept
+ * 6. POST /api/drivers/orders/{bookingId}/accept
+ * 7. PUT /api/orders/{id}/status with {"status": "accepted"}
  */
 export const acceptOrder = async (
   orderIdentifier: number | string,
-  extraMeta?: { bookingId?: string; driverName?: string; customerName?: string; amount?: number }
-): Promise<{ success: boolean; message?: string; order?: any }> => {
+  extraMeta?: { 
+    bookingId?: string; 
+    driverId?: string | number;
+    driverName?: string; 
+    driverPhone?: string;
+    driverVehicleNumber?: string;
+    driverEmail?: string;
+    customerName?: string; 
+    amount?: number 
+  }
+): Promise<{ success: boolean; statusCode?: number; message?: string; order?: any }> => {
   try {
     const rawIdStr = String(orderIdentifier).trim();
     const cleanId = rawIdStr.replace(/^#+/, '');
@@ -1043,90 +1247,316 @@ export const acceptOrder = async (
       ? cleanBookingId(extraMeta.bookingId) 
       : (cleanId.startsWith('BK_') ? cleanId : `BK_${cleanId}`);
 
-    // Endpoint 1: Recommended PUT /api/orders/{id}/accept
+    // Load active driver profile from local storage for payload fallback
+    let fallbackDriverId = extraMeta?.driverId;
+    let fallbackDriverName = extraMeta?.driverName;
+    let fallbackDriverPhone = extraMeta?.driverPhone;
+    let fallbackDriverVehicle = extraMeta?.driverVehicleNumber;
+    let fallbackDriverEmail = extraMeta?.driverEmail;
+
     try {
-      const res = await authFetch(`${BASE}/api/orders/${encodeURIComponent(cleanId)}/accept`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.success !== false) {
-        return { success: true, message: data?.message || 'Order accepted successfully', order: data?.order };
+      const profStr = await AsyncStorage.getItem('driverProfile');
+      if (profStr) {
+        const prof = JSON.parse(profStr);
+        fallbackDriverId = fallbackDriverId || prof?.id || prof?.driverId;
+        fallbackDriverName = fallbackDriverName || prof?.name || prof?.fullName;
+        fallbackDriverPhone = fallbackDriverPhone || prof?.phone || prof?.mobile;
+        fallbackDriverVehicle = fallbackDriverVehicle || prof?.vehicleNumber;
+        fallbackDriverEmail = fallbackDriverEmail || prof?.email;
       }
-      if (res.status === 409 || res.status === 400 || data?.success === false) {
-        return {
-          success: false,
-          message: data?.message || 'This order has already been accepted by another driver.',
-          order: data?.order,
-        };
+    } catch (e) {}
+
+    const driverPayload: any = {
+      status: 'accepted',
+      ...(fallbackDriverId ? { driverId: String(fallbackDriverId) } : {}),
+      ...(fallbackDriverName ? { driverName: fallbackDriverName } : {}),
+      ...(fallbackDriverPhone ? { driverPhone: fallbackDriverPhone } : {}),
+      ...(fallbackDriverVehicle ? { driverVehicleNumber: fallbackDriverVehicle } : {}),
+      ...(fallbackDriverEmail ? { driverEmail: fallbackDriverEmail } : {}),
+      ...(extraMeta || {}),
+    };
+
+    const routes = [
+      { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/accept`, method: 'PUT' },
+      { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/accept`, method: 'POST' },
+      { url: `${BASE}/api/driver/orders/${encodeURIComponent(cleanBkId)}/accept`, method: 'PUT' },
+      { url: `${BASE}/api/driver/orders/${encodeURIComponent(cleanBkId)}/accept`, method: 'POST' },
+      { url: `${BASE}/api/drivers/orders/${encodeURIComponent(cleanBkId)}/accept`, method: 'PUT' },
+      { url: `${BASE}/api/drivers/orders/${encodeURIComponent(cleanBkId)}/accept`, method: 'POST' },
+      { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/status`, method: 'PUT' },
+    ];
+
+    for (const route of routes) {
+      try {
+        const res = await authFetch(route.url, {
+          method: route.method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(driverPayload),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        // 1. Winner Driver (200 OK)
+        if (res.status === 200 && data?.success !== false) {
+          return { 
+            success: true, 
+            statusCode: 200, 
+            message: data?.message || 'Order accepted successfully', 
+            order: data?.order || data 
+          };
+        }
+
+        // 2. Multi-Driver Collision & Race Condition Lost (409 Conflict)
+        if (res.status === 409) {
+          return {
+            success: false,
+            statusCode: 409,
+            message: data?.message || 'This order has already been accepted by another driver partner.',
+            order: data?.order,
+          };
+        }
+
+        // 3. Order Expired or Not Found (404 Not Found)
+        if (res.status === 404) {
+          return {
+            success: false,
+            statusCode: 404,
+            message: data?.message || 'Order not found or has expired.',
+          };
+        }
+
+        if (data?.success === false && data?.message) {
+          return {
+            success: false,
+            statusCode: res.status,
+            message: data.message,
+            order: data?.order,
+          };
+        }
+      } catch (err) {
+        console.warn(`[API] acceptOrder ${route.method} ${route.url} error:`, err);
       }
-    } catch (e) {
-      console.warn('[API] acceptOrder PUT /api/orders/{id}/accept attempt failed:', e);
     }
 
-    // Endpoint 1b: Recommended POST /api/orders/{id}/accept
-    try {
-      const res = await authFetch(`${BASE}/api/orders/${encodeURIComponent(cleanId)}/accept`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.success !== false) {
-        return { success: true, message: data?.message || 'Order accepted successfully', order: data?.order };
-      }
-      if (res.status === 409 || res.status === 400 || data?.success === false) {
-        return {
-          success: false,
-          message: data?.message || 'This order has already been accepted by another driver.',
-          order: data?.order,
-        };
-      }
-    } catch (e) {
-      console.warn('[API] acceptOrder POST /api/orders/{id}/accept attempt failed:', e);
-    }
-
-    // Endpoint 2: Option 2 PUT /api/driver/orders/{bookingId}/accept
-    try {
-      const res = await authFetch(`${BASE}/api/driver/orders/${encodeURIComponent(cleanBkId)}/accept`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.success !== false) {
-        return { success: true, message: data?.message || 'Order accepted successfully', order: data?.order };
-      }
-      if (res.status === 409 || res.status === 400 || data?.success === false) {
-        return {
-          success: false,
-          message: data?.message || 'This order has already been accepted by another driver.',
-          order: data?.order,
-        };
-      }
-    } catch (e) {
-      console.warn('[API] acceptOrder PUT /api/driver/orders/{bookingId}/accept attempt failed:', e);
-    }
-
-    // Endpoint 3: Option 3 PUT /api/orders/{id}/status {"status": "accepted"}
-    const res = await authFetch(`${BASE}/api/orders/${encodeURIComponent(cleanId)}/status`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'accepted', ...extraMeta }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data?.success !== false) {
-      return { success: true, message: data?.message || 'Order accepted successfully', order: data?.order };
-    }
-    return {
-      success: false,
-      message: data?.message || 'This order has already been accepted by another driver.',
-      order: data?.order,
+    return { 
+      success: false, 
+      statusCode: 500, 
+      message: 'Network connection error while accepting order. Please try again.' 
     };
   } catch (e) {
-    return { success: false, message: 'Network connection error. Please check your network and try again.' };
+    return { 
+      success: false, 
+      statusCode: 500, 
+      message: 'Network connection error. Please check your network and try again.' 
+    };
   }
+};
+
+/**
+ * POST /api/driver/orders/{orderId}/verify-otp or POST /api/orders/{orderId}/verify-otp
+ * Step 1: Validates customer delivery OTP with backend WITHOUT completing the order.
+ * Sets status to payment_confirmation_pending / OTP_VERIFIED.
+ */
+/**
+ * POST /api/driver/orders/{orderId}/verify-otp or POST /api/orders/{orderId}/verify-otp
+ * Step 1: Validates customer delivery OTP with backend WITHOUT completing the order.
+ * Sets status to OTP_VERIFIED.
+ */
+export const verifyDeliveryOtpOnly = async (
+  orderId: number | string,
+  otp: string
+): Promise<{ success: boolean; statusCode?: number; message?: string; order?: any; status?: string; otpVerified?: boolean }> => {
+  const cleanId = String(orderId).replace(/^#+/, '').trim();
+  const cleanOtp = String(otp).trim();
+
+  const body = {
+    enteredOtp: cleanOtp,
+    otp: cleanOtp,
+    deliveryOtp: cleanOtp,
+    bookingId: cleanId,
+  };
+
+  const routes = [
+    { url: `${BASE}/api/driver/orders/${encodeURIComponent(cleanId)}/verify-otp`, method: 'POST' },
+    { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/verify-otp`, method: 'POST' },
+    { url: `${BASE}/api/drivers/orders/${encodeURIComponent(cleanId)}/verify-otp`, method: 'POST' },
+    { url: `${BASE}/api/verify-otp`, method: 'POST' },
+    { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/status`, method: 'PUT' },
+  ];
+
+  for (const route of routes) {
+    try {
+      const isStatusEndpoint = route.url.endsWith('/status');
+      const payload = isStatusEndpoint ? { otp: cleanOtp, status: 'OTP_VERIFIED' } : body;
+      const res = await authFetch(route.url, {
+        method: route.method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 200 && data?.success !== false) {
+        return { 
+          success: true, 
+          statusCode: 200,
+          message: data?.message || 'OTP verified successfully. Awaiting payment confirmation.',
+          status: data?.status || 'OTP_VERIFIED',
+          otpVerified: true,
+          order: data?.order 
+        };
+      }
+
+      if (res.status === 400 || res.status === 403 || res.status === 404 || res.status === 401) {
+        return {
+          success: false,
+          statusCode: res.status,
+          message: data?.message || (res.status === 400 ? 'Incorrect Customer Delivery OTP. Verification failed.' : (res.status === 403 ? 'Forbidden: you are not the assigned driver for this order.' : 'Order not found.')),
+        };
+      }
+
+      if (data?.success === false && data?.message) {
+        return {
+          success: false,
+          statusCode: res.status,
+          message: data.message,
+        };
+      }
+    } catch (e) {
+      console.warn(`[API] verifyDeliveryOtpOnly error on ${route.url}:`, e);
+    }
+  }
+
+  return { success: false, statusCode: 500, message: 'Network error during OTP verification. Please check your connection.' };
+};
+
+/**
+ * POST /api/driver/orders/{orderId}/confirm-payment or POST /api/orders/{orderId}/complete
+ * Step 2: Confirms payment receipt and marks order as DELIVERED & COMPLETED on backend.
+ * Headers: Idempotency-Key: COMPL_<bookingId>_<timestamp>
+ * Body: { bookingId, amount, method: "CASH"|"ONLINE", paymentMethod: "CASH"|"ONLINE", paymentConfirmed: true }
+ */
+export const confirmPaymentAndCompleteOrder = async (
+  orderId: number | string,
+  meta: {
+    bookingId?: string;
+    driverName?: string;
+    customerName?: string;
+    customerPhone?: string;
+    amount?: number;
+    paymentMethod?: string;
+    pickup?: string;
+    drop?: string;
+    distance?: string;
+  },
+  idempotencyKey?: string
+): Promise<{
+  success: boolean;
+  statusCode?: number;
+  message?: string;
+  order?: any;
+  earnings?: any;
+  updatedBalance?: number;
+  wallet?: any;
+  platformCommission?: number;
+  grossFare?: number;
+  netEarnings?: number;
+}> => {
+  const cleanId = String(orderId).replace(/^#+/, '').trim();
+  const rawBookingId = meta.bookingId || cleanId;
+  const bookingIdStr = rawBookingId.startsWith('BK_') ? rawBookingId : (cleanId.startsWith('BK_') ? cleanId : `BK_${cleanId}`);
+  const idemKey = idempotencyKey || `COMPL_${bookingIdStr}_${Date.now()}`;
+
+  const methodUpper = String(meta.paymentMethod || 'CASH').toUpperCase();
+  const methodStr = methodUpper.includes('ONLINE') || methodUpper.includes('UPI') ? 'ONLINE' : 'CASH';
+  
+  const body = {
+    bookingId: bookingIdStr,
+    amount: Number(meta.amount || 0),
+    method: methodStr,
+    paymentMethod: methodStr,
+    paymentConfirmed: true,
+  };
+
+  const routes = [
+    { url: `${BASE}/api/driver/orders/${encodeURIComponent(cleanId)}/confirm-payment`, method: 'POST' },
+    { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/complete`, method: 'POST' },
+    { url: `${BASE}/api/drivers/orders/${encodeURIComponent(cleanId)}/complete`, method: 'POST' },
+    { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/confirm-payment`, method: 'POST' },
+    { url: `${BASE}/api/confirm-payment`, method: 'POST' },
+    { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/status`, method: 'PUT' },
+  ];
+
+  for (const route of routes) {
+    try {
+      const isStatusEndpoint = route.url.endsWith('/status');
+      const payload = isStatusEndpoint ? { status: 'completed', paymentConfirmed: true, ...meta } : body;
+      const res = await authFetch(route.url, {
+        method: route.method,
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idemKey,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 200 && data?.success !== false) {
+        // Send delivery notifications
+        sendDeliveryNotification({
+          orderId: cleanId,
+          status: 'completed',
+          bookingId: bookingIdStr,
+          driverName: meta.driverName,
+          customerName: meta.customerName,
+          amount: meta.amount,
+          customMessage: `🎉 Payment Received & Delivery Completed! Driver ${meta.driverName || 'Driver'} confirmed payment of ₹${meta.amount} for order ${bookingIdStr}.`,
+        }).catch(() => {});
+
+        return {
+          success: true,
+          statusCode: 200,
+          message: data?.message || 'Payment confirmed and order completed successfully.',
+          order: data?.order,
+          earnings: data?.earnings,
+          updatedBalance: typeof data?.updatedBalance === 'number' ? data.updatedBalance : (typeof data?.remainingBalance === 'number' ? data.remainingBalance : (typeof data?.wallet?.availableBalance === 'number' ? data.wallet.availableBalance : undefined)),
+          wallet: data?.wallet,
+          platformCommission: data?.platformCommission ?? data?.commission,
+          grossFare: data?.grossFare ?? data?.fare,
+          netEarnings: data?.netEarnings ?? data?.driverEarnings,
+        };
+      }
+
+      if (res.status === 422 || (data?.success === false && data?.message && data.message.toLowerCase().includes('otp'))) {
+        return {
+          success: false,
+          statusCode: 422,
+          message: data?.message || 'OTP has not been verified yet',
+        };
+      }
+
+      if (res.status === 400 || res.status === 401 || res.status === 403) {
+        return {
+          success: false,
+          statusCode: res.status,
+          message: data?.message || (res.status === 400 ? 'Collected amount does not match order amount due.' : (res.status === 403 ? 'Forbidden: you are not the assigned driver for this order.' : 'Unauthorized: driver profile not found.')),
+        };
+      }
+
+      if (data?.success === false && data?.message) {
+        return {
+          success: false,
+          statusCode: res.status,
+          message: data.message,
+        };
+      }
+    } catch (e) {
+      console.warn(`[API] confirmPaymentAndCompleteOrder error on ${route.url}:`, e);
+    }
+  }
+
+  return { success: false, statusCode: 500, message: 'Network error during payment confirmation. Please try again.' };
 };
 
 /** PUT /api/orders/{orderId}/status */
@@ -1143,36 +1573,6 @@ export const updateOrderStatus = async (
   try {
     const body: any = { status, ...extraMeta };
     if (otp) body.otp = otp;
-
-    // Persist completed order locally to guarantee immediate UI update across Task Registry & Earnings
-    if (['completed', 'delivered'].includes((status || '').toLowerCase())) {
-      try {
-        let currentEmail = '';
-        const profileStr = await AsyncStorage.getItem('driverProfile');
-        if (profileStr) {
-          const p = JSON.parse(profileStr);
-          if (p?.email || p?.driverEmail) currentEmail = p.email || p.driverEmail;
-        }
-
-        const normalizedMetaBookId = cleanBookingId(extraMeta?.bookingId || orderId);
-        const localStoreStr = await AsyncStorage.getItem('localCompletedOrdersStore');
-        let localOrders: any[] = localStoreStr ? JSON.parse(localStoreStr) : [];
-        const newRecord = {
-          id: String(orderId),
-          bookingId: normalizedMetaBookId,
-          status: 'completed',
-          amount: typeof extraMeta?.amount === 'number' && extraMeta.amount > 0 ? extraMeta.amount : 0,
-          customerName: extraMeta?.customerName || 'Customer',
-          driverEmail: currentEmail,
-          createdAt: new Date().toISOString(),
-        };
-
-        const targetNorm = getNormalizedDigits(orderId);
-        localOrders = localOrders.filter(o => getNormalizedDigits(o.id) !== targetNorm && getNormalizedDigits(o.bookingId) !== targetNorm);
-        localOrders.unshift(newRecord);
-        await AsyncStorage.setItem('localCompletedOrdersStore', JSON.stringify(localOrders));
-      } catch (e) {}
-    }
 
     const res = await authFetch(`${BASE}/api/orders/${orderId}/status`, {
       method: 'PUT',
@@ -1283,6 +1683,185 @@ export const updateDriverKyc = async (
 };
 
 // ══════════════════════════════════════════════════════════════
+//  ADMIN — VEHICLE TYPES & FLEET MANAGEMENT
+// ══════════════════════════════════════════════════════════════
+
+/** GET /api/admin/vehicle-types (Fetch all vehicle types including inactive) */
+export const getAdminVehicleTypes = async (): Promise<VehicleTypeAdmin[]> => {
+  const routes = [
+    `${BASE}/api/admin/vehicle-types`,
+    `${BASE}/api/admin/vehicles`,
+    `${BASE}/api/vehicle-types`,
+    `${BASE}/api/vehicles`,
+  ];
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        const rawList = Array.isArray(data) ? data : (data.vehicles || data.data || data.value || []);
+        if (Array.isArray(rawList)) {
+          return rawList.map((v: any, index: number) => ({
+            id: v.id || v._id || v.type || `veh_${index + 1}`,
+            name: v.name || v.title || 'Vehicle',
+            type: v.type || v.type_code || v.typeCode || (v.name ? v.name.toLowerCase().replace(/\s+/g, '_') : 'vehicle'),
+            description: v.description || '',
+            capacity: v.capacity || (v.capacityKg || v.capacity_kg ? `Load: Up to ${v.capacityKg || v.capacity_kg}kg` : ''),
+            capacityKg: Number(v.capacityKg || v.capacity_kg || (v.capacity ? (parseInt(String(v.capacity).replace(/\D/g, '')) || 0) : 0)),
+            dimensions: v.dimensions || '',
+            iconName: v.iconName || v.icon_name || v.icon || 'truck',
+            imageUrl: v.imageUrl || v.image_url || v.image || '',
+            baseFare: Number(v.baseFare || v.base_fare || v.minFare || 50),
+            baseKm: Number(v.baseKm || v.base_km || v.freeDistance || v.minDistance || 1.0),
+            perKmRate: Number(v.perKmRate || v.per_km_rate || v.pricePerKm || 15),
+            status: (v.status === 'inactive' || v.status === false || v.isActive === false) ? 'inactive' : 'active',
+            priority: Number(v.priority || index + 1),
+          }));
+        }
+      }
+    } catch (e) {
+      console.warn(`[API] getAdminVehicleTypes on ${url} notice:`, e);
+    }
+  }
+  return [];
+};
+
+/** POST /api/admin/vehicle-types (Create new vehicle category) */
+export const createAdminVehicleType = async (payload: Partial<VehicleTypeAdmin>): Promise<{ success: boolean; vehicle?: any; message?: string }> => {
+  const routes = [
+    `${BASE}/api/admin/vehicle-types`,
+    `${BASE}/api/admin/vehicles`,
+    `${BASE}/api/vehicle-types`,
+  ];
+  const backendPayload = {
+    name: payload.name,
+    type: payload.type,
+    type_code: payload.type,
+    typeCode: payload.type,
+    description: payload.description,
+    capacity: payload.capacity || (payload.capacityKg ? `Load: Up to ${payload.capacityKg}kg` : ''),
+    capacityKg: payload.capacityKg,
+    capacity_kg: payload.capacityKg,
+    dimensions: payload.dimensions,
+    iconName: payload.iconName || 'truck',
+    icon_name: payload.iconName || 'truck',
+    imageUrl: payload.imageUrl || '',
+    image_url: payload.imageUrl || '',
+    baseFare: payload.baseFare,
+    base_fare: payload.baseFare,
+    baseKm: payload.baseKm || 1.0,
+    base_km: payload.baseKm || 1.0,
+    perKmRate: payload.perKmRate,
+    per_km_rate: payload.perKmRate,
+    status: payload.status || 'active',
+    priority: payload.priority || 1,
+  };
+
+  let lastError = 'Failed to create vehicle category';
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(backendPayload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.success !== false) {
+        return { success: true, vehicle: data?.vehicle || data, message: 'Vehicle category created successfully!' };
+      }
+      lastError = data?.message || `HTTP ${res.status}`;
+    } catch (e: any) {
+      lastError = e?.message || 'Network request failed';
+    }
+  }
+  return { success: false, message: lastError };
+};
+
+/** PUT /api/admin/vehicle-types/:id (Update vehicle category details/pricing) */
+export const updateAdminVehicleType = async (id: string | number, payload: Partial<VehicleTypeAdmin>): Promise<{ success: boolean; vehicle?: any; message?: string }> => {
+  const routes = [
+    `${BASE}/api/admin/vehicle-types/${id}`,
+    `${BASE}/api/admin/vehicles/${id}`,
+    `${BASE}/api/vehicle-types/${id}`,
+  ];
+  const backendPayload = {
+    ...payload,
+    type_code: payload.type,
+    typeCode: payload.type,
+    capacity_kg: payload.capacityKg,
+    icon_name: payload.iconName,
+    image_url: payload.imageUrl,
+    base_fare: payload.baseFare,
+    base_km: payload.baseKm,
+    per_km_rate: payload.perKmRate,
+  };
+
+  let lastError = 'Failed to update vehicle category';
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(backendPayload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.success !== false) {
+        return { success: true, vehicle: data?.vehicle || data, message: 'Vehicle category updated successfully!' };
+      }
+      lastError = data?.message || `HTTP ${res.status}`;
+    } catch (e: any) {
+      lastError = e?.message || 'Network request failed';
+    }
+  }
+  return { success: false, message: lastError };
+};
+
+/** PATCH /api/admin/vehicle-types/:id/status (Toggle active / inactive status) */
+export const toggleAdminVehicleTypeStatus = async (id: string | number, currentStatus: 'active' | 'inactive'): Promise<{ success: boolean; message?: string }> => {
+  const nextStatus = currentStatus === 'active' ? 'inactive' : 'active';
+  const routes = [
+    { url: `${BASE}/api/admin/vehicle-types/${id}/status`, method: 'PATCH' },
+    { url: `${BASE}/api/admin/vehicles/${id}/status`, method: 'PATCH' },
+    { url: `${BASE}/api/admin/vehicle-types/${id}`, method: 'PATCH' },
+    { url: `${BASE}/api/admin/vehicle-types/${id}`, method: 'PUT' },
+    { url: `${BASE}/api/vehicle-types/${id}/status`, method: 'PATCH' },
+  ];
+
+  for (const route of routes) {
+    try {
+      const res = await authFetch(route.url, {
+        method: route.method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: nextStatus, isActive: nextStatus === 'active' }),
+      });
+      if (res.ok) {
+        return { success: true, message: `Vehicle status changed to ${nextStatus}` };
+      }
+    } catch (e) {}
+  }
+  return { success: false, message: 'Failed to update vehicle status' };
+};
+
+/** DELETE /api/admin/vehicle-types/:id (Soft-delete or remove vehicle category) */
+export const deleteAdminVehicleType = async (id: string | number): Promise<{ success: boolean; message?: string }> => {
+  const routes = [
+    `${BASE}/api/admin/vehicle-types/${id}`,
+    `${BASE}/api/admin/vehicles/${id}`,
+    `${BASE}/api/vehicle-types/${id}`,
+  ];
+
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url, { method: 'DELETE' });
+      if (res.ok) {
+        return { success: true, message: 'Vehicle category removed successfully' };
+      }
+    } catch (e) {}
+  }
+  return { success: false, message: 'Failed to delete vehicle category' };
+};
+
+// ══════════════════════════════════════════════════════════════
 //  ADMIN — USERS
 // ══════════════════════════════════════════════════════════════
 
@@ -1292,30 +1871,9 @@ export const getAllUsers = async (): Promise<AppUser[]> => {
     const res = await authFetch(`${BASE}/api/admin/users`);
     if (res.ok) {
       const data = await res.json();
-      const list = Array.isArray(data) ? data : (data.users ?? data.value ?? []);
-      if (list.length > 0) return list;
+      return Array.isArray(data) ? data : (data.users ?? data.value ?? []);
     }
-    
-    // Live synthesis fallback from getAllOrders() customers
-    const orders = await getAllOrders();
-    const userMap = new Map<string, AppUser>();
-    orders.forEach((o, index) => {
-      const phone = o.customerPhone || `90000000${index}`;
-      if (!userMap.has(phone)) {
-        userMap.set(phone, {
-          id: index + 1,
-          name: o.customerName || `Customer (${phone.slice(-4)})`,
-          phone,
-          status: 'active',
-          totalOrders: 1,
-          createdAt: o.createdAt || new Date().toISOString(),
-        });
-      } else {
-        const u = userMap.get(phone)!;
-        u.totalOrders = (u.totalOrders || 1) + 1;
-      }
-    });
-    return Array.from(userMap.values());
+    return [];
   } catch {
     return [];
   }
@@ -1370,57 +1928,9 @@ export const getAdminAnalytics = async (period: 'week' | 'month' | 'year' = 'mon
         };
       }
     }
+    return null;
   } catch (e) {
     console.warn('Backend analytics notice:', e);
-  }
-  
-  // Live synthesis fallback from live orders and drivers if backend is initializing
-  try {
-    const [orders, drivers] = await Promise.all([getAllOrders(), getAllDrivers()]);
-    const totalRevenue = orders.reduce((sum, o) => sum + (o.amount || 0), 0);
-    const totalOrders = orders.length;
-    const activeDrivers = drivers.filter(d => d.status === 'online').length;
-    const cancelledCount = orders.filter(o => o.status === 'cancelled').length;
-    const cancellationRate = totalOrders > 0 ? (cancelledCount / totalOrders) * 100 : 0;
-
-    // Compute vehicle distribution dynamically from real drivers
-    const vCounts: Record<string, number> = {};
-    drivers.forEach(d => {
-      const v = d.vehicleType || 'Standard';
-      vCounts[v] = (vCounts[v] || 0) + 1;
-    });
-    const totalV = drivers.length || 1;
-    const vehicleDistribution = Object.keys(vCounts).map(type => ({
-      type,
-      percentage: Math.round((vCounts[type] / totalV) * 100),
-    }));
-
-    // Compute hourly order distribution dynamically from real order creation timestamps
-    const hours = new Array(24).fill(0);
-    orders.forEach(o => {
-      if (o.createdAt) {
-        try {
-          const h = new Date(o.createdAt).getHours();
-          if (h >= 0 && h < 24) hours[h]++;
-        } catch {}
-      }
-    });
-
-    return {
-      totalRevenue,
-      totalOrders,
-      activeDrivers,
-      cancellationRate,
-      topDrivers: drivers.map(d => ({
-        name: d.name || 'Driver',
-        trips: Number(d.trips || 0),
-        rating: Number(d.rating || 5.0),
-        earnings: Math.round(Number(d.trips || 0) * 150),
-      })),
-      vehicleDistribution: vehicleDistribution.length > 0 ? vehicleDistribution : [{ type: 'Standard', percentage: 100 }],
-      hourlyOrders: hours,
-    };
-  } catch {
     return null;
   }
 };
@@ -1441,34 +1951,9 @@ export const getAdminPayments = async (): Promise<PaymentSummary | null> => {
         };
       }
     }
+    return null;
   } catch (e) {
     console.warn('Backend payments notice:', e);
-  }
-
-  // Live synthesis fallback from live orders if backend is initializing
-  try {
-    const orders = await getAllOrders();
-    const revenueToday = orders.reduce((sum, o) => sum + (o.amount || 0), 0);
-    const platformFee = Math.round(revenueToday * 0.15); // 15% platform commission
-
-    return {
-      revenueToday,
-      platformFee,
-      pendingPayouts: Math.round(revenueToday * 0.85),
-      refundsToday: 0,
-      transactions: orders.map((o, idx) => ({
-        id: o.id || `TXN-${idx + 1}`,
-        customerName: o.customerName || 'Customer',
-        driverName: o.driverName || 'Driver',
-        amount: o.amount || 0,
-        fee: Math.round((o.amount || 0) * 0.15),
-        net: Math.round((o.amount || 0) * 0.85),
-        method: o.paymentMethod || 'UPI',
-        status: o.status === 'completed' ? 'Success' : o.status,
-        createdAt: o.createdAt || new Date().toISOString(),
-      })),
-    };
-  } catch {
     return null;
   }
 };
@@ -1534,41 +2019,9 @@ export const getAdminNotifications = async (): Promise<any[]> => {
         return data.notifications;
       }
     }
+    return [];
   } catch (e) {
     console.warn('Failed to fetch admin notifications:', e);
-  }
-
-  // Fallback: Dynamically generate system notifications from live driver and order data
-  try {
-    const notifs: any[] = [];
-    const drivers = await getAllDrivers();
-    const orders = await getAllOrders();
-
-    if (Array.isArray(drivers)) {
-      const pendingDrivers = drivers.filter(d => (d.kyc || d.kycStatus) === 'pending');
-      pendingDrivers.forEach(d => {
-        notifs.push({
-          id: `kyc_pending_${d.id}`,
-          title: '🚨 Pending KYC Review',
-          message: `Driver partner ${d.name} (${d.phone || d.email}) has submitted documents for verification.`,
-          timestamp: new Date().toISOString(),
-        });
-      });
-    }
-
-    if (Array.isArray(orders)) {
-      orders.slice(0, 5).forEach(o => {
-        notifs.push({
-          id: `admin_order_${o.id}`,
-          title: `📦 Order ${o.bookingId || `#${o.id}`} (${(o.status || 'pending').toUpperCase()})`,
-          message: `Customer ${o.customerName || 'User'} → Driver ${o.driverName || 'Unassigned'}. Fare: ₹${o.amount || 0}.`,
-          timestamp: o.createdAt || new Date().toISOString(),
-        });
-      });
-    }
-
-    return notifs;
-  } catch {
     return [];
   }
 };
@@ -1717,20 +2170,238 @@ export const getDriverEarningsHistory = async () => {
   }
 };
 
+export interface DriverWallet {
+  availableBalance: number;
+  pendingBalance: number;
+  totalEarned: number;
+  totalWithdrawn: number;
+  platformCommission: number;
+  commissionPercentage: number;
+  minPayoutAmount: number;
+  isPayoutEligible: boolean;
+  needsMoreForPayout: number;
+  hasVerifiedAccount: boolean;
+  isEligible?: boolean;
+  eligibilityReason?: string;
+  minRequiredBalance?: number;
+}
+
+export interface WalletTransaction {
+  id: string;
+  driverId?: string;
+  orderId?: string;
+  paymentId?: string;
+  transactionType: 'ORDER_EARNING' | 'COMMISSION' | 'WITHDRAWAL' | 'REFUND' | 'ADJUSTMENT' | 'RECHARGE' | 'WALLET_RECHARGE';
+  grossAmount?: number;
+  commissionAmount?: number;
+  amount: number;
+  balanceBefore?: number;
+  balanceAfter?: number;
+  status: 'PENDING' | 'AVAILABLE' | 'WITHDRAWAL_PENDING' | 'WITHDRAWN' | 'SUCCESS' | 'FAILED' | 'COMPLETED';
+  referenceId?: string;
+  description: string;
+  createdAt: string;
+}
+
+export interface AdminWalletSettings {
+  commissionPercentage: number;
+  minRequiredBalance: number;
+  walletRequiredForRides: boolean;
+  autoOfflineWhenBalanceInsufficient: boolean;
+}
+
+/** GET /api/admin/settings/wallet or GET /api/admin/config/wallet */
+export const getAdminWalletSettings = async (): Promise<{ success: boolean; settings: AdminWalletSettings; message?: string }> => {
+  const routes = [
+    `${BASE}/api/admin/settings/wallet`,
+    `${BASE}/api/admin/config/wallet`,
+    `${BASE}/api/admin/wallet/settings`,
+    `${BASE}/api/config/wallet`,
+    `${BASE}/api/settings/wallet`,
+  ];
+
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success !== false) {
+          const raw = data.settings || data.config || data.data || data;
+          return {
+            success: true,
+            settings: {
+              commissionPercentage: typeof raw.commissionPercentage === 'number' ? raw.commissionPercentage : (raw.commissionRate || 5),
+              minRequiredBalance: typeof raw.minRequiredBalance === 'number' ? raw.minRequiredBalance : (raw.minRequiredWalletBalance || 0),
+              walletRequiredForRides: raw.walletRequiredForRides !== undefined ? !!raw.walletRequiredForRides : true,
+              autoOfflineWhenBalanceInsufficient: raw.autoOfflineWhenBalanceInsufficient !== undefined ? !!raw.autoOfflineWhenBalanceInsufficient : true,
+            }
+          };
+        }
+      }
+    } catch (e) {}
+  }
+
+  return {
+    success: true,
+    settings: {
+      commissionPercentage: 5,
+      minRequiredBalance: 0,
+      walletRequiredForRides: true,
+      autoOfflineWhenBalanceInsufficient: true,
+    }
+  };
+};
+
+/** POST /api/admin/settings/wallet or PUT /api/admin/settings/wallet */
+export const saveAdminWalletSettings = async (settings: AdminWalletSettings): Promise<{ success: boolean; message?: string }> => {
+  const routes = [
+    `${BASE}/api/admin/settings/wallet`,
+    `${BASE}/api/admin/config/wallet`,
+    `${BASE}/api/admin/wallet/settings`,
+    `${BASE}/api/config/wallet`,
+    `${BASE}/api/settings/wallet`,
+  ];
+
+  let lastError = 'Failed to save wallet settings';
+
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.success !== false) {
+        return { success: true, message: data?.message || 'Settings saved successfully' };
+      }
+
+      const putRes = await authFetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      });
+      const putData = await putRes.json().catch(() => ({}));
+      if (putRes.ok && putData?.success !== false) {
+        return { success: true, message: putData?.message || 'Settings saved successfully' };
+      }
+      lastError = data?.message || putData?.message || `HTTP ${res.status}`;
+    } catch (e: any) {
+      lastError = e?.message || lastError;
+    }
+  }
+
+  return { success: false, message: lastError };
+};
+
+/** GET /api/driver/wallet or GET /api/drivers/me/balance */
+export const getDriverWallet = async (): Promise<{ success: boolean; wallet: DriverWallet; message?: string }> => {
+  const routes = [
+    `${BASE}/api/driver/wallet`,
+    `${BASE}/api/drivers/me/wallet`,
+    `${BASE}/api/drivers/me/balance`,
+    `${BASE}/api/wallet`,
+  ];
+
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        const raw = data?.wallet || data?.data || data;
+        if (raw) {
+          const gross = typeof raw.totalEarned === 'number' ? raw.totalEarned : (raw.grossTotal || 0);
+          const comm = typeof raw.platformCommission === 'number' ? raw.platformCommission : Math.round(gross * 0.05);
+          const avail = typeof raw.availableBalance === 'number' ? raw.availableBalance : Math.max(0, gross - comm - (raw.totalWithdrawn || 0));
+          const minReq = typeof raw.minRequiredBalance === 'number' ? raw.minRequiredBalance : (raw.minRequiredWalletBalance || 0);
+          const isEligible = raw.isEligible !== undefined ? !!raw.isEligible : (avail >= minReq);
+
+          return {
+            success: true,
+            wallet: {
+              availableBalance: avail,
+              pendingBalance: raw.pendingBalance || 0,
+              totalEarned: gross,
+              totalWithdrawn: raw.totalWithdrawn || raw.paidBalance || 0,
+              platformCommission: comm,
+              commissionPercentage: raw.commissionPercentage || 5,
+              minPayoutAmount: raw.minPayoutAmount || 100,
+              isPayoutEligible: avail >= (raw.minPayoutAmount || 100),
+              needsMoreForPayout: Math.max(0, (raw.minPayoutAmount || 100) - avail),
+              hasVerifiedAccount: raw.hasVerifiedAccount !== undefined ? raw.hasVerifiedAccount : true,
+              isEligible,
+              eligibilityReason: raw.eligibilityReason,
+              minRequiredBalance: minReq,
+            },
+          };
+        }
+      }
+    } catch (e) {
+      // try next route
+    }
+  }
+
+  return {
+    success: false,
+    wallet: {
+      availableBalance: 0,
+      pendingBalance: 0,
+      totalEarned: 0,
+      totalWithdrawn: 0,
+      platformCommission: 0,
+      commissionPercentage: 5,
+      minPayoutAmount: 100,
+      isPayoutEligible: false,
+      needsMoreForPayout: 100,
+      hasVerifiedAccount: false,
+      isEligible: true,
+      minRequiredBalance: 0,
+    },
+    message: 'Could not fetch wallet data',
+  };
+};
+
+/** GET /api/driver/wallet/transactions */
+export const getWalletTransactions = async (): Promise<{ success: boolean; transactions: WalletTransaction[] }> => {
+  const routes = [
+    `${BASE}/api/driver/wallet/transactions`,
+    `${BASE}/api/drivers/me/transactions`,
+    `${BASE}/api/payouts/history`,
+    `${BASE}/api/wallet/transactions`,
+  ];
+
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (data?.transactions || data?.data || data?.payouts || []);
+        if (Array.isArray(list)) {
+          return { success: true, transactions: list };
+        }
+      }
+    } catch (e) {
+      // try next route
+    }
+  }
+
+  return { success: true, transactions: [] };
+};
+
 /** GET /api/drivers/me/balance */
 export const getDriverBalance = async () => {
-  const url = `${BASE}/api/drivers/me/balance`;
-  try {
-    const res = await authFetch(url);
-    const data = await res.json();
-    if (res.ok && data) {
-      return data;
-    }
-    throw new Error(data?.message || `HTTP ${res.status}`);
-  } catch (e: any) {
-    console.warn(`getDriverBalance error:`, e);
-    throw new Error(e?.message || 'Failed to fetch driver balance buckets from backend');
-  }
+  const res = await getDriverWallet();
+  return {
+    success: res.success,
+    availableBalance: res.wallet.availableBalance,
+    pendingBalance: res.wallet.pendingBalance,
+    processingBalance: 0,
+    paidBalance: res.wallet.totalWithdrawn,
+    minPayoutAmount: res.wallet.minPayoutAmount,
+    isPayoutEligible: res.wallet.isPayoutEligible,
+    needsMoreForPayout: res.wallet.needsMoreForPayout,
+    hasVerifiedAccount: res.wallet.hasVerifiedAccount,
+  };
 };
 
 /** GET /api/drivers/me/payouts */
@@ -1791,14 +2462,45 @@ export const updateDriverPayoutAccount = async (payload: {
   }
 };
 
-/** POST /api/drivers/me/payout-request (Alias: /api/drivers/me/payouts/request) */
-export const requestDriverPayout = async (amount: number, payoutMode: string = 'MANUAL') => {
+export type WithdrawalStatus =
+  | 'PENDING_ADMIN_APPROVAL'
+  | 'ADMIN_APPROVED'
+  | 'INITIATED'
+  | 'PROCESSING'
+  | 'COMPLETED'
+  | 'REJECTED'
+  | 'FAILED';
+
+export interface WithdrawalRequestItem {
+  id: string;
+  driverId?: string;
+  amount: number;
+  heldAmount: number;
+  status: WithdrawalStatus;
+  bankName?: string;
+  accountNumberMasked?: string;
+  payoutReference?: string;
+  rejectionReason?: string;
+  failureReason?: string;
+  requestedAt: string;
+  processedAt?: string;
+}
+
+/** POST /api/driver/withdrawals — Submit withdrawal request to be held for Admin approval */
+export const createWithdrawalRequest = async (
+  amount: number,
+  bankAccountId?: string
+): Promise<{ success: boolean; request?: WithdrawalRequestItem; availableBalance?: number; heldAmount?: number; message?: string }> => {
   const routes = [
+    `${BASE}/api/driver/withdrawals`,
     `${BASE}/api/drivers/me/payout-request`,
-    `${BASE}/api/drivers/me/payouts/request`,
+    `${BASE}/api/drivers/me/withdrawals`,
+    `${BASE}/api/payouts/request`,
+    `${BASE}/api/wallet/withdraw`,
   ];
-  const idempotencyKey = `PO_IDEM_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-  let lastError: any = null;
+  const idempotencyKey = `WDR_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  let lastError: string | null = null;
+  let is404NoEndpoint = false;
 
   for (const url of routes) {
     try {
@@ -1808,20 +2510,129 @@ export const requestDriverPayout = async (amount: number, payoutMode: string = '
           'Content-Type': 'application/json',
           'Idempotency-Key': idempotencyKey,
         },
-        body: JSON.stringify({ amount, payoutMode }),
+        body: JSON.stringify({ amount, bankAccountId, status: 'PENDING_ADMIN_APPROVAL' }),
       });
-      const data = await res.json();
-      if (res.ok && data) {
-        return data;
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data?.success !== false) {
+        const item: WithdrawalRequestItem = data?.request || data?.withdrawal || {
+          id: data?.id || `REQ_${Date.now().toString().slice(-6)}`,
+          amount,
+          heldAmount: amount,
+          status: (data?.status || 'PENDING_ADMIN_APPROVAL') as WithdrawalStatus,
+          requestedAt: new Date().toISOString(),
+          payoutReference: data?.payoutReference || data?.utr,
+        };
+
+        // Persist locally
+        await AsyncStorage.setItem('@active_withdrawal_request', JSON.stringify(item)).catch(() => {});
+
+        return {
+          success: true,
+          request: item,
+          availableBalance: data?.availableBalance,
+          heldAmount: data?.heldAmount || amount,
+          message: data?.message || 'Withdrawal request submitted for Admin approval. Amount is held.',
+        };
       }
+
+      // If backend explicitly rejected with validation error (e.g. 400 Insufficient balance)
+      if (res.status === 400 && data?.message && !data.message.includes('No static resource')) {
+        return { success: false, message: data.message };
+      }
+
+      if (res.status === 404 || (data?.message && data.message.includes('No static resource'))) {
+        is404NoEndpoint = true;
+      }
+
       lastError = data?.message || `HTTP ${res.status}`;
     } catch (e: any) {
-      console.warn(`requestDriverPayout route ${url} error:`, e);
-      lastError = e?.message || 'Network request failed';
+      lastError = e?.message || 'Network connection failed.';
     }
   }
 
-  throw new Error(lastError || 'Failed to request driver payout on backend');
+  return { success: false, message: lastError || 'Failed to submit withdrawal request. Please try again.' };
+};
+
+/** GET /api/driver/withdrawals/active — Get current in-progress withdrawal request */
+export const getActiveWithdrawalRequest = async (): Promise<WithdrawalRequestItem | null> => {
+  const routes = [
+    `${BASE}/api/driver/withdrawals/active`,
+    `${BASE}/api/drivers/me/payout-request/active`,
+    `${BASE}/api/drivers/me/withdrawals/active`,
+    `${BASE}/api/payouts/active`,
+  ];
+
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        const item = data?.request || data?.activeWithdrawal || data?.data;
+        if (item && item.status && item.status !== 'COMPLETED' && item.status !== 'REJECTED' && item.status !== 'FAILED') {
+          return {
+            id: String(item.id || item.requestId),
+            amount: Number(item.amount || item.heldAmount || 0),
+            heldAmount: Number(item.heldAmount || item.amount || 0),
+            status: item.status as WithdrawalStatus,
+            bankName: item.bankName,
+            accountNumberMasked: item.accountNumberMasked || item.accountNumber,
+            payoutReference: item.payoutReference || item.utr,
+            rejectionReason: item.rejectionReason,
+            failureReason: item.failureReason,
+            requestedAt: item.requestedAt || new Date().toISOString(),
+            processedAt: item.processedAt,
+          };
+        }
+      }
+    } catch (e) {}
+  }
+
+  return null;
+};
+
+/** GET /api/driver/withdrawals/history — Get all past withdrawal requests */
+export const getWithdrawalHistoryList = async (): Promise<{ success: boolean; withdrawals: WithdrawalRequestItem[] }> => {
+  const routes = [
+    `${BASE}/api/driver/withdrawals/history`,
+    `${BASE}/api/drivers/me/payouts/history`,
+    `${BASE}/api/drivers/me/withdrawals`,
+    `${BASE}/api/payouts/history`,
+  ];
+
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (data?.withdrawals || data?.data || data?.payouts || []);
+        if (Array.isArray(list) && list.length > 0) {
+          const mapped: WithdrawalRequestItem[] = list.map((item: any) => ({
+            id: String(item.id || item.requestId || Math.random().toString(36).substring(2, 6)),
+            amount: Number(item.amount || 0),
+            heldAmount: Number(item.heldAmount || 0),
+            status: (item.status || 'COMPLETED') as WithdrawalStatus,
+            bankName: item.bankName,
+            accountNumberMasked: item.accountNumberMasked || item.accountNumber,
+            payoutReference: item.payoutReference || item.utr || item.referenceId,
+            rejectionReason: item.rejectionReason,
+            failureReason: item.failureReason,
+            requestedAt: item.requestedAt || item.createdAt || new Date().toISOString(),
+            processedAt: item.processedAt || item.updatedAt,
+          }));
+          return { success: true, withdrawals: mapped };
+        }
+      }
+    } catch (e) {}
+  }
+
+  return { success: true, withdrawals: [] };
+};
+
+/** POST /api/drivers/me/payout-request (Alias: /api/drivers/me/payouts/request) */
+export const requestDriverPayout = async (amount: number, payoutMode: string = 'MANUAL') => {
+  return createWithdrawalRequest(amount);
 };
 
 /* ── RAZORPAY LIVE INTEGRATION ───────────────────────────────── */
@@ -1872,6 +2683,7 @@ export const verifyRazorpayPayment = async (payload: {
   razorpay_order_id: string;
   razorpay_signature: string;
   bookingId: string;
+  amount?: number;
 }) => {
   const routes = [
     `${BASE}/api/payments/razorpay/verify`,

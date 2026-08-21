@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Alert, StatusBar, Platform, Dimensions, KeyboardAvoidingView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Alert, StatusBar, Platform, Dimensions, KeyboardAvoidingView, Linking } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme } from '../../theme/ThemeContext';
@@ -41,8 +41,6 @@ const SupportHeaderBackground = () => {
     </View>
   );
 };
-
-import { Linking } from 'react-native';
 
 const SupportScreen = () => {
   const { colors, theme } = useTheme();

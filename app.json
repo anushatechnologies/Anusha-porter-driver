@@ -2,7 +2,7 @@
   "expo": {
     "name": "Anusha Porter Driver",
     "slug": "anusha-porter-driver",
-    "version": "2.0.5",
+    "version": "2.2.1",
     "sdkVersion": "54.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -19,7 +19,7 @@
       }
     },
     "android": {
-      "versionCode": 16,
+      "versionCode": 20,
       "adaptiveIcon": {
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundColor": "#FFFFFF"
@@ -29,11 +29,9 @@
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
-        "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS"
+        "MODIFY_AUDIO_SETTINGS"
       ],
       "config": {
         "googleMaps": {
@@ -50,10 +48,8 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Anusha Porter Driver collects location data to enable real-time driver tracking and delivery services when the app is in use and when the app is closed or not in use.",
-          "locationAlwaysPermission": "Anusha Porter Driver collects location data in the background to provide live tracking during active deliveries.",
           "locationWhenInUsePermission": "Anusha Porter Driver collects location data to enable real-time driver tracking while navigating and delivering orders.",
-          "isAndroidBackgroundLocationEnabled": true
+          "isAndroidBackgroundLocationEnabled": false
         }
       ],
       "@react-native-firebase/app",

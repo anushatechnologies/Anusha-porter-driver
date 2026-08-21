@@ -9,9 +9,20 @@ export const cleanUrl = (url: string | null | undefined): string => {
   if (!str) return '';
 
   try {
-    // Preserve local file URIs and base64 data URIs intact for React Native Image rendering
-    if (str.startsWith('data:') || str.startsWith('file://')) {
-      return str;
+    // Preserve local file URIs, content URIs, local storage paths, and base64 data URIs
+    if (
+      str.startsWith('data:') ||
+      str.startsWith('file://') ||
+      str.startsWith('file:/') ||
+      str.startsWith('content://') ||
+      str.startsWith('ph://') ||
+      str.startsWith('/data/') ||
+      str.startsWith('/storage/') ||
+      str.startsWith('/private/') ||
+      str.startsWith('/var/') ||
+      str.startsWith('blob:')
+    ) {
+      return str.startsWith('file:/') && !str.startsWith('file://') ? `file://${str.replace('file:/', '')}` : str;
     }
 
     // Fix duplicate protocol prefixes like "https://https://..." or "undefinedhttps://..."

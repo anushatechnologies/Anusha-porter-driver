@@ -37,6 +37,7 @@ const DriverProfileScreen = () => {
 
   const fetchProfileFreshData = async () => {
     try {
+      setImageError(false);
       const data = await AsyncStorage.getItem('driverProfile');
       let localProfile: any = data ? JSON.parse(data) : null;
       if (localProfile) {
@@ -48,10 +49,12 @@ const DriverProfileScreen = () => {
 
       const driverDb = await getDriverProfile();
       if (driverDb) {
+        setImageError(false);
         const extractPhoto = (db: any, loc: any): string => {
           const candidates = [
-            db?.profilePhotoUri, db?.profilePhotoUrl, db?.profilePhoto, db?.photo, db?.avatar, db?.avatarUrl,
-            db?.image, db?.imageUrl, db?.profile_photo, db?.profile_photo_url, db?.profile_photo_uri,
+            db?.profilePhotoUri, db?.profile_photo_uri, db?.profilePhotoUrl, db?.profile_photo_url, db?.profilePhoto, db?.profile_photo,
+            db?.photo, db?.photoUrl, db?.photoUri, db?.avatar, db?.avatarUrl, db?.selfieUrl, db?.selfieUri,
+            db?.image, db?.imageUrl,
             db?.documents?.profilePhotoUrl, db?.documents?.profile_photo_url, db?.documents?.profilePhotoUri,
             db?.documents?.profilePhoto, loc?.profilePhotoUri, loc?.profilePhotoUrl, loc?.profilePhoto, loc?.photo, loc?.avatar,
           ];
@@ -81,7 +84,7 @@ const DriverProfileScreen = () => {
           mobile: driverDb.phone || localProfile?.mobile || localProfile?.phone || '',
           phone: driverDb.phone || localProfile?.phone || localProfile?.mobile || '',
           email: cleanDbEmail || localProfile?.email || '',
-          vehicleType: driverDb.vehicleType || localProfile?.vehicleType || 'Bike',
+          vehicleType: driverDb.vehicleType || localProfile?.vehicleType || 'Vehicle',
           vehicleNumber: cleanDbVeh || localProfile?.vehicleNumber || '',
           rating: String(driverDb.rating || localProfile?.rating || '5.0'),
           tenure: String(driverDb.tenure || localProfile?.tenure || '0m'),
@@ -195,7 +198,7 @@ const DriverProfileScreen = () => {
                 city: driverDb.city || localProfile?.city || '',
                 state: driverDb.state || localProfile?.state || '',
                 pincode: driverDb.pincode || localProfile?.pincode || '',
-                vehicleType: driverDb.vehicleType || localProfile?.vehicleType || 'Bike',
+                vehicleType: driverDb.vehicleType || localProfile?.vehicleType || '',
                 vehicleNumber: driverDb.vehicleNumber || localProfile?.vehicleNumber || '',
                 rcNumber: driverDb.rcNumber || localProfile?.rcNumber || '',
                 aadhaarNumber: driverDb.aadhaarNumber || localProfile?.aadhaarNumber || '',
@@ -231,7 +234,8 @@ const DriverProfileScreen = () => {
 
               // Fetch actual completed trips count & calculate real-time rating from real order ratings
               try {
-                const orders = await getOrderHistory();
+                const historyRes = await getOrderHistory();
+                const orders = historyRes?.orders || [];
                 const completedOrders = orders.filter((o: any) => o.status === 'completed' || o.status === 'delivered');
                 merged.trips = completedOrders.length;
 
@@ -274,7 +278,7 @@ const DriverProfileScreen = () => {
 
   const fullName = profileData?.fullName || '';
   const partnerId = profileData?.partnerId || 'PRT-00000';
-  const vehicleMake = profileData?.vehicleType || 'Bike';
+  const vehicleMake = profileData?.vehicleType || 'Vehicle';
   const vehiclePlate = profileData?.vehicleNumber || '';
 
   const handleToggleTheme = () => {
@@ -522,6 +526,19 @@ const DriverProfileScreen = () => {
           <Text style={[styles.sectionTitle, { color: colors.text }]}>Settings & Support</Text>
           <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border, padding: 0, overflow: 'hidden' }, !isDark && styles.softShadow]}>
             
+            <TouchableOpacity style={[styles.menuRow, { borderBottomColor: colors.border, borderBottomWidth: StyleSheet.hairlineWidth }]} onPress={() => navigation.navigate('Wallet' as any)}>
+              <View style={styles.menuLeft}>
+                <View style={[styles.menuIconBg, { backgroundColor: 'rgba(0,82,255,0.1)' }]}>
+                  <Ionicons name="wallet" size={18} color="#0052FF" />
+                </View>
+                <View>
+                  <Text style={[styles.menuText, { color: colors.text }]}>Operational Driver Wallet</Text>
+                  <Text style={[styles.menuSubtext, { color: colors.textSecondary }]}>Recharge balance for ride commissions</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
+            </TouchableOpacity>
+
             <TouchableOpacity style={[styles.menuRow, { borderBottomColor: colors.border, borderBottomWidth: StyleSheet.hairlineWidth }]} onPress={() => navigation.navigate('OrderHistory' as any)}>
               <View style={styles.menuLeft}>
                 <View style={[styles.menuIconBg, { backgroundColor: 'rgba(13,92,255,0.1)' }]}>

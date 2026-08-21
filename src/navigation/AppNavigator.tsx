@@ -16,12 +16,12 @@ import DriverDashboardScreen from '../screens/driver/DriverDashboardScreen';
 import IncomingOrderScreen from '../screens/driver/IncomingOrderScreen';
 import ActiveOrderScreen from '../screens/driver/ActiveOrderScreen';
 import DriverEarningsScreen from '../screens/driver/DriverEarningsScreen';
+import DriverWalletScreen from '../screens/driver/DriverWalletScreen';
 import DriverProfileScreen from '../screens/driver/DriverProfileScreen';
 import ApprovalPendingScreen from '../screens/driver/ApprovalPendingScreen';
 import NotificationsScreen from '../screens/driver/NotificationsScreen';
 import OrderHistoryScreen from '../screens/driver/OrderHistoryScreen';
 import SupportScreen from '../screens/driver/SupportScreen';
-import PayoutHistoryScreen from '../screens/driver/PayoutHistoryScreen';
 import PrivacyPolicyScreen from '../screens/PrivacyPolicyScreen';
 
 // Admin Screens
@@ -31,6 +31,8 @@ import OrderManagementScreen from '../screens/admin/OrderManagementScreen';
 import UserManagementScreen from '../screens/admin/UserManagementScreen';
 import PaymentManagementScreen from '../screens/admin/PaymentManagementScreen';
 import AnalyticsScreen from '../screens/admin/AnalyticsScreen';
+import WalletSettingsScreen from '../screens/admin/WalletSettingsScreen';
+import VehicleManagementScreen from '../screens/admin/VehicleManagementScreen';
 
 export type ActiveOrderData = {
   id: number;
@@ -57,14 +59,16 @@ export type RootStackParamList = {
   Notifications: undefined;
   OrderHistory: undefined;
   Support: undefined;
-  PayoutHistory: undefined;
+  Wallet: undefined;
   PrivacyPolicy: undefined;
   AdminDashboard: undefined;
   DriverManagement: undefined;
+  VehicleManagement: undefined;
   OrderManagement: undefined;
   UserManagement: undefined;
   PaymentManagement: undefined;
   Analytics: undefined;
+  WalletSettings: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -124,10 +128,12 @@ const AppNavigator = () => {
         {/* Admin Stack Screens */}
         <Stack.Screen name="AdminDashboard" component={AdminDashboardScreen} />
         <Stack.Screen name="DriverManagement" component={DriverManagementScreen} />
+        <Stack.Screen name="VehicleManagement" component={VehicleManagementScreen} />
         <Stack.Screen name="OrderManagement" component={OrderManagementScreen} />
         <Stack.Screen name="UserManagement" component={UserManagementScreen} />
         <Stack.Screen name="PaymentManagement" component={PaymentManagementScreen} />
         <Stack.Screen name="Analytics" component={AnalyticsScreen} />
+        <Stack.Screen name="WalletSettings" component={WalletSettingsScreen} />
         
         {/* Modals & Stack Screens */}
         <Stack.Screen
@@ -138,8 +144,8 @@ const AppNavigator = () => {
         <Stack.Screen name="ActiveOrder" component={ActiveOrderScreen} />
         <Stack.Screen name="Notifications" component={NotificationsScreen} />
         <Stack.Screen name="OrderHistory" component={OrderHistoryScreen} />
+        <Stack.Screen name="Wallet" component={DriverWalletScreen} />
         <Stack.Screen name="Support" component={SupportScreen} />
-        <Stack.Screen name="PayoutHistory" component={PayoutHistoryScreen} />
         <Stack.Screen name="PrivacyPolicy" component={PrivacyPolicyScreen} />
       </Stack.Navigator>
     </NavigationContainer>

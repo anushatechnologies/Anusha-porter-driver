@@ -12,12 +12,17 @@ import {
   Platform,
   ActivityIndicator,
 } from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import Svg, { Path, Defs, LinearGradient, Stop, Circle } from 'react-native-svg';
 import { useTheme } from '../../theme/ThemeContext';
-import AsyncStorage from '../../services/asyncStorageShim';
-import { getOrderHistory, getDriverEarningsSummary, requestDriverPayout, getDriverBalance, getDriverPayoutAccount } from '../../services/api';
+import { 
+  getOrderHistory, 
+  getDriverEarningsSummary, 
+  getDriverWallet, 
+  resolveOrderDistance,
+  DriverWallet 
+} from '../../services/api';
 
 const { width } = Dimensions.get('window');
 type Period = 'today' | 'weekly' | 'monthly' | 'total';
@@ -53,10 +58,6 @@ const DriverEarningsScreen = () => {
   const [activePeriod, setActivePeriod] = useState<Period>('today');
   const [loading, setLoading] = useState(true);
 
-  // Bank Info State - loaded from driverProfile in AsyncStorage
-  const [bankName, setBankName] = useState('');
-  const [bankAccount, setBankAccount] = useState('');
-
   // Dynamic Statistics
   const [earningsData, setEarningsData] = useState<Record<Period, { amount: string; trips: number; distance: string; target: number }>>({
     today: { amount: '₹0', trips: 0, distance: '0 km', target: 1500 },
@@ -68,219 +69,186 @@ const DriverEarningsScreen = () => {
   const [tripHistory, setTripHistory] = useState<any[]>([]);
   const [balance, setBalance] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [walletBalance, setWalletBalance] = useState(0);
+  const [commissionRate, setCommissionRate] = useState(5);
+  const [totalCommissionPaid, setTotalCommissionPaid] = useState(0);
 
-  // Segregated Balance Buckets & Payout Eligibility
-  const [balanceData, setBalanceData] = useState<{
-    availableBalance: number;
-    pendingBalance: number;
-    processingBalance: number;
-    paidBalance: number;
-    minPayoutAmount: number;
-    isPayoutEligible: boolean;
-    needsMoreForPayout: number;
-    hasVerifiedAccount: boolean;
-  }>({
-    availableBalance: 0,
-    pendingBalance: 0,
-    processingBalance: 0,
-    paidBalance: 0,
-    minPayoutAmount: 100,
-    isPayoutEligible: false,
-    needsMoreForPayout: 100,
-    hasVerifiedAccount: true,
-  });
-
-  const fetchEarningsAndBank = async (showLoadingSpinner = true) => {
+  const fetchEarningsData = async (showLoadingSpinner = true) => {
     try {
       if (showLoadingSpinner) setLoading(true);
-      
-      // 1. Fetch live balance buckets from GET /api/drivers/me/balance
+
+      // 1. Fetch wallet balance from backend
       try {
-        const balRes = await getDriverBalance();
-        if (balRes && balRes.success) {
-          setBalanceData({
-            availableBalance: typeof balRes.availableBalance === 'number' ? balRes.availableBalance : 0,
-            pendingBalance: typeof balRes.pendingBalance === 'number' ? balRes.pendingBalance : 0,
-            processingBalance: typeof balRes.processingBalance === 'number' ? balRes.processingBalance : 0,
-            paidBalance: typeof balRes.paidBalance === 'number' ? balRes.paidBalance : 0,
-            minPayoutAmount: typeof balRes.minPayoutAmount === 'number' ? balRes.minPayoutAmount : 100,
-            isPayoutEligible: balRes.isPayoutEligible !== undefined ? balRes.isPayoutEligible : true,
-            needsMoreForPayout: typeof balRes.needsMoreForPayout === 'number' ? balRes.needsMoreForPayout : 0,
-            hasVerifiedAccount: balRes.hasVerifiedAccount !== undefined ? balRes.hasVerifiedAccount : true,
-          });
-          setBalance(balRes.availableBalance || 0);
+        const walRes = await getDriverWallet();
+        if (walRes && walRes.success && walRes.wallet) {
+          setWalletBalance(walRes.wallet.availableBalance || 0);
+          setCommissionRate(walRes.wallet.commissionPercentage || 5);
+          setTotalCommissionPaid(walRes.wallet.platformCommission || 0);
         }
       } catch (balErr) {
-        console.warn('Live balance bucket notice:', balErr);
+        console.warn('Wallet balance fetch notice:', balErr);
       }
 
-      // 2. Fetch live masked payout account from GET /api/drivers/me/payout-account
-      try {
-        const accRes = await getDriverPayoutAccount();
-        if (accRes && accRes.account) {
-          if (accRes.account.bankName) setBankName(accRes.account.bankName);
-          if (accRes.account.accountNumberMasked) setBankAccount(accRes.account.accountNumberMasked);
-        }
-      } catch (accErr) {
-        console.warn('Live payout account notice:', accErr);
-      }
+      // 2. Fetch live order history
+      const historyRes = await getOrderHistory();
+      let ordersList = historyRes?.orders || [];
 
-      const orders = await getOrderHistory();
-      const completed = orders.filter((o: any) => {
-        const s = (o.status || '').toLowerCase().trim();
-        return ['completed', 'delivered', 'done', 'finished', 'closed', 'success'].includes(s);
-      });
-        
-      const totalEarned = completed.reduce((sum: number, o: any) => {
-        const amt = typeof o.amount === 'number' ? o.amount : parseFloat(String(o.amount || 0).replace('₹', '')) || 0;
-        return sum + amt;
-      }, 0);
-      setBalance(totalEarned);
-
-      const mappedHistory = completed.slice(0, 10).map((o: any) => {
-        let formattedDate = 'Recent';
-        try {
-          if (o.createdAt) {
-            formattedDate = new Date(o.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' });
-          }
-        } catch (e) {}
-        const amt = typeof o.amount === 'number' ? o.amount : parseFloat(String(o.amount || 0).replace('₹', '')) || 0;
-        return {
-          id: `#${String(o.bookingId || o.id || '1001').slice(-6)}`,
-          date: formattedDate,
-          amount: `₹${amt.toFixed(2)}`,
-          distance: `${o.distance || '0'} km`,
-          status: 'completed',
-        };
-      });
-      setTripHistory(mappedHistory);
+      // Calculate totals
+      let totalTrips = 0;
+      let totalAmount = 0;
+      let totalKm = 0;
+      let todayTrips = 0;
+      let todayAmount = 0;
+      let todayKm = 0;
+      let weeklyTrips = 0;
+      let weeklyAmount = 0;
+      let weeklyKm = 0;
+      let monthlyTrips = 0;
+      let monthlyAmount = 0;
+      let monthlyKm = 0;
 
       const now = new Date();
-      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-      const startOfWeek = startOfToday - 7 * 24 * 60 * 60 * 1000;
-      const startOfMonth = startOfToday - 30 * 24 * 60 * 60 * 1000;
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const startOfWeek = startOfDay - (now.getDay() === 0 ? 6 : now.getDay() - 1) * 86400000;
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
 
-      let todaySum = 0, todayTrips = 0;
-      let weekSum = 0, weekTrips = 0;
-      let monthSum = 0, monthTrips = 0;
+      const formattedTrips: any[] = [];
 
-      completed.forEach((o: any) => {
-        let tripTime = now.getTime();
-        if (o.createdAt) {
-          const parsed = new Date(o.createdAt).getTime();
-          if (!isNaN(parsed) && parsed > 0) tripTime = parsed;
+      for (const order of ordersList) {
+        const oAny = order as any;
+        const rawAmt = typeof oAny.amount === 'number'
+          ? oAny.amount
+          : parseFloat(String(oAny.amount || oAny.fare || oAny.price || oAny.totalAmount || oAny.totalFare || '0').replace('₹', '')) || 0;
+
+        const rawDateStr = oAny.createdAt || oAny.created_at || oAny.completedAt || oAny.completed_at || oAny.updatedAt || oAny.updated_at || oAny.date || oAny.deliveryDate;
+        let dateObj = rawDateStr ? new Date(rawDateStr) : new Date();
+        if (isNaN(dateObj.getTime()) && typeof rawDateStr === 'string' && rawDateStr.includes(' ')) {
+          dateObj = new Date(rawDateStr.replace(' ', 'T'));
         }
-        const amt = typeof o.amount === 'number' ? o.amount : parseFloat(String(o.amount || 0).replace('₹', '')) || 0;
-        if (tripTime >= startOfToday) {
-          todaySum += amt;
-          todayTrips++;
+        if (isNaN(dateObj.getTime())) {
+          dateObj = new Date();
         }
-        if (tripTime >= startOfWeek) {
-          weekSum += amt;
-          weekTrips++;
+
+        const timeMillis = dateObj.getTime();
+        const distStr = resolveOrderDistance(oAny);
+        const distNum = parseFloat(distStr.replace(/[^0-9.]/g, '')) || 4.2;
+
+        const isCompleted = ['completed', 'delivered', 'done', 'finished', 'closed', 'success'].includes(
+          (oAny.status || '').toLowerCase()
+        );
+
+        const isToday = (
+          dateObj.toDateString() === now.toDateString() ||
+          Math.abs(now.getTime() - timeMillis) <= 24 * 60 * 60 * 1000
+        );
+        const isWeekly = (
+          Math.abs(now.getTime() - timeMillis) <= 7 * 24 * 60 * 60 * 1000 ||
+          timeMillis >= startOfWeek
+        );
+        const isMonthly = (
+          Math.abs(now.getTime() - timeMillis) <= 31 * 24 * 60 * 60 * 1000 ||
+          timeMillis >= startOfMonth
+        );
+
+        if (isCompleted) {
+          totalTrips++;
+          totalAmount += rawAmt;
+          totalKm += distNum;
+
+          if (isToday) {
+            todayTrips++;
+            todayAmount += rawAmt;
+            todayKm += distNum;
+          }
+          if (isWeekly) {
+            weeklyTrips++;
+            weeklyAmount += rawAmt;
+            weeklyKm += distNum;
+          }
+          if (isMonthly) {
+            monthlyTrips++;
+            monthlyAmount += rawAmt;
+            monthlyKm += distNum;
+          }
         }
-        if (tripTime >= startOfMonth) {
-          monthSum += amt;
-          monthTrips++;
-        }
-      });
+
+        formattedTrips.push({
+          id: oAny.bookingId || `BK_${oAny.id || Math.floor(Math.random() * 10000)}`,
+          date: isToday ? 'Today' : dateObj.toLocaleDateString([], { month: 'short', day: 'numeric' }),
+          amount: `₹${rawAmt.toFixed(2)}`,
+          platformFee: `₹${(rawAmt * 0.05).toFixed(2)}`,
+          status: isCompleted ? 'completed' : 'cancelled',
+          distance: distStr,
+          pickup: oAny.pickup || oAny.pickupAddress || 'Pickup Location',
+          drop: oAny.drop || oAny.dropAddress || 'Drop Location',
+        });
+      }
+
+      // If backend totalEarnings is higher than local sum, sync to backend totalEarnings
+      if (typeof historyRes?.totalEarnings === 'number' && historyRes.totalEarnings > totalAmount) {
+        totalAmount = historyRes.totalEarnings;
+      }
+      if (todayAmount === 0 && totalAmount > 0 && ordersList.length > 0) {
+        todayAmount = totalAmount;
+        todayTrips = Math.max(1, totalTrips);
+        todayKm = Math.max(4.2, totalKm);
+      }
+
+      setBalance(totalAmount);
+      setTripHistory(formattedTrips.slice(0, 15));
 
       setEarningsData({
-        today: { amount: `₹${todaySum}`, trips: todayTrips, distance: `${(todayTrips * 4.5).toFixed(1)} km`, target: 1500 },
-        weekly: { amount: `₹${weekSum}`, trips: weekTrips, distance: `${(weekTrips * 4.5).toFixed(1)} km`, target: 10000 },
-        monthly: { amount: `₹${monthSum}`, trips: monthTrips, distance: `${(monthTrips * 4.5).toFixed(1)} km`, target: 40000 },
-        total: { amount: `₹${totalEarned}`, trips: completed.length, distance: `${(completed.length * 4.5).toFixed(1)} km`, target: 200000 },
+        today: {
+          amount: `₹${todayAmount.toFixed(2)}`,
+          trips: todayTrips,
+          distance: `${todayKm.toFixed(1)} km`,
+          target: 1500,
+        },
+        weekly: {
+          amount: `₹${(weeklyAmount || totalAmount).toFixed(2)}`,
+          trips: weeklyTrips || totalTrips,
+          distance: `${(weeklyKm || totalKm).toFixed(1)} km`,
+          target: 10000,
+        },
+        monthly: {
+          amount: `₹${(monthlyAmount || totalAmount).toFixed(2)}`,
+          trips: monthlyTrips || totalTrips,
+          distance: `${(monthlyKm || totalKm).toFixed(1)} km`,
+          target: 40000,
+        },
+        total: {
+          amount: `₹${totalAmount.toFixed(2)}`,
+          trips: totalTrips,
+          distance: `${totalKm.toFixed(1)} km`,
+          target: 200000,
+        },
       });
     } catch (err) {
-      console.warn('Failed loading real earnings history:', err);
-      throw err;
+      console.warn('Earnings data load error:', err);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleRefresh = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    try {
-      await fetchEarningsAndBank(false);
-    } catch (err) {
-      if (Platform.OS === 'web') {
-        (window as any).alert('Unable to refresh. Please check your internet connection and try again.');
-      } else {
-        Alert.alert('Refresh Failed', 'Unable to refresh earnings. Please check your internet connection and try again.');
-      }
-    } finally {
       setRefreshing(false);
     }
   };
 
   useFocusEffect(
     React.useCallback(() => {
-      fetchEarningsAndBank(true);
+      fetchEarningsData(false);
     }, [])
   );
 
-  const currentData = earningsData[activePeriod];
-  const amountNumber = parseInt(currentData.amount.replace(/[^0-9]/g, '')) || 0;
-  const progressPercent = Math.min((amountNumber / currentData.target) * 100, 100);
+  useEffect(() => {
+    fetchEarningsData(true);
+  }, []);
 
-  const [requestingPayout, setRequestingPayout] = useState(false);
-
-  const handleWithdraw = async () => {
-    if (!balanceData.hasVerifiedAccount) {
-      Alert.alert(
-        'Bank Account Required',
-        'Please register and verify your payout bank account first.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Add Bank Account', onPress: () => (navigation as any).navigate('DriverProfile') }
-        ]
-      );
-      return;
-    }
-
-    if (balanceData.availableBalance < balanceData.minPayoutAmount) {
-      Alert.alert(
-        'Minimum Withdrawal Required',
-        `Minimum payout threshold is ₹${balanceData.minPayoutAmount}. You need ₹${balanceData.needsMoreForPayout} more in available balance to request a bank transfer.`
-      );
-      return;
-    }
-
-    const currentBank = bankName || 'Registered Bank';
-    const currentAcc = bankAccount || 'XXXX XXXX 4582';
-
-    Alert.alert(
-      'Confirm Bank Settlement',
-      `Withdraw ₹${balanceData.availableBalance.toFixed(2)} to ${currentBank} (${currentAcc})?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Confirm Withdrawal',
-          onPress: async () => {
-            setRequestingPayout(true);
-            try {
-              const res = await requestDriverPayout(balanceData.availableBalance, 'MANUAL');
-              if (res && res.success) {
-                Alert.alert(
-                  'Payout Successful! 🎉',
-                  `₹${res.amount || balanceData.availableBalance} transferred to ${res.destination || currentBank}.\n\nUTR Reference: ${res.utr}`
-                );
-                fetchEarningsAndBank(false);
-              } else {
-                Alert.alert('Payout Request Failed', res?.message || 'Could not process bank settlement.');
-              }
-            } catch (err: any) {
-              Alert.alert('Payout Error', err?.message || 'Network error while processing payout request.');
-            } finally {
-              setRequestingPayout(false);
-            }
-          }
-        }
-      ]
-    );
+  const handleRefresh = () => {
+    setRefreshing(true);
+    fetchEarningsData(false);
   };
+
+  const currentData = earningsData[activePeriod];
+  const numAmount = parseFloat(currentData.amount.replace('₹', '').replace(',', '')) || 0;
+  const progressPercent = Math.min(100, Math.max(0, (numAmount / currentData.target) * 100));
 
   const periods: Period[] = ['today', 'weekly', 'monthly', 'total'];
 
@@ -288,19 +256,19 @@ const DriverEarningsScreen = () => {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <StatusBar barStyle={theme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
 
-      {/* Premium Header */}
+      {/* Header */}
       <View style={[styles.header, { backgroundColor: colors.card }, theme === 'light' && styles.headerShadow]}>
         <View style={styles.headerTop}>
           <View>
-            <Text style={[styles.headerGreeting, { color: colors.textSecondary }]}>Your Balance</Text>
+            <Text style={[styles.headerGreeting, { color: colors.textSecondary }]}>Total Earnings</Text>
             <Text style={[styles.headerTitle, { color: colors.text }]}>₹{balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
           </View>
           <TouchableOpacity 
-            style={[styles.withdrawBtn, { backgroundColor: colors.primary, shadowColor: colors.primary }]} 
-            onPress={handleWithdraw}
+            style={[styles.walletHeaderBtn, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]} 
+            onPress={() => (navigation as any).navigate('Wallet')}
           >
-            <Ionicons name="arrow-down-circle" size={18} color="#FFFFFF" />
-            <Text style={styles.withdrawBtnText}>Withdraw</Text>
+            <Ionicons name="wallet" size={16} color="#0052FF" />
+            <Text style={styles.walletHeaderBtnText}>Recharge Wallet</Text>
           </TouchableOpacity>
         </View>
 
@@ -343,64 +311,37 @@ const DriverEarningsScreen = () => {
           />
         }
       >
-        {/* Segregated Financial Balance Buckets Card */}
-        <View style={[styles.balanceBucketsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <View style={styles.balanceHeaderRow}>
-            <View>
-              <Text style={[styles.balanceHeaderLabel, { color: colors.textSecondary }]}>Available for Payout</Text>
-              <Text style={[styles.balanceHeaderAmount, { color: colors.text }]}>₹{balanceData.availableBalance.toFixed(2)}</Text>
+        {/* Dedicated Driver Wallet Card (Prominent Live Recharge Balance) */}
+        <TouchableOpacity 
+          style={[styles.walletFeatureCard, { backgroundColor: colors.card, borderColor: '#3B82F6', borderWidth: 1.5 }]}
+          onPress={() => (navigation as any).navigate('Wallet')}
+          activeOpacity={0.88}
+        >
+          <View style={styles.walletFeatureLeft}>
+            <View style={[styles.walletFeatureIconBg, { backgroundColor: 'rgba(0, 82, 255, 0.12)' }]}>
+              <Ionicons name="wallet" size={26} color="#0052FF" />
             </View>
-            <TouchableOpacity
-              style={[
-                styles.withdrawMainBtn,
-                { backgroundColor: balanceData.isPayoutEligible && balanceData.availableBalance >= balanceData.minPayoutAmount ? '#0052FF' : colors.border }
-              ]}
-              onPress={handleWithdraw}
-              disabled={requestingPayout}
-            >
-              {requestingPayout ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
-              ) : (
-                <Text style={styles.withdrawMainBtnText}>
-                  {balanceData.availableBalance < balanceData.minPayoutAmount
-                    ? `Need ₹${balanceData.needsMoreForPayout} More`
-                    : 'Withdraw Earnings'}
+            <View style={{ marginLeft: 12, flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginRight: 4 }}>
+                <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '700', letterSpacing: 0.5 }}>
+                  OPERATIONAL WALLET BALANCE
                 </Text>
-              )}
-            </TouchableOpacity>
-          </View>
-
-          {/* 3 Grid Metric Sub-Buckets */}
-          <View style={styles.bucketGrid}>
-            <View style={[styles.bucketItem, { backgroundColor: colors.surface }]}>
-              <Text style={[styles.bucketItemLabel, { color: colors.textMuted }]}>Processing</Text>
-              <Text style={[styles.bucketItemVal, { color: colors.text }]}>₹{balanceData.processingBalance.toFixed(2)}</Text>
-            </View>
-
-            <View style={[styles.bucketItem, { backgroundColor: colors.surface }]}>
-              <Text style={[styles.bucketItemLabel, { color: colors.textMuted }]}>Total Paid Out</Text>
-              <Text style={[styles.bucketItemVal, { color: '#10B981' }]}>₹{balanceData.paidBalance.toFixed(2)}</Text>
-            </View>
-
-            <View style={[styles.bucketItem, { backgroundColor: colors.surface }]}>
-              <Text style={[styles.bucketItemLabel, { color: colors.textMuted }]}>Pending</Text>
-              <Text style={[styles.bucketItemVal, { color: colors.textSecondary }]}>₹{balanceData.pendingBalance.toFixed(2)}</Text>
+                <View style={styles.walletLiveTag}>
+                  <Text style={styles.walletLiveTagText}>Active</Text>
+                </View>
+              </View>
+              <Text style={{ fontSize: 24, fontWeight: '900', color: '#0052FF', marginTop: 2 }}>
+                ₹{walletBalance.toFixed(2)}
+              </Text>
+              <Text style={[styles.walletFeatureSub, { color: colors.textMuted, fontSize: 11, marginTop: 1 }]}>
+                Prepaid recharge for 5% ride commissions • Tap to add funds
+              </Text>
             </View>
           </View>
-
-          {/* Registered Bank Account Banner */}
-          <View style={[styles.bankBannerRow, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <Ionicons name="card" size={20} color={colors.primary} />
-            <View style={{ flex: 1, marginLeft: 10 }}>
-              <Text style={[styles.bankBannerName, { color: colors.text }]}>{bankName || 'Registered Bank Account'}</Text>
-              <Text style={[styles.bankBannerAcc, { color: colors.textMuted }]}>{bankAccount || 'XXXX XXXX 4582'}</Text>
-            </View>
-            <View style={styles.verifiedTag}>
-              <Ionicons name="checkmark-circle" size={12} color="#10B981" />
-              <Text style={styles.verifiedTagText}>Verified</Text>
-            </View>
+          <View style={[styles.walletOpenBtn, { backgroundColor: '#0052FF', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 }]}>
+            <Text style={[styles.walletOpenBtnText, { color: '#FFFFFF', fontWeight: '800' }]}>+ Recharge</Text>
           </View>
-        </View>
+        </TouchableOpacity>
 
         {/* Dynamic Glassmorphism Hero Graph */}
         <View style={[styles.heroCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -410,13 +351,13 @@ const DriverEarningsScreen = () => {
             <View style={styles.heroTextRow}>
               <View>
                 <Text style={[styles.heroLabel, { color: colors.textSecondary }]}>
-                  {activePeriod.toUpperCase()} EARNINGS
+                  {activePeriod.toUpperCase()} RIDE EARNINGS (CASH IN HAND)
                 </Text>
-                <Text style={[styles.heroAmount, { color: colors.text }]}>{currentData.amount}</Text>
+                <Text style={[styles.heroAmount, { color: '#10B981', fontWeight: '900' }]}>{currentData.amount}</Text>
               </View>
               <View style={[styles.trendBadge, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
-                <Ionicons name="trending-up" size={14} color="#10B981" />
-                <Text style={styles.trendText}>+12%</Text>
+                <Ionicons name="cash" size={14} color="#10B981" />
+                <Text style={styles.trendText}>100% Cash</Text>
               </View>
             </View>
 
@@ -427,7 +368,7 @@ const DriverEarningsScreen = () => {
                 <Text style={[styles.progressLabel, { color: colors.text }]}>{Math.round(progressPercent)}%</Text>
               </View>
               <View style={[styles.progressBarBg, { backgroundColor: theme === 'dark' ? 'rgba(255,255,255,0.1)' : '#E2E8F0' }]}>
-                <View style={[styles.progressBarFill, { backgroundColor: colors.primary, width: `${progressPercent}%` }]} />
+                <View style={[styles.progressBarFill, { backgroundColor: '#10B981', width: `${progressPercent}%` }]} />
               </View>
             </View>
 
@@ -453,247 +394,315 @@ const DriverEarningsScreen = () => {
                   <Text style={[styles.heroStatLabel, { color: colors.textSecondary }]}>Distance</Text>
                 </View>
               </View>
+
+              <View style={[styles.heroStatDivider, { backgroundColor: colors.border }]} />
+
+              <View style={styles.heroStatItem}>
+                <View style={[styles.heroStatIcon, { backgroundColor: 'rgba(0, 82, 255, 0.1)' }]}>
+                  <Ionicons name="wallet" size={18} color="#0052FF" />
+                </View>
+                <View>
+                  <Text style={[styles.heroStatValue, { color: '#0052FF' }]}>₹{walletBalance.toFixed(0)}</Text>
+                  <Text style={[styles.heroStatLabel, { color: colors.textSecondary }]}>Wallet</Text>
+                </View>
+              </View>
             </View>
           </View>
           
           <View style={styles.graphContainer}>
-            <GraphCurveSVG color={colors.primary} />
+            <GraphCurveSVG color="#10B981" />
           </View>
         </View>
 
-        {/* Digital Wallet Bank Card */}
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>Payout Bank</Text>
-        <View style={[styles.bankDigitalCard, { backgroundColor: theme === 'dark' ? '#1E293B' : '#0F172A' }]}>
-          {/* Subtle Bank Watermark */}
-          <Ionicons name="business" size={140} color="rgba(255,255,255,0.03)" style={styles.bankWatermark} />
-          
-          <View style={styles.bankTopRow}>
-            <View style={styles.bankChip}>
-              <View style={styles.chipLine} />
-              <View style={styles.chipLine} />
-              <View style={styles.chipLine} />
+        {/* Breakdown Summary Card */}
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Earnings & Wallet Breakdown</Text>
+        <View style={[styles.breakdownCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <View style={styles.breakdownRow}>
+            <View style={styles.breakdownLabelGroup}>
+              <Ionicons name="cash-outline" size={18} color="#10B981" />
+              <Text style={[styles.breakdownLabel, { color: colors.text, fontWeight: '700' }]}>Total Ride Fares (Cash in Pocket)</Text>
             </View>
-            <MaterialCommunityIcons name="contactless-payment" size={24} color="rgba(255,255,255,0.6)" />
-          </View>
-          
-          <View style={styles.bankMiddleRow}>
-            <Text style={styles.bankAccountNumber}>{bankAccount.replace('•••• ', '••••  ••••  ••••  ')}</Text>
-            <View style={styles.bankNameBadge}>
-              <Text style={styles.bankNameText}>{bankName.toUpperCase()}</Text>
-            </View>
+            <Text style={[styles.breakdownVal, { color: '#10B981', fontWeight: '800' }]}>₹{balance.toFixed(2)}</Text>
           </View>
 
-          <View style={styles.bankBottomRow}>
-            <View>
-              <Text style={styles.bankLabel}>NEXT PAYOUT</Text>
-              <Text style={styles.bankValue}>Tomorrow, 10 AM</Text>
+          <View style={[styles.breakdownDivider, { backgroundColor: colors.border }]} />
+
+          <View style={styles.breakdownRow}>
+            <View style={styles.breakdownLabelGroup}>
+              <Ionicons name="wallet-outline" size={18} color="#0052FF" />
+              <Text style={[styles.breakdownLabel, { color: colors.text, fontWeight: '700' }]}>Operational Recharge Wallet</Text>
             </View>
-            <View>
-              <Text style={styles.bankLabel}>AUTO-TRANSFER</Text>
-              <Text style={styles.bankValue}>Enabled</Text>
+            <Text style={[styles.breakdownVal, { color: '#0052FF', fontWeight: '800' }]}>₹{walletBalance.toFixed(2)}</Text>
+          </View>
+
+          <View style={[styles.breakdownDivider, { backgroundColor: colors.border }]} />
+
+          <View style={styles.breakdownRow}>
+            <View style={styles.breakdownLabelGroup}>
+              <Ionicons name="pie-chart-outline" size={18} color="#64748B" />
+              <Text style={[styles.breakdownLabel, { color: colors.textSecondary, fontSize: 13 }]}>Platform Commission Rule</Text>
+            </View>
+            <View style={{ backgroundColor: 'rgba(0, 82, 255, 0.08)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 }}>
+              <Text style={{ color: '#0052FF', fontSize: 11, fontWeight: '700' }}>5% Deducted from Wallet Recharge</Text>
             </View>
           </View>
         </View>
-
-        <TouchableOpacity 
-          style={[styles.historyActionBtn, { borderColor: colors.primary, backgroundColor: theme === 'dark' ? 'rgba(13,92,255,0.05)' : 'rgba(13,92,255,0.03)' }]}
-          onPress={() => (navigation as any).navigate('PayoutHistory')}
-        >
-          <Text style={[styles.historyActionText, { color: colors.primary }]}>View Complete Settlement History</Text>
-          <Ionicons name="arrow-forward" size={16} color={colors.primary} />
-        </TouchableOpacity>
 
         {/* Recent Transactions */}
         <View style={styles.transactionHeaderRow}>
           <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: 0 }]}>Recent Trips</Text>
-          <TouchableOpacity>
-            <Text style={[styles.viewAllText, { color: colors.primary }]}>See All</Text>
-          </TouchableOpacity>
         </View>
 
         <View style={styles.transactionList}>
-          {tripHistory.map((trip, idx) => {
-            const isCompleted = trip.status === 'completed';
-            return (
-              <View key={trip.id}>
-                <View style={styles.tripRow}>
-                  <View style={styles.tripLeft}>
-                    <View style={[styles.tripIconBox, { backgroundColor: isCompleted ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)' }]}>
-                      <Ionicons 
-                        name={isCompleted ? "checkmark-done" : "close"} 
-                        size={18} 
-                        color={isCompleted ? "#10B981" : "#EF4444"} 
-                      />
+          {tripHistory.length === 0 ? (
+            <View style={[styles.emptyBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Ionicons name="receipt-outline" size={32} color={colors.textMuted} />
+              <Text style={[styles.emptyText, { color: colors.textSecondary }]}>No completed trips recorded yet</Text>
+            </View>
+          ) : (
+            tripHistory.map((trip, idx) => {
+              const isCompleted = trip.status === 'completed';
+              return (
+                <View key={trip.id}>
+                  <View style={styles.tripRow}>
+                    <View style={styles.tripLeft}>
+                      <View style={[styles.tripIconBox, { backgroundColor: isCompleted ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)' }]}>
+                        <Ionicons 
+                          name={isCompleted ? "checkmark-done" : "close"} 
+                          size={18} 
+                          color={isCompleted ? "#10B981" : "#EF4444"} 
+                        />
+                      </View>
+                      <View>
+                        <Text style={[styles.tripIdText, { color: colors.text }]}>{trip.id}</Text>
+                        <Text style={[styles.tripDateText, { color: colors.textSecondary }]}>{trip.date}</Text>
+                      </View>
                     </View>
-                    <View>
-                      <Text style={[styles.tripIdText, { color: colors.text }]}>{trip.id}</Text>
-                      <Text style={[styles.tripDateText, { color: colors.textSecondary }]}>{trip.date}</Text>
+                    
+                    <View style={[styles.tripRight, { alignItems: 'flex-end' }]}>
+                      <Text style={[
+                        styles.tripAmountText, 
+                        { color: isCompleted ? '#10B981' : colors.textMuted, fontWeight: '800' },
+                        !isCompleted && { textDecorationLine: 'line-through' }
+                      ]}>
+                        {trip.amount} <Text style={{ fontSize: 10, color: colors.textSecondary, fontWeight: '500' }}>Cash</Text>
+                      </Text>
+                      {isCompleted && (
+                        <Text style={{ fontSize: 10, color: '#EF4444', fontWeight: '600', marginTop: 1 }}>
+                          Wallet Cut: -{trip.platformFee}
+                        </Text>
+                      )}
+                      <View style={[styles.tripMetaRow, { marginTop: 2 }]}>
+                        <Ionicons name="navigate-outline" size={10} color={colors.textMuted} />
+                        <Text style={[styles.tripDistanceText, { color: colors.textMuted }]}>{trip.distance}</Text>
+                      </View>
                     </View>
                   </View>
-                  
-                  <View style={styles.tripRight}>
-                    <Text style={[
-                      styles.tripAmountText, 
-                      { color: isCompleted ? '#10B981' : colors.textMuted },
-                      !isCompleted && { textDecorationLine: 'line-through' }
-                    ]}>
-                      {trip.amount}
-                    </Text>
-                    <View style={styles.tripMetaRow}>
-                      <Ionicons name="navigate-outline" size={10} color={colors.textMuted} />
-                      <Text style={[styles.tripDistanceText, { color: colors.textMuted }]}>{trip.distance}</Text>
-                    </View>
-                  </View>
+                  {idx < tripHistory.length - 1 && (
+                    <View style={[styles.tripDivider, { backgroundColor: colors.border }]} />
+                  )}
                 </View>
-                {idx < tripHistory.length - 1 && (
-                  <View style={[styles.tripDivider, { backgroundColor: colors.border }]} />
-                )}
-              </View>
-            );
-          })}
+              );
+            })
+          )}
         </View>
-        <View style={{ height: 20 }} />
+        <View style={{ height: 40 }} />
       </ScrollView>
     </View>
   );
 };
+
+export default DriverEarningsScreen;
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
   header: {
-    paddingTop: 56,
-    paddingBottom: 20,
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'ios' ? 60 : 45,
+    paddingBottom: 16,
     borderBottomLeftRadius: 24,
     borderBottomRightRadius: 24,
     zIndex: 10,
   },
   headerShadow: {
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.05,
     shadowRadius: 10,
-    elevation: 8,
+    elevation: 3,
   },
   headerTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    marginBottom: 24,
+    marginBottom: 18,
   },
   headerGreeting: {
     fontSize: 13,
     fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
-    marginBottom: 4,
   },
   headerTitle: {
-    fontSize: 32,
-    fontWeight: '900',
+    fontSize: 28,
+    fontWeight: '800',
+    marginTop: 2,
+    letterSpacing: -0.5,
   },
-  withdrawBtn: {
+  walletHeaderBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 16,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    gap: 6,
   },
-  withdrawBtnText: {
-    color: '#FFFFFF',
+  walletHeaderBtnText: {
+    fontSize: 13,
     fontWeight: '700',
-    fontSize: 15,
+    color: '#0052FF',
   },
   segmentContainer: {
     flexDirection: 'row',
-    marginHorizontal: 20,
-    borderRadius: 14,
     padding: 4,
+    borderRadius: 14,
+    justifyContent: 'space-between',
   },
   segmentBtn: {
     flex: 1,
-    paddingVertical: 10,
+    paddingVertical: 8,
     alignItems: 'center',
-    justifyContent: 'center',
     borderRadius: 10,
   },
   segmentText: {
-    fontSize: 13,
-    fontWeight: '500',
+    fontSize: 12,
+    fontWeight: '600',
   },
   scrollContent: {
-    paddingHorizontal: 20,
-    paddingTop: 24,
-    paddingBottom: 40,
-    gap: 20,
+    padding: 20,
+  },
+  walletFeatureCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 16,
+    borderRadius: 18,
+    borderWidth: 1.5,
+    marginBottom: 20,
+    shadowColor: '#0052FF',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  walletFeatureLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  walletFeatureIconBg: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#EFF6FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  walletFeatureTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  walletFeatureSub: {
+    fontSize: 12,
+    marginTop: 3,
+  },
+  walletLiveTag: {
+    backgroundColor: '#DCFCE7',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  walletLiveTagText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#15803D',
+  },
+  walletOpenBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    gap: 4,
+  },
+  walletOpenBtnText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#0052FF',
   },
   heroCard: {
     borderRadius: 24,
     borderWidth: 1,
     overflow: 'hidden',
     position: 'relative',
-    minHeight: 240,
+    marginBottom: 24,
   },
   heroGlowTop: {
     position: 'absolute',
-    top: -50,
-    left: '20%',
-    width: 200,
-    height: 100,
-    backgroundColor: '#0D5CFF',
-    opacity: 0.1,
-    filter: 'blur(30px)',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+    backgroundColor: '#0052FF',
   },
   heroContent: {
-    padding: 24,
+    padding: 20,
     zIndex: 2,
   },
   heroTextRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 24,
   },
   heroLabel: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
-    letterSpacing: 0.5,
-    marginBottom: 6,
+    letterSpacing: 0.8,
   },
   heroAmount: {
-    fontSize: 36,
-    fontWeight: '800',
+    fontSize: 34,
+    fontWeight: '900',
+    marginTop: 4,
+    letterSpacing: -1,
   },
   trendBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     borderRadius: 12,
+    gap: 4,
   },
   trendText: {
     color: '#10B981',
-    fontWeight: '700',
     fontSize: 12,
+    fontWeight: '700',
   },
   progressContainer: {
-    marginBottom: 24,
+    marginTop: 18,
+    marginBottom: 16,
   },
   progressHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   progressLabel: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
   },
   progressBarBg: {
@@ -708,17 +717,18 @@ const styles = StyleSheet.create({
   heroStatsGrid: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-around',
+    marginTop: 8,
   },
   heroStatItem: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
   },
   heroStatIcon: {
     width: 36,
     height: 36,
-    borderRadius: 12,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -728,266 +738,117 @@ const styles = StyleSheet.create({
   },
   heroStatLabel: {
     fontSize: 11,
-    marginTop: 2,
   },
   heroStatDivider: {
     width: 1,
-    height: 30,
-    marginHorizontal: 16,
+    height: 24,
   },
   graphContainer: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 120,
-    zIndex: 1,
+    height: 70,
+    width: '100%',
+    opacity: 0.8,
   },
   sectionTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '800',
-    letterSpacing: 0.3,
+    marginBottom: 12,
+    letterSpacing: -0.2,
   },
-  bankDigitalCard: {
-    borderRadius: 20,
-    padding: 24,
-    overflow: 'hidden',
-    position: 'relative',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.2,
-    shadowRadius: 15,
-    elevation: 10,
-  },
-  bankWatermark: {
-    position: 'absolute',
-    right: -20,
-    bottom: -30,
-    transform: [{ rotate: '-15deg' }],
-  },
-  bankTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 30,
-  },
-  bankChip: {
-    width: 38,
-    height: 28,
-    backgroundColor: '#FCD34D',
-    borderRadius: 6,
-    padding: 4,
-    justifyContent: 'space-between',
-  },
-  chipLine: {
-    width: '100%',
-    height: 1.5,
-    backgroundColor: 'rgba(0,0,0,0.2)',
-  },
-  bankMiddleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 30,
-  },
-  bankAccountNumber: {
-    color: '#F8FAFC',
-    fontSize: 18,
-    fontWeight: '600',
-    letterSpacing: 2,
-  },
-  bankNameBadge: {
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  bankNameText: {
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  bankBottomRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  bankLabel: {
-    color: 'rgba(255,255,255,0.6)',
-    fontSize: 10,
-    fontWeight: '600',
-    letterSpacing: 1,
-    marginBottom: 4,
-  },
-  bankValue: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  historyActionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
+  breakdownCard: {
+    borderRadius: 18,
     borderWidth: 1,
-    borderRadius: 16,
-    paddingVertical: 16,
-    marginTop: -8,
+    padding: 16,
+    marginBottom: 24,
   },
-  historyActionText: {
-    fontWeight: '700',
+  breakdownRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  breakdownLabelGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  breakdownLabel: {
     fontSize: 14,
+    fontWeight: '600',
+  },
+  breakdownVal: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  breakdownDivider: {
+    height: 1,
+    marginVertical: 10,
   },
   transactionHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-end',
-    marginTop: 10,
-  },
-  viewAllText: {
-    fontSize: 14,
-    fontWeight: '600',
+    alignItems: 'center',
+    marginBottom: 12,
   },
   transactionList: {
-    gap: 0,
+    gap: 10,
   },
   tripRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 14,
+    paddingVertical: 8,
   },
   tripLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
+    gap: 12,
   },
   tripIconBox: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
   },
   tripIdText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
-    marginBottom: 2,
   },
   tripDateText: {
-    fontSize: 12,
+    fontSize: 11,
+    marginTop: 2,
   },
   tripRight: {
     alignItems: 'flex-end',
-    gap: 4,
   },
   tripAmountText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '800',
   },
   tripMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
+    marginTop: 2,
   },
   tripDistanceText: {
     fontSize: 11,
-    fontWeight: '500',
   },
   tripDivider: {
     height: 1,
-    width: '100%',
-    opacity: 0.5,
+    marginTop: 8,
   },
-  balanceBucketsCard: {
-    width: '100%',
-    borderRadius: 20,
-    borderWidth: 1,
-    padding: 16,
-    marginBottom: 16,
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
-  },
-  balanceHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  emptyBox: {
+    padding: 30,
     alignItems: 'center',
-    marginBottom: 14,
-  },
-  balanceHeaderLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    letterSpacing: 0.5,
-  },
-  balanceHeaderAmount: {
-    fontSize: 28,
-    fontWeight: '900',
-    marginTop: 2,
-  },
-  withdrawMainBtn: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
     justifyContent: 'center',
-    alignItems: 'center',
-  },
-  withdrawMainBtnText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  bucketGrid: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 12,
-  },
-  bucketItem: {
-    flex: 1,
-    borderRadius: 12,
-    padding: 10,
-    alignItems: 'center',
-  },
-  bucketItemLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  bucketItemVal: {
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  bankBannerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 10,
-    borderRadius: 12,
+    borderRadius: 16,
     borderWidth: 1,
+    borderStyle: 'dashed',
+    gap: 8,
   },
-  bankBannerName: {
+  emptyText: {
     fontSize: 13,
-    fontWeight: '700',
-  },
-  bankBannerAcc: {
-    fontSize: 11,
-    marginTop: 1,
-  },
-  verifiedTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    gap: 4,
-  },
-  verifiedTagText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#10B981',
+    fontWeight: '600',
   },
 });
-
-export default DriverEarningsScreen;
