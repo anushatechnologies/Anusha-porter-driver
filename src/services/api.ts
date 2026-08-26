@@ -1986,20 +1986,21 @@ export const requestInstantPayout = async (payload: { amount: number; accountNum
   return { success: false, message: 'Unable to process payout request at this time.' };
 };
 
-/** GET /api/drivers/me/notifications (Alias: /api/drivers/notifications) */
+/** GET /api/drivers/me/notifications (Alias: /api/drivers/notifications, /api/notifications) */
 export const getNotifications = async (email?: string): Promise<any[]> => {
   const routes = [
     `${BASE}/api/drivers/me/notifications`,
     `${BASE}/api/drivers/notifications`,
     ...(email ? [`${BASE}/api/drivers/${encodeEmail(email)}/notifications`] : []),
+    `${BASE}/api/notifications`,
   ];
   for (const url of routes) {
     try {
       const res = await authFetch(url);
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data)) return data;
-        if (data && data.notifications && Array.isArray(data.notifications)) return data.notifications;
+        if (Array.isArray(data) && data.length > 0) return data;
+        if (data && data.notifications && Array.isArray(data.notifications) && data.notifications.length > 0) return data.notifications;
       }
     } catch (e) {
       console.warn(`Notifications route ${url} notice:`, e);

@@ -256,110 +256,117 @@ const LoginScreen = () => {
       return;
     }
 
-    // Phone from Firebase (strip +91 for backend lookup)
-    const verifiedPhone = (firebasePhone || `+91${cleanPhone}`).replace(/^\+91/, '');
-
-    let data: any = null;
     try {
-      data = await verifyFirebaseOtp(
-        firebaseIdToken,
-        isRegisterMode ? 'signup' : 'login',
-        isRegisterMode ? fullName : undefined,
-        'driver'
-      );
-      console.log('[AUTH] Backend verify-otp response:', JSON.stringify(data));
-    } catch (apiErr: any) {
-      console.warn('verifyFirebaseOtp call notice:', apiErr);
-    }
+      // Phone from Firebase (strip +91 for backend lookup)
+      const verifiedPhone = (firebasePhone || `+91${cleanPhone}`).replace(/^\+91/, '');
 
-    const token = (data && data.success && (data.accessToken || data.token))
-      ? (data.accessToken || data.token)
-      : firebaseIdToken;
-
-    // Completely wipe any previous session to guarantee 100% multi-user isolation
-    await AsyncStorage.clear();
-
-    await AsyncStorage.setItem('userToken', cleanPhone || phone);
-    await AsyncStorage.setItem('authToken', token);
-    if (firebasePhone) await AsyncStorage.setItem('firebasePhone', firebasePhone);
-    if (firebaseUid) await AsyncStorage.setItem('firebaseUid', firebaseUid);
-
-    if (selectedRole === 'admin') {
-      setLoading(false);
-      navigation.reset({ index: 0, routes: [{ name: 'AdminDashboard' }] });
-      return;
-    }
-
-    // Look up driver by phone first (most reliable — backend ignores Firebase token context)
-    let driverDb: any = null;
-    try {
-      driverDb = await getDriverProfileByPhone(cleanPhone || phone);
-      console.log('[AUTH] Driver by phone lookup:', driverDb ? 'FOUND' : 'NOT FOUND');
-      if (!driverDb) {
-        driverDb = await getDriverProfile(token);
-        console.log('[AUTH] Driver by token lookup:', driverDb ? 'FOUND' : 'NOT FOUND');
+      let data: any = null;
+      try {
+        data = await verifyFirebaseOtp(
+          firebaseIdToken,
+          isRegisterMode ? 'signup' : 'login',
+          isRegisterMode ? fullName : undefined,
+          'driver'
+        );
+        console.log('[AUTH] Backend verify-otp response:', JSON.stringify(data));
+      } catch (apiErr: any) {
+        console.warn('verifyFirebaseOtp call notice:', apiErr);
       }
-    } catch (e) {
-      console.warn('Driver profile fetch notice:', e);
-    }
 
-    if (driverDb) {
-      const kycStatus = (driverDb.kyc || driverDb.kycStatus || 'pending') as 'verified' | 'pending' | 'rejected';
-      const profileData = {
-        fullName: String(driverDb.name || fullName || 'Driver'),
-        mobile: String(driverDb.phone || cleanPhone || phone),
-        email: String(driverDb.email || ''),
-        dob: String(driverDb.dob || ''),
-        gender: String(driverDb.gender || ''),
-        addressLine1: String(driverDb.addressLine1 || ''),
-        city: String(driverDb.city || ''),
-        state: String(driverDb.state || ''),
-        pincode: String(driverDb.pincode || ''),
-        vehicleType: String(driverDb.vehicleType || ''),
-        vehicleNumber: String(driverDb.vehicleNumber || ''),
-        rcNumber: String(driverDb.rcNumber || ''),
-        aadhaarNumber: String(driverDb.aadhaarNumber || ''),
-        licenseNumber: String(driverDb.licenseNumber || ''),
-        bankName: String(driverDb.bankName || ''),
-        accountHolderName: String(driverDb.accountHolderName || ''),
-        accountNumber: String(driverDb.accountNumber || ''),
-        ifscCode: String(driverDb.ifscCode || ''),
-        partnerId: driverDb.id ? 'PRT-' + driverDb.id : 'PRT-' + (cleanPhone || phone).slice(-4),
-        profilePhotoUri: cleanUrl(
-          driverDb.profilePhotoUri ||
-          driverDb.documents?.profilePhotoUrl ||
-          driverDb.documents?.profilePhotoUri ||
-          (driverDb as any).profilePhotoUrl ||
-          (driverDb as any).profilePhoto ||
-          ''
-        ),
-        aadhaarUri: cleanUrl(driverDb.aadhaarUri || driverDb.documents?.aadhaarUrl || ''),
-        licenseUri: cleanUrl(driverDb.licenseUri || driverDb.documents?.licenseUrl || ''),
-        rcUri: cleanUrl(driverDb.rcUri || driverDb.documents?.rcUrl || ''),
-        bankPassbookUri: cleanUrl(driverDb.bankPassbookUri || driverDb.documents?.bankPassbookUrl || ''),
-        kyc: kycStatus,
-        rejectedReason: String(driverDb.rejectedReason || ''),
-        rating: String(driverDb.rating || '5.0'),
-        trips: driverDb.trips !== undefined ? Number(driverDb.trips) : 0,
-        tenure: String(driverDb.tenure || '0m'),
-      };
+      const token = (data && data.success && (data.accessToken || data.token))
+        ? (data.accessToken || data.token)
+        : firebaseIdToken;
 
-      await AsyncStorage.setItem('driverProfile', JSON.stringify(profileData));
-      if (profileData.email) await AsyncStorage.setItem('loggedInEmail', profileData.email);
+      // Completely wipe any previous session to guarantee 100% multi-user isolation
+      await AsyncStorage.clear();
 
-      setLoading(false);
-      const normalizedKyc = String(kycStatus).toLowerCase();
+      await AsyncStorage.setItem('userToken', cleanPhone || phone);
+      await AsyncStorage.setItem('authToken', token);
+      if (firebasePhone) await AsyncStorage.setItem('firebasePhone', firebasePhone);
+      if (firebaseUid) await AsyncStorage.setItem('firebaseUid', firebaseUid);
 
-      if (normalizedKyc === 'rejected') {
-        navigation.navigate('DriverRegistration', { mobile: profileData.mobile, firebaseIdToken, fullName: profileData.fullName });
-      } else if (normalizedKyc === 'pending') {
-        navigation.reset({ index: 0, routes: [{ name: 'ApprovalPending' }] });
+      if (selectedRole === 'admin') {
+        setLoading(false);
+        navigation.reset({ index: 0, routes: [{ name: 'AdminDashboard' }] });
+        return;
+      }
+
+      // Look up driver by phone first (most reliable — backend ignores Firebase token context)
+      let driverDb: any = null;
+      try {
+        driverDb = await getDriverProfileByPhone(cleanPhone || phone);
+        console.log('[AUTH] Driver by phone lookup:', driverDb ? 'FOUND' : 'NOT FOUND');
+        if (!driverDb) {
+          driverDb = await getDriverProfile(token);
+          console.log('[AUTH] Driver by token lookup:', driverDb ? 'FOUND' : 'NOT FOUND');
+        }
+      } catch (e) {
+        console.warn('Driver profile fetch notice:', e);
+      }
+
+      if (driverDb) {
+        const kycStatus = (driverDb.kyc || driverDb.kycStatus || 'pending') as 'verified' | 'pending' | 'rejected';
+        const profileData = {
+          fullName: String(driverDb.name || fullName || 'Driver'),
+          mobile: String(driverDb.phone || cleanPhone || phone),
+          email: String(driverDb.email || ''),
+          dob: String(driverDb.dob || ''),
+          gender: String(driverDb.gender || ''),
+          addressLine1: String(driverDb.addressLine1 || ''),
+          city: String(driverDb.city || ''),
+          state: String(driverDb.state || ''),
+          pincode: String(driverDb.pincode || ''),
+          vehicleType: String(driverDb.vehicleType || ''),
+          vehicleNumber: String(driverDb.vehicleNumber || ''),
+          rcNumber: String(driverDb.rcNumber || ''),
+          aadhaarNumber: String(driverDb.aadhaarNumber || ''),
+          licenseNumber: String(driverDb.licenseNumber || ''),
+          bankName: String(driverDb.bankName || ''),
+          accountHolderName: String(driverDb.accountHolderName || ''),
+          accountNumber: String(driverDb.accountNumber || ''),
+          ifscCode: String(driverDb.ifscCode || ''),
+          partnerId: driverDb.id ? 'PRT-' + driverDb.id : 'PRT-' + (cleanPhone || phone).slice(-4),
+          profilePhotoUri: cleanUrl(
+            driverDb.profilePhotoUri ||
+            driverDb.documents?.profilePhotoUrl ||
+            driverDb.documents?.profilePhotoUri ||
+            (driverDb as any).profilePhotoUrl ||
+            (driverDb as any).profilePhoto ||
+            ''
+          ),
+          aadhaarUri: cleanUrl(driverDb.aadhaarUri || driverDb.documents?.aadhaarUrl || ''),
+          licenseUri: cleanUrl(driverDb.licenseUri || driverDb.documents?.licenseUrl || ''),
+          rcUri: cleanUrl(driverDb.rcUri || driverDb.documents?.rcUrl || ''),
+          bankPassbookUri: cleanUrl(driverDb.bankPassbookUri || driverDb.documents?.bankPassbookUrl || ''),
+          kyc: kycStatus,
+          rejectedReason: String(driverDb.rejectedReason || ''),
+          rating: String(driverDb.rating || '5.0'),
+          trips: driverDb.trips !== undefined ? Number(driverDb.trips) : 0,
+          tenure: String(driverDb.tenure || '0m'),
+        };
+
+        await AsyncStorage.setItem('driverProfile', JSON.stringify(profileData));
+        if (profileData.email) await AsyncStorage.setItem('loggedInEmail', profileData.email);
+
+        setLoading(false);
+        const normalizedKyc = String(kycStatus).toLowerCase();
+
+        if (normalizedKyc === 'rejected') {
+          navigation.navigate('DriverRegistration', { mobile: profileData.mobile, firebaseIdToken, fullName: profileData.fullName });
+        } else if (normalizedKyc === 'pending') {
+          navigation.reset({ index: 0, routes: [{ name: 'ApprovalPending' }] });
+        } else {
+          navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
+        }
       } else {
-        navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
+        // Driver profile not found on backend — navigate to Registration to complete KYC profile
+        setLoading(false);
+        navigation.navigate('DriverRegistration', { mobile: cleanPhone || phone, firebaseIdToken, fullName: fullName || '' });
       }
-    } else {
-      // Driver profile not found on backend — navigate to Registration to complete KYC profile
+    } catch (generalErr: any) {
+      console.error('[AUTH] Post-OTP navigation error:', generalErr);
       setLoading(false);
+      // Fallback navigation to registration with verified token
       navigation.navigate('DriverRegistration', { mobile: cleanPhone || phone, firebaseIdToken, fullName: fullName || '' });
     }
   };

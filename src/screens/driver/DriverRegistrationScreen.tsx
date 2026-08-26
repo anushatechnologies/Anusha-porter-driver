@@ -28,7 +28,7 @@ import { useTheme } from '../../theme/ThemeContext';
 import AsyncStorage from '../../services/asyncStorageShim';
 import { uploadImageToBackend } from '../../services/imageUpload';
 import { verifyFirebaseOtp, createDriverProfile, getDriverProfile, getDriverProfileByPhone, checkDriverPhone, getActiveVehicles, VehicleOption } from '../../services/api';
-import { validateProfilePhoto, PhotoValidationStatus } from '../../services/faceDetection';
+import { validateProfilePhoto, PhotoValidationStatus, FaceValidationResult } from '../../services/faceDetection';
 import { cleanUrl } from '../../utils/urlHelpers';
 import {
   validateField,
@@ -168,7 +168,11 @@ const DriverRegistrationScreen = () => {
             (driverDb as any).profilePhotoUrl ||
             (driverDb as any).profilePhoto
           );
-          if (profilePic) setProfilePhoto(profilePic);
+          if (profilePic) {
+            setProfilePhoto(profilePic);
+            setVerifiedSelfieUrl(profilePic);
+            setPhotoValidationStatus('VALID');
+          }
 
           const docs: Record<string, { uploaded: boolean; filename: string; uri?: string }> = {};
           if (driverDb.aadhaarUri || driverDb.documents?.aadhaarUrl) {
@@ -198,7 +202,10 @@ const DriverRegistrationScreen = () => {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [uploadedDocs, setUploadedDocs] = useState<Record<string, { uploaded: boolean; filename: string; uri?: string }>>({});
   const [profilePhoto, setProfilePhoto] = useState<string | null>(null);
+  const [verifiedSelfieUrl, setVerifiedSelfieUrl] = useState<string | null>(null);
   const [capturedSelfieUri, setCapturedSelfieUri] = useState<string | null>(null);
+  const [capturedSelfieBase64, setCapturedSelfieBase64] = useState<string | null>(null);
+  const [modalValidationResult, setModalValidationResult] = useState<FaceValidationResult | null>(null);
   const [photoValidationStatus, setPhotoValidationStatus] = useState<PhotoValidationStatus>('EMPTY');
   const [photoValidationMessage, setPhotoValidationMessage] = useState<string>('');
   const [verifying, setVerifying] = useState(false);
@@ -222,9 +229,52 @@ const DriverRegistrationScreen = () => {
   const [otpVerifying, setOtpVerifying] = useState(false);
   const otpRefs = useRef<Array<TextInput | null>>([]);
 
+  // Check for pending ImagePicker result if Android OS killed the MainActivity while taking a photo
+  useEffect(() => {
+    const checkPendingImage = async () => {
+      if (Platform.OS === 'android') {
+        try {
+          const pending = await ImagePicker.getPendingResultAsync();
+          if (pending && !('code' in pending) && !pending.canceled && pending.assets && pending.assets.length > 0) {
+            const asset = pending.assets[0];
+            if (asset && asset.uri) {
+              setCapturedSelfieUri(asset.uri);
+              setCapturedSelfieBase64(asset.base64 || null);
+              setShowCameraModal(true);
+              setCameraState('captured');
+            }
+          }
+        } catch (e) {
+          console.warn('[DriverRegistration] Pending image check notice:', e);
+        }
+      }
+    };
+    checkPendingImage();
+  }, []);
+
+  // Save form draft to prevent progress loss if Android OS pauses the Activity
+  useEffect(() => {
+    const saveDraft = async () => {
+      try {
+        const draft = {
+          currentStep,
+          form,
+          uploadedDocs,
+          profilePhoto,
+          photoValidationStatus,
+        };
+        await AsyncStorage.setItem('@driver_registration_draft', JSON.stringify(draft));
+      } catch (err) {
+        // silent catch
+      }
+    };
+    saveDraft();
+  }, [form, currentStep, uploadedDocs, profilePhoto, photoValidationStatus]);
+
   const scanAnim = useRef(new Animated.Value(0)).current;
   const loopAnim = useRef<Animated.CompositeAnimation | null>(null);
   useEffect(() => {
+    let isMounted = true;
     if (showCameraModal && cameraState === 'viewfinder') {
       loopAnim.current = Animated.loop(
         Animated.sequence([
@@ -234,15 +284,26 @@ const DriverRegistrationScreen = () => {
       );
       loopAnim.current.start();
 
-      // Auto-transition to captured state after scanning animation
       if (capturedSelfieUri) {
-        const timer = setTimeout(() => {
-          setCameraState('captured');
-        }, 2500);
-        return () => {
-          clearTimeout(timer);
-          if (loopAnim.current) loopAnim.current.stop();
-        };
+        (async () => {
+          try {
+            const valRes = await validateProfilePhoto(capturedSelfieUri, capturedSelfieBase64);
+            if (!isMounted) return;
+            setModalValidationResult(valRes);
+          } catch (e) {
+            if (!isMounted) return;
+            setModalValidationResult({
+              isValid: false,
+              status: 'ERROR',
+              title: 'Analysis Error',
+              message: 'Failed to analyze facial features. Please retake photo.',
+            });
+          } finally {
+            if (isMounted) {
+              setCameraState('captured');
+            }
+          }
+        })();
       }
     } else {
       if (loopAnim.current) {
@@ -250,11 +311,12 @@ const DriverRegistrationScreen = () => {
       }
     }
     return () => {
+      isMounted = false;
       if (loopAnim.current) {
         loopAnim.current.stop();
       }
     };
-  }, [showCameraModal, cameraState, capturedSelfieUri]);
+  }, [showCameraModal, cameraState, capturedSelfieUri, capturedSelfieBase64]);
 
   const handleTakePhoto = async (overrideFacing?: ImagePicker.CameraType) => {
     if (Platform.OS === 'web') {
@@ -276,14 +338,17 @@ const DriverRegistrationScreen = () => {
           const result = await ImagePicker.launchCameraAsync({
             mediaTypes: 'images',
             allowsEditing: false,
-            quality: 0.7,
+            quality: 0.6,
             cameraType: targetFacing,
+            base64: true,
           });
 
           if (!result.canceled && result.assets && result.assets.length > 0) {
-            const localUri = result.assets[0].uri;
+            const asset = result.assets[0];
+            const localUri = asset.uri;
+            const base64 = asset.base64 || null;
             setCapturedSelfieUri(localUri);
-            setProfilePhoto(localUri); // STORE IMMEDIATELY before validation
+            setCapturedSelfieBase64(base64);
             setCameraState('viewfinder');
             setShowCameraModal(true);
           }
@@ -613,15 +678,18 @@ const DriverRegistrationScreen = () => {
           const result = await ImagePicker.launchImageLibraryAsync({
             mediaTypes: 'images',
             allowsEditing: false,
-            quality: 0.5,
+            quality: 0.6,
+            base64: key === '__selfie__',
           });
           if (!result.canceled && result.assets && result.assets.length > 0) {
-            const localUri = result.assets[0].uri;
+            const asset = result.assets[0];
+            const localUri = asset.uri;
+            const base64 = asset.base64 || null;
             if (key === '__selfie__') {
-              setProfilePhoto(localUri); // STORE IMMEDIATELY before validation
+              setProfilePhoto(null);
               setPhotoValidationStatus('VALIDATING');
               setPhotoValidationMessage('Validating human face in photo...');
-              const valRes = await validateProfilePhoto(localUri);
+              const valRes = await validateProfilePhoto(localUri, base64);
 
               if (!valRes.isValid) {
                 setProfilePhoto(null);
@@ -642,8 +710,19 @@ const DriverRegistrationScreen = () => {
                 return;
               }
 
+              setProfilePhoto(localUri);
+              if (valRes.url) {
+                setVerifiedSelfieUrl(valRes.url);
+              }
               setPhotoValidationStatus('VALID');
               setPhotoValidationMessage('');
+              if (errors.profilePhoto) {
+                setErrors(prev => {
+                  const next = { ...prev };
+                  delete next.profilePhoto;
+                  return next;
+                });
+              }
               // Keep rendering the localUri, backend upload will happen at final submit
             } else {
               // Show animation and store local URI; will upload during final submission
@@ -807,7 +886,9 @@ const DriverRegistrationScreen = () => {
             return '';
           };
 
-          const finalProfilePhoto = await uploadWithRetry(profilePhoto, 'profile', 'Profile Photo');
+          const finalProfilePhoto = (verifiedSelfieUrl && (verifiedSelfieUrl.startsWith('http') || verifiedSelfieUrl.startsWith('/uploads')))
+            ? verifiedSelfieUrl
+            : await uploadWithRetry(profilePhoto, 'profile', 'Profile Photo');
           const finalAadhaar = await uploadWithRetry(uploadedDocs.aadhaar?.uri, 'aadhaar', 'Aadhaar Card');
           const finalPan = await uploadWithRetry(uploadedDocs.pan?.uri, 'misc', 'PAN Card');
           const finalLicense = await uploadWithRetry(uploadedDocs.license?.uri, 'license', 'Driving License');
@@ -2038,15 +2119,35 @@ const DriverRegistrationScreen = () => {
                     styles.laserLine,
                     { backgroundColor: colors.primary, transform: [{ translateY: scanAnim }] }
                   ]} />
-                  <Text style={styles.viewfinderHint}>Scanning Biometric Data...</Text>
+                  <Text style={styles.viewfinderHint}>Scanning Biometric Facial Data...</Text>
                 </View>
               ) : (
-                <View style={[styles.viewfinderFrame, { borderColor: colors.success }]}>
+                <View style={[
+                  styles.viewfinderFrame,
+                  { borderColor: modalValidationResult?.isValid ? colors.success : colors.error }
+                ]}>
                   {capturedSelfieUri && (
                     <Image source={{ uri: capturedSelfieUri }} style={{ width: 198, height: 198, borderRadius: 99, position: 'absolute' }} />
                   )}
-                  <View style={[styles.scannerCircle, { borderColor: colors.success, borderStyle: 'solid', borderWidth: 2 }]} />
-                  <Text style={[styles.viewfinderHint, { color: colors.success }]}>Selfie Image Captured ✓</Text>
+                  <View style={[
+                    styles.scannerCircle,
+                    {
+                      borderColor: modalValidationResult?.isValid ? colors.success : colors.error,
+                      borderStyle: 'solid',
+                      borderWidth: 2,
+                    }
+                  ]} />
+                  <Text style={[
+                    styles.viewfinderHint,
+                    { color: modalValidationResult?.isValid ? colors.success : colors.error, fontWeight: '700' }
+                  ]}>
+                    {modalValidationResult?.isValid ? 'Human Face Verified ✓' : (modalValidationResult?.title || 'No Human Face Detected ✗')}
+                  </Text>
+                  {!modalValidationResult?.isValid && modalValidationResult?.message ? (
+                    <Text style={{ color: '#FDA4AF', fontSize: 11, textAlign: 'center', marginTop: 4, paddingHorizontal: 12 }}>
+                      {modalValidationResult.message}
+                    </Text>
+                  ) : null}
                 </View>
               )}
 
@@ -2055,7 +2156,7 @@ const DriverRegistrationScreen = () => {
 
             {cameraState === 'viewfinder' ? (
               <View style={styles.cameraActionRow}>
-                <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 8 }}>Analyzing facial features...</Text>
+                <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 8 }}>Analyzing human facial features...</Text>
                 <ActivityIndicator size="small" color={colors.primary} />
               </View>
             ) : (
@@ -2070,6 +2171,7 @@ const DriverRegistrationScreen = () => {
                     setShowCameraModal(false);
                     setCapturedSelfieUri(null);
                     setProfilePhoto(null);
+                    setModalValidationResult(null);
                     setTimeout(() => handleTakePhoto(nextFacing), 300);
                   }}
                 >
@@ -2085,35 +2187,35 @@ const DriverRegistrationScreen = () => {
                     setShowCameraModal(false);
                     setCapturedSelfieUri(null);
                     setProfilePhoto(null);
+                    setModalValidationResult(null);
                     setTimeout(() => handleTakePhoto(cameraFacing), 300);
                   }}
                 >
                   <Text style={[styles.camBtnCancelTxt, { color: colors.textSecondary }]}>Retake</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.camBtnSuccess, { backgroundColor: colors.success }]}
+                  style={[
+                    styles.camBtnSuccess,
+                    { backgroundColor: modalValidationResult?.isValid ? colors.success : '#475569' }
+                  ]}
                   onPress={async () => {
                     if (!capturedSelfieUri) return;
 
-                    setShowCameraModal(false);
-                    setPhotoValidationStatus('VALIDATING');
-                    setPhotoValidationMessage('Validating human face in photo...');
-
-                    // 1. Pre-Upload Validation (Luminance + Human Face Detection)
-                    const valRes = await validateProfilePhoto(capturedSelfieUri);
-
-                    if (!valRes.isValid) {
-                      setProfilePhoto(null);
-                      setPhotoValidationStatus(valRes.status || 'INVALID');
-                      setPhotoValidationMessage(valRes.message);
-
+                    // If photo is not a valid human face, block confirmation and alert driver
+                    if (!modalValidationResult?.isValid) {
                       Alert.alert(
-                        valRes.title || 'Invalid Profile Photo',
-                        valRes.message || 'Please upload a clear photo of your face to continue.',
+                        modalValidationResult?.title || 'Invalid Profile Photo',
+                        modalValidationResult?.message || 'A clear human face photo is strictly required. Objects, screens, or non-human photos cannot be accepted.',
                         [
                           {
                             text: 'Retake Photo',
-                            onPress: () => promptSelfieCameraOptions(),
+                            onPress: () => {
+                              setShowCameraModal(false);
+                              setCapturedSelfieUri(null);
+                              setProfilePhoto(null);
+                              setModalValidationResult(null);
+                              setTimeout(() => promptSelfieCameraOptions(), 300);
+                            },
                           },
                           { text: 'Cancel', style: 'cancel' },
                         ]
@@ -2121,10 +2223,13 @@ const DriverRegistrationScreen = () => {
                       return;
                     }
 
-                    // 2. Photo Validated -> Mark VALID and retain the local URI
+                    setShowCameraModal(false);
                     setPhotoValidationStatus('VALID');
                     setPhotoValidationMessage('');
                     setProfilePhoto(capturedSelfieUri);
+                    if (modalValidationResult?.url) {
+                      setVerifiedSelfieUrl(modalValidationResult.url);
+                    }
 
                     if (errors.profilePhoto) {
                       setErrors(prev => {
@@ -2135,7 +2240,9 @@ const DriverRegistrationScreen = () => {
                     }
                   }}
                 >
-                  <Text style={[styles.camBtnSuccessTxt, { color: '#FFFFFF' }]}>Confirm & Use</Text>
+                  <Text style={[styles.camBtnSuccessTxt, { color: '#FFFFFF' }]}>
+                    {modalValidationResult?.isValid ? 'Confirm & Use' : 'Face Required'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             )}

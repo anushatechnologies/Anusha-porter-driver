@@ -42,3 +42,7 @@ yarn-error.*
 # Build outputs
 *.apk
 *.aab
+*.sig
+
+# Editor
+.vscode/
