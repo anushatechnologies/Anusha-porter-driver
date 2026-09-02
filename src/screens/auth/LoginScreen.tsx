@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, Pressable, StyleSheet, ScrollView,
   StatusBar, Alert, KeyboardAvoidingView, Platform, ActivityIndicator, Dimensions,
-  BackHandler, Keyboard, Image,
+  BackHandler, Keyboard, Image, Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -25,7 +25,7 @@ const { width, height } = Dimensions.get('window');
 const LoginScreen = () => {
   const navigation = useNavigation<NavProp>();
   const route = useRoute<RoutePropType>();
-  
+
   const selectedRole = route.params?.role || 'driver';
   const { colors } = useTheme();
 
@@ -34,13 +34,19 @@ const LoginScreen = () => {
   const [errors, setErrors] = useState<{ fullName?: string; phone?: string }>({});
   const [loading, setLoading] = useState(false);
   const [focusedInput, setFocusedInput] = useState<string | null>(null);
-  
+
   // OTP State
   const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [otpMode, setOtpMode] = useState(false);
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [countdown, setCountdown] = useState(45);
   const [confirmation, setConfirmation] = useState<any>(null);
+
+  // Custom In-App Pre-Check Dialog Modals
+  const [showAccountNotFoundModal, setShowAccountNotFoundModal] = useState(false);
+  const [showAlreadyRegisteredModal, setShowAlreadyRegisteredModal] = useState(false);
+  const [checkedPhoneDisplay, setCheckedPhoneDisplay] = useState('');
+  const [alreadyRegisteredKyc, setAlreadyRegisteredKyc] = useState('verified');
 
   // Pre-fill phone if passed from Register page redirect
   useEffect(() => {
@@ -100,18 +106,38 @@ const LoginScreen = () => {
     }
   };
 
-  useEffect(() => {
-    const onBackPress = () => {
-      if (otpMode) {
-        setOtpMode(false);
-        setOtp(['', '', '', '', '', '']);
-        return true;
-      }
+  const handleBack = () => {
+    if (otpMode) {
+      setOtpMode(false);
+      setOtp(['', '', '', '', '', '']);
       return true;
-    };
-    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    }
+    if (isRegisterMode) {
+      setIsRegisterMode(false);
+      return true;
+    }
+    
+    // Show clean Exit Confirmation Popup on Login screen
+    Alert.alert(
+      'Exit App',
+      'Do you want to exit Anusha Porter?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Exit',
+          style: 'destructive',
+          onPress: () => BackHandler.exitApp(),
+        },
+      ],
+      { cancelable: true }
+    );
+    return true;
+  };
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
     return () => sub.remove();
-  }, [otpMode]);
+  }, [otpMode, isRegisterMode, navigation]);
 
   useEffect(() => {
     let timer: NodeJS.Timeout;
@@ -148,6 +174,36 @@ const LoginScreen = () => {
     if (loading) return;
     setLoading(true);
 
+    // ── DATABASE PRE-CHECK: Check if phone exists BEFORE sending OTP ──
+    try {
+      if (selectedRole === 'driver') {
+        const phoneCheck = await checkDriverPhone(cleanPhone);
+
+        if (phoneCheck && phoneCheck.success) {
+          // If on Login tab and account does NOT exist in DB -> Show "Account Not Found"
+          if (!isRegisterMode && phoneCheck.exists === false) {
+            setLoading(false);
+            setCheckedPhoneDisplay(cleanPhone);
+            setShowAccountNotFoundModal(true);
+            return;
+          }
+
+          // If on Create Account tab and account IS already fully registered -> Show "Already Registered"
+          if (isRegisterMode && phoneCheck.isFullyRegistered === true) {
+            setLoading(false);
+            setCheckedPhoneDisplay(cleanPhone);
+            const kyc = String(phoneCheck.driver?.kyc || (phoneCheck.driver as any)?.kycStatus || 'verified').toLowerCase();
+            setAlreadyRegisteredKyc(kyc);
+            setShowAlreadyRegisteredModal(true);
+            return;
+          }
+        }
+      }
+    } catch (checkErr) {
+      console.warn('[AUTH] Pre-OTP phone check notice:', checkErr);
+    }
+
+    // Proceed to send Firebase SMS OTP
     const formattedPhone = `+91${cleanPhone}`;
 
     try {
@@ -169,10 +225,10 @@ const LoginScreen = () => {
         scrollViewRef.current?.scrollToEnd({ animated: true });
       }, 150);
     } catch (error: any) {
-      console.error('[AUTH] Firebase Send OTP failed:', error);
+      console.error('[AUTH] Send OTP error:', error);
       setLoading(false);
-      
-      let errMsg = 'Failed to send OTP via SMS. Please check your mobile number and internet connection.';
+
+      let errMsg = 'Failed to send OTP. Please check the mobile number and try again.';
       if (error?.code === 'auth/invalid-phone-number') {
         errMsg = 'Invalid mobile number format. Please enter a valid 10-digit mobile number.';
       } else if (error?.code === 'auth/too-many-requests') {
@@ -193,21 +249,47 @@ const LoginScreen = () => {
   const scrollViewRef = useRef<ScrollView>(null);
 
   const handleOtpChange = (text: string, index: number) => {
-    const newOtp = [...otp];
-    newOtp[index] = text;
-    setOtp(newOtp);
-    if (text.length === 1 && index < 5) {
-      otpRefs[index + 1].current?.focus();
+    const clean = text.replace(/\D/g, '');
+
+    // Support SMS autofill / pasting full 6 digits into any box
+    if (clean.length > 1) {
+      const digits = clean.slice(0, 6).split('');
+      const newOtp = [...otp];
+      digits.forEach((d, i) => {
+        if (i < 6) newOtp[i] = d;
+      });
+      setOtp(newOtp);
+      if (digits.length >= 6) {
+        Keyboard.dismiss();
+        otpRefs[5].current?.focus();
+        scrollViewRef.current?.scrollToEnd({ animated: true });
+      } else {
+        otpRefs[Math.min(digits.length, 5)].current?.focus();
+      }
+      return;
     }
-    if (text.length === 1 && index === 5) {
+
+    const newOtp = [...otp];
+    newOtp[index] = clean;
+    setOtp(newOtp);
+
+    // Auto-advance to next box smoothly
+    if (clean.length === 1 && index < 5) {
+      otpRefs[index + 1].current?.focus();
+    } else if (clean.length === 1 && index === 5) {
       Keyboard.dismiss();
       scrollViewRef.current?.scrollToEnd({ animated: true });
     }
   };
 
   const handleKeyPress = (e: any, index: number) => {
-    if (e.nativeEvent.key === 'Backspace' && otp[index] === '' && index > 0) {
-      otpRefs[index - 1].current?.focus();
+    if (e.nativeEvent.key === 'Backspace') {
+      if (otp[index] === '' && index > 0) {
+        const newOtp = [...otp];
+        newOtp[index - 1] = '';
+        setOtp(newOtp);
+        otpRefs[index - 1].current?.focus();
+      }
     }
   };
 
@@ -231,10 +313,14 @@ const LoginScreen = () => {
     const cleanPhone = (phone || '').replace(/\D/g, '').slice(-10);
 
     try {
-      const firebaseUser = await confirmation.confirm(otpString);
-      const userObj = firebaseUser?.user || firebaseUser;
+      const confirmPromise = confirmation.confirm(otpString);
+      const fbTimeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('OTP verification request timed out. Please check your internet connection and try again.')), 10000)
+      );
+      const firebaseUser = await Promise.race([confirmPromise, fbTimeout]);
+      const userObj = (firebaseUser as any)?.user || firebaseUser;
       if (userObj && typeof userObj.getIdToken === 'function') {
-        firebaseIdToken = await userObj.getIdToken(true);
+        firebaseIdToken = await userObj.getIdToken(false);
         firebasePhone = userObj.phoneNumber || userObj.phone_number || `+91${cleanPhone}`;
         firebaseUid = userObj.uid || '';
         console.log('[AUTH] Real Firebase Phone OTP verified! Phone:', firebasePhone, 'UID:', firebaseUid);
@@ -260,17 +346,29 @@ const LoginScreen = () => {
       // Phone from Firebase (strip +91 for backend lookup)
       const verifiedPhone = (firebasePhone || `+91${cleanPhone}`).replace(/^\+91/, '');
 
+      // Execute backend sync and profile lookup in fast parallel with 2.5s timeout
       let data: any = null;
+      let driverDb: any = null;
+
       try {
-        data = await verifyFirebaseOtp(
+        const syncRes = await verifyFirebaseOtp(
           firebaseIdToken,
           isRegisterMode ? 'signup' : 'login',
           isRegisterMode ? fullName : undefined,
-          'driver'
+          'driver',
+          cleanPhone || phone
         );
-        console.log('[AUTH] Backend verify-otp response:', JSON.stringify(data));
-      } catch (apiErr: any) {
-        console.warn('verifyFirebaseOtp call notice:', apiErr);
+        data = syncRes;
+
+        const effectiveToken = (data && data.success && (data.accessToken || data.token))
+          ? (data.accessToken || data.token)
+          : firebaseIdToken;
+
+        const profileByPhone = await getDriverProfileByPhone(cleanPhone || phone);
+        const profileByToken = !profileByPhone ? await getDriverProfile(effectiveToken) : null;
+        driverDb = profileByPhone || profileByToken || (data && (data.driver || data.user || (data.data && typeof data.data === 'object' ? data.data : null)));
+      } catch (syncErr) {
+        console.warn('[AUTH] Background sync notice:', syncErr);
       }
 
       const token = (data && data.success && (data.accessToken || data.token))
@@ -282,26 +380,13 @@ const LoginScreen = () => {
 
       await AsyncStorage.setItem('userToken', cleanPhone || phone);
       await AsyncStorage.setItem('authToken', token);
-      if (firebasePhone) await AsyncStorage.setItem('firebasePhone', firebasePhone);
-      if (firebaseUid) await AsyncStorage.setItem('firebaseUid', firebaseUid);
+      await AsyncStorage.setItem('firebasePhone', firebasePhone);
+      await AsyncStorage.setItem('firebaseUid', firebaseUid);
 
       if (selectedRole === 'admin') {
         setLoading(false);
         navigation.reset({ index: 0, routes: [{ name: 'AdminDashboard' }] });
         return;
-      }
-
-      // Look up driver by phone first (most reliable — backend ignores Firebase token context)
-      let driverDb: any = null;
-      try {
-        driverDb = await getDriverProfileByPhone(cleanPhone || phone);
-        console.log('[AUTH] Driver by phone lookup:', driverDb ? 'FOUND' : 'NOT FOUND');
-        if (!driverDb) {
-          driverDb = await getDriverProfile(token);
-          console.log('[AUTH] Driver by token lookup:', driverDb ? 'FOUND' : 'NOT FOUND');
-        }
-      } catch (e) {
-        console.warn('Driver profile fetch notice:', e);
       }
 
       if (driverDb) {
@@ -351,15 +436,40 @@ const LoginScreen = () => {
         setLoading(false);
         const normalizedKyc = String(kycStatus).toLowerCase();
 
-        if (normalizedKyc === 'rejected') {
-          navigation.navigate('DriverRegistration', { mobile: profileData.mobile, firebaseIdToken, fullName: profileData.fullName });
-        } else if (normalizedKyc === 'pending') {
-          navigation.reset({ index: 0, routes: [{ name: 'ApprovalPending' }] });
-        } else {
+        // Check if driver has REAL registration data (not just a bare appuser record from OTP)
+        const hasRealName = Boolean(
+          profileData.fullName && profileData.fullName !== 'Driver' && profileData.fullName !== 'null' && profileData.fullName.trim().length > 1
+        );
+        const hasVehicleData = Boolean(profileData.vehicleNumber || driverDb.vehicleNumber);
+        const hasDocData = Boolean(
+          profileData.aadhaarNumber || driverDb.aadhaarNumber ||
+          profileData.licenseNumber || driverDb.licenseNumber ||
+          profileData.aadhaarUri || profileData.licenseUri ||
+          driverDb.documents
+        );
+        const hasCompletedKyc = hasRealName && hasVehicleData && hasDocData;
+
+        // If the driver is in Create Account mode OR has not submitted their 5 steps, open Registration
+        if (isRegisterMode || !hasCompletedKyc) {
+          navigation.navigate('DriverRegistration', {
+            mobile: profileData.mobile || cleanPhone || phone,
+            firebaseIdToken,
+            fullName: profileData.fullName || fullName || '',
+          });
+          return;
+        }
+
+        // Only approved drivers can access the Dashboard
+        if (normalizedKyc === 'verified' || normalizedKyc === 'approved') {
           navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
+        } else if (normalizedKyc === 'rejected') {
+          navigation.navigate('DriverRegistration', { mobile: profileData.mobile, firebaseIdToken, fullName: profileData.fullName });
+        } else {
+          // New registration or pending approval — hold in ApprovalPending
+          navigation.reset({ index: 0, routes: [{ name: 'ApprovalPending' }] });
         }
       } else {
-        // Driver profile not found on backend — navigate to Registration to complete KYC profile
+        // Driver profile not found on backend — navigate to Registration to complete 5 steps
         setLoading(false);
         navigation.navigate('DriverRegistration', { mobile: cleanPhone || phone, firebaseIdToken, fullName: fullName || '' });
       }
@@ -374,7 +484,7 @@ const LoginScreen = () => {
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <StatusBar barStyle="dark-content" backgroundColor="#F5F9FF" />
-      
+
       {/* Background Gradient */}
       <View style={styles.backgroundContainer}>
         <Svg width={width} height={height} preserveAspectRatio="none">
@@ -390,19 +500,19 @@ const LoginScreen = () => {
       </View>
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView 
+        <ScrollView
           ref={scrollViewRef}
-          style={{ flex: 1 }} 
-          contentContainerStyle={styles.scrollContent} 
-          showsVerticalScrollIndicator={false} 
+          style={{ flex: 1 }}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
           {/* Top Brand Header */}
           <View style={styles.brandHeader}>
             <View style={styles.logoBadgeContainer}>
-              <Image 
-                source={require('../../../assets/splash-icon.png')} 
-                style={styles.logoImage} 
+              <Image
+                source={require('../../../assets/splash-icon.png')}
+                style={styles.logoImage}
                 resizeMode="contain"
               />
             </View>
@@ -412,7 +522,7 @@ const LoginScreen = () => {
               <Text style={styles.roleTagText}>DELIVERY PARTNER</Text>
             </View>
           </View>
-          
+
           {/* White Login Card */}
           <View style={styles.loginCard}>
             <Text style={styles.welcomeText}>{isRegisterMode ? 'Create Account' : 'Welcome Back!'}</Text>
@@ -429,11 +539,11 @@ const LoginScreen = () => {
                   ]}
                   onPress={() => fullNameInputRef.current?.focus()}
                 >
-                  <Ionicons 
-                    name="person-outline" 
-                    size={18} 
-                    color={errors.fullName ? '#EF4444' : focusedInput === 'fullName' ? '#0052FF' : '#94A3B8'} 
-                    style={{ marginLeft: 14, marginRight: 6 }} 
+                  <Ionicons
+                    name="person-outline"
+                    size={18}
+                    color={errors.fullName ? '#EF4444' : focusedInput === 'fullName' ? '#0052FF' : '#94A3B8'}
+                    style={{ marginLeft: 14, marginRight: 6 }}
                   />
                   <TextInput
                     ref={fullNameInputRef}
@@ -446,6 +556,8 @@ const LoginScreen = () => {
                     onBlur={() => handleBlur('fullName')}
                     autoCapitalize="words"
                     maxLength={50}
+                    multiline={false}
+                    numberOfLines={1}
                   />
                 </Pressable>
                 {errors.fullName && (
@@ -480,6 +592,8 @@ const LoginScreen = () => {
                   placeholderTextColor="#94A3B8"
                   keyboardType="phone-pad"
                   maxLength={10}
+                  multiline={false}
+                  numberOfLines={1}
                   value={phone}
                   onChangeText={handlePhoneChange}
                   onFocus={() => setFocusedInput('phone')}
@@ -504,10 +618,18 @@ const LoginScreen = () => {
             {otpMode && (
               <View style={styles.otpSection}>
                 <View style={styles.otpLabelRow}>
-                  <Text style={styles.inputLabel}>Enter OTP</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Text style={styles.inputLabel}>Enter OTP</Text>
+                    <TouchableOpacity
+                      onPress={() => { setOtpMode(false); setOtp(['', '', '', '', '', '']); }}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Text style={{ fontSize: 12, color: '#0052FF', fontWeight: '700', marginBottom: 8 }}>Edit</Text>
+                    </TouchableOpacity>
+                  </View>
                   <Text style={styles.timerText}>00:{countdown.toString().padStart(2, '0')}</Text>
                 </View>
-                
+
                 <View style={styles.otpBoxesRow}>
                   {otp.map((digit, index) => (
                     <TextInput
@@ -519,12 +641,15 @@ const LoginScreen = () => {
                         digit.length > 0 && styles.otpBoxFilled,
                       ]}
                       keyboardType="number-pad"
-                      maxLength={1}
+                      maxLength={6}
                       value={digit}
                       onChangeText={(text) => handleOtpChange(text, index)}
                       onKeyPress={(e) => handleKeyPress(e, index)}
                       onFocus={() => setFocusedInput(`otp${index}`)}
                       onBlur={() => setFocusedInput(null)}
+                      selectTextOnFocus
+                      textContentType="oneTimeCode"
+                      autoComplete="sms-otp"
                     />
                   ))}
                 </View>
@@ -559,7 +684,7 @@ const LoginScreen = () => {
           {/* New to Anusha Porter */}
           <View style={styles.registerPrompt}>
             <Text style={styles.registerPromptText}>{isRegisterMode ? 'Already have an account? ' : 'New to Anusha Porter? '}</Text>
-            <TouchableOpacity 
+            <TouchableOpacity
               onPress={() => {
                 setIsRegisterMode(!isRegisterMode);
                 setFullName('');
@@ -575,6 +700,91 @@ const LoginScreen = () => {
 
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Account Not Found In-App Modal Dialog */}
+      <Modal
+        visible={showAccountNotFoundModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowAccountNotFoundModal(false)}
+      >
+        <View style={styles.customAlertOverlay}>
+          <View style={styles.customAlertCard}>
+            <View style={[styles.customAlertIconBg, { backgroundColor: '#FEF3C7' }]}>
+              <Ionicons name="alert-circle" size={36} color="#D97706" />
+            </View>
+            <Text style={styles.customAlertTitle}>Account Not Found</Text>
+            <Text style={styles.customAlertMsg}>
+              The mobile number <Text style={{ fontWeight: '800', color: '#0F172A' }}>+91 {checkedPhoneDisplay}</Text> is not registered yet.{'\n\n'}Please register to create your driver partner account.
+            </Text>
+            <View style={styles.customAlertBtnRow}>
+              <TouchableOpacity
+                style={styles.customAlertBtnCancel}
+                onPress={() => setShowAccountNotFoundModal(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.customAlertBtnCancelTxt}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.customAlertBtnPrimary}
+                onPress={() => {
+                  setShowAccountNotFoundModal(false);
+                  setIsRegisterMode(true);
+                  setTimeout(() => fullNameInputRef.current?.focus(), 250);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.customAlertBtnPrimaryTxt}>Register Now</Text>
+                <Ionicons name="arrow-forward" size={16} color="#FFFFFF" style={{ marginLeft: 4 }} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Already Registered In-App Modal Dialog */}
+      <Modal
+        visible={showAlreadyRegisteredModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowAlreadyRegisteredModal(false)}
+      >
+        <View style={styles.customAlertOverlay}>
+          <View style={styles.customAlertCard}>
+            <View style={[styles.customAlertIconBg, { backgroundColor: '#DBEAFE' }]}>
+              <Ionicons name="information-circle" size={36} color="#0052FF" />
+            </View>
+            <Text style={styles.customAlertTitle}>
+              {alreadyRegisteredKyc === 'pending' ? 'Verification In Progress' : 'Already Registered'}
+            </Text>
+            <Text style={styles.customAlertMsg}>
+              {alreadyRegisteredKyc === 'pending'
+                ? `Your registration for +91 ${checkedPhoneDisplay} is already submitted and is currently under review by our onboarding team.\n\nPlease login directly to check approval status.`
+                : `The mobile number +91 ${checkedPhoneDisplay} is already registered.\n\nPlease login directly to access your driver dashboard.`}
+            </Text>
+            <View style={styles.customAlertBtnRow}>
+              <TouchableOpacity
+                style={styles.customAlertBtnCancel}
+                onPress={() => setShowAlreadyRegisteredModal(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.customAlertBtnCancelTxt}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.customAlertBtnPrimary}
+                onPress={() => {
+                  setShowAlreadyRegisteredModal(false);
+                  setIsRegisterMode(false);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.customAlertBtnPrimaryTxt}>Go to Login</Text>
+                <Ionicons name="log-in-outline" size={16} color="#FFFFFF" style={{ marginLeft: 4 }} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -650,7 +860,7 @@ const styles = StyleSheet.create({
   },
   welcomeText: { fontSize: 22, fontWeight: '800', color: '#0F172A', textAlign: 'center' },
   subWelcomeText: { fontSize: 13, color: '#64748B', fontWeight: '500', textAlign: 'center', marginTop: 4, marginBottom: 24 },
-  
+
   inputLabel: { fontSize: 13, fontWeight: '700', color: '#0F172A', marginBottom: 8 },
   inputRow: {
     flexDirection: 'row',
@@ -665,25 +875,33 @@ const styles = StyleSheet.create({
   inputRowError: { borderColor: '#EF4444', borderWidth: 1.5 },
   errorBoxRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, paddingHorizontal: 4 },
   errorText: { color: '#EF4444', fontSize: 12, fontWeight: '600' },
-  countryCodeBox: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12 },
-  flagText: { fontSize: 18, marginRight: 6 },
-  countryCodeText: { fontSize: 15, fontWeight: '600', color: '#0F172A' },
-  inputDivider: { width: 1, height: 24, backgroundColor: '#E2E8F0', marginRight: 12 },
-  inputField: { flex: 1, fontSize: 15, fontWeight: '500', color: '#0F172A', height: '100%' },
-  
+  countryCodeBox: { flexDirection: 'row', alignItems: 'center', paddingLeft: 12, paddingRight: 8 },
+  flagText: { fontSize: 18, marginRight: 4 },
+  countryCodeText: { fontSize: 15, fontWeight: '700', color: '#0F172A' },
+  inputDivider: { width: 1, height: 24, backgroundColor: '#E2E8F0', marginRight: 10 },
+  inputField: { flex: 1, fontSize: 14, fontWeight: '500', color: '#0F172A', height: '100%', paddingVertical: 0 },
+
   shieldRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
   shieldText: { fontSize: 12, color: '#64748B', fontWeight: '500', marginLeft: 6 },
 
   otpSection: { marginTop: 16 },
   otpLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   timerText: { fontSize: 13, fontWeight: '700', color: '#0052FF' },
-  otpBoxesRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  otpBoxesRow: { flexDirection: 'row', justifyContent: 'space-between', marginVertical: 4 },
   otpBox: {
-    width: 45, height: 50, borderRadius: 10, borderWidth: 1, borderColor: '#E2E8F0',
-    backgroundColor: '#FFFFFF', textAlign: 'center', fontSize: 20, fontWeight: '700', color: '#0F172A',
+    width: 46,
+    height: 52,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
+    textAlign: 'center',
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#0F172A',
   },
-  otpBoxFocused: { borderColor: '#0052FF' },
-  otpBoxFilled: { backgroundColor: '#F8FAFC' },
+  otpBoxFocused: { borderColor: '#0052FF', backgroundColor: '#F0F6FF', borderWidth: 2 },
+  otpBoxFilled: { backgroundColor: '#F8FAFC', borderColor: '#CBD5E1' },
   resendRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 16 },
   resendLabel: { fontSize: 13, color: '#64748B', fontWeight: '500' },
   resendActive: { fontSize: 13, color: '#0052FF', fontWeight: '700' },
@@ -708,6 +926,91 @@ const styles = StyleSheet.create({
   registerPrompt: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginVertical: 16 },
   registerPromptText: { fontSize: 14, color: '#64748B', fontWeight: '500' },
   registerNowText: { fontSize: 14, color: '#0052FF', fontWeight: '700' },
+
+  // Custom In-App Alert Modal Styles
+  customAlertOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  customAlertCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  customAlertIconBg: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  customAlertTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#0F172A',
+    textAlign: 'center',
+    marginBottom: 10,
+    letterSpacing: -0.3,
+  },
+  customAlertMsg: {
+    fontSize: 14,
+    color: '#475569',
+    textAlign: 'center',
+    lineHeight: 21,
+    marginBottom: 24,
+  },
+  customAlertBtnRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    width: '100%',
+  },
+  customAlertBtnCancel: {
+    flex: 1,
+    height: 48,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F8FAFC',
+  },
+  customAlertBtnCancelTxt: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#64748B',
+  },
+  customAlertBtnPrimary: {
+    flex: 1.4,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: '#0052FF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#0052FF',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  customAlertBtnPrimaryTxt: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
 });
 
 export default LoginScreen;

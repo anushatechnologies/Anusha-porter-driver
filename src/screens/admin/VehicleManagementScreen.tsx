@@ -17,6 +17,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { useTheme } from '../../theme/ThemeContext';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -29,6 +30,8 @@ import {
   deleteAdminVehicleType,
   VehicleTypeAdmin,
 } from '../../services/api';
+import { uploadImageToBackend } from '../../services/imageUpload';
+import { cleanUrl } from '../../utils/urlHelpers';
 
 const { width } = Dimensions.get('window');
 
@@ -50,6 +53,7 @@ const VehicleManagementScreen = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
 
   // Modal State
   const [modalVisible, setModalVisible] = useState(false);
@@ -163,6 +167,52 @@ const VehicleManagementScreen = () => {
         },
       ]
     );
+  };
+
+  const pickVehicleImage = async () => {
+    try {
+      if (Platform.OS !== 'web') {
+        const { status: existingStatus } = await ImagePicker.getMediaLibraryPermissionsAsync();
+        let finalStatus = existingStatus;
+        if (existingStatus !== 'granted') {
+          const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+          finalStatus = status;
+        }
+        if (finalStatus !== 'granted') {
+          Alert.alert('Permission Required', 'Gallery access is required to select vehicle photos.');
+          return;
+        }
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 0.7,
+      });
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const localUri = result.assets[0].uri;
+        setUploadingImage(true);
+        try {
+          const uploadedUrl = await uploadImageToBackend(localUri, 'misc');
+          if (uploadedUrl) {
+            setFormData(prev => ({ ...prev, imageUrl: cleanUrl(uploadedUrl) }));
+            Alert.alert('Image Uploaded', 'Vehicle image uploaded successfully!');
+          } else {
+            setFormData(prev => ({ ...prev, imageUrl: localUri }));
+          }
+        } catch (uploadErr) {
+          console.warn('Image upload error:', uploadErr);
+          setFormData(prev => ({ ...prev, imageUrl: localUri }));
+        } finally {
+          setUploadingImage(false);
+        }
+      }
+    } catch (e) {
+      console.warn('pickVehicleImage error:', e);
+      Alert.alert('Error', 'Failed to pick image.');
+      setUploadingImage(false);
+    }
   };
 
   const handleSave = async () => {
@@ -294,9 +344,17 @@ const VehicleManagementScreen = () => {
                       <View style={[styles.priorityBadge, { backgroundColor: colors.cardLight, borderColor: colors.border }]}>
                         <Text style={[styles.priorityText, { color: colors.textMuted }]}>#{v.priority}</Text>
                       </View>
-                      <View style={[styles.iconBox, { backgroundColor: `${colors.primary}15` }]}>
-                        <MaterialCommunityIcons name={(v.iconName as any) || 'truck'} size={24} color={colors.primary} />
-                      </View>
+                      {v.imageUrl && (v.imageUrl.startsWith('http') || v.imageUrl.startsWith('data:image')) ? (
+                        <Image
+                          source={{ uri: cleanUrl(v.imageUrl) }}
+                          style={[styles.iconBox, { width: 44, height: 44, borderRadius: 10 }]}
+                          resizeMode="contain"
+                        />
+                      ) : (
+                        <View style={[styles.iconBox, { backgroundColor: `${colors.primary}15` }]}>
+                          <MaterialCommunityIcons name={(v.iconName as any) || 'truck'} size={24} color={colors.primary} />
+                        </View>
+                      )}
                       <View style={{ flex: 1 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                           <Text style={[styles.vehicleName, { color: colors.text }]}>{v.name}</Text>
@@ -512,9 +570,66 @@ const VehicleManagementScreen = () => {
                 </View>
               </View>
 
+              {/* Vehicle Image Upload & Preview */}
+              <View style={styles.inputCol}>
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Vehicle Image / Photo</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+                  {formData.imageUrl ? (
+                    <View style={{ position: 'relative' }}>
+                      <Image
+                        source={{ uri: cleanUrl(formData.imageUrl) }}
+                        style={{ width: 68, height: 68, borderRadius: 10, backgroundColor: colors.cardLight, borderWidth: 1, borderColor: colors.border }}
+                        resizeMode="contain"
+                      />
+                      <TouchableOpacity
+                        style={{ position: 'absolute', top: -6, right: -6, backgroundColor: colors.error, borderRadius: 12, padding: 3 }}
+                        onPress={() => setFormData(prev => ({ ...prev, imageUrl: '' }))}
+                      >
+                        <Ionicons name="close" size={12} color="#FFFFFF" />
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
+
+                  <TouchableOpacity
+                    style={[
+                      styles.actionBtn,
+                      {
+                        flex: 1,
+                        height: 46,
+                        justifyContent: 'center',
+                        borderColor: colors.primary,
+                        backgroundColor: `${colors.primary}10`,
+                      },
+                    ]}
+                    onPress={pickVehicleImage}
+                    disabled={uploadingImage}
+                  >
+                    {uploadingImage ? (
+                      <ActivityIndicator size="small" color={colors.primary} />
+                    ) : (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Ionicons name="cloud-upload-outline" size={18} color={colors.primary} />
+                        <Text style={[styles.actionBtnText, { color: colors.primary, fontWeight: '700' }]}>
+                          {formData.imageUrl ? 'Change Image' : 'Upload Vehicle Photo'}
+                        </Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                </View>
+
+                {/* Optional direct URL input */}
+                <TextInput
+                  style={[styles.inputField, { backgroundColor: colors.cardLight, borderColor: colors.border, color: colors.text, fontSize: 12 }]}
+                  placeholder="Or paste vehicle image URL (https://...)"
+                  placeholderTextColor={colors.textMuted}
+                  value={formData.imageUrl}
+                  onChangeText={txt => setFormData(prev => ({ ...prev, imageUrl: txt }))}
+                />
+              </View>
+
               {/* Icon Selector */}
               <View style={styles.inputCol}>
-                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Select Icon</Text>
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Select Icon (Fallback)</Text>
                 <View style={styles.iconSelectorRow}>
                   {ICON_OPTIONS.map(opt => {
                     const isSelected = formData.iconName === opt.icon;

@@ -142,21 +142,19 @@ const DriverDashboardScreen = () => {
   // User toggles duty switch
   const handleToggleOnline = async (targetValue: boolean) => {
     if (targetValue) {
-      // Step 0: Strict Wallet Balance Verification (Minimum ₹10 required) before going online
+      // Step 0: Strict Wallet Balance Verification before going online
       try {
         const walRes = await getDriverWallet().catch(() => null);
         const balance = walRes?.wallet?.availableBalance ?? (typeof (walRes as any)?.availableBalance === 'number' ? (walRes as any).availableBalance : 0);
         setWalletBalance(balance);
-        const minReq = 10; // Strictly ₹10 minimum required balance
-        const isEligible = (walRes?.wallet?.isEligible !== false) && balance >= minReq;
 
-        if (!isEligible) {
+        if (balance <= 0) {
           Alert.alert(
-            '⚠ Wallet Recharge Required',
-            `Your wallet balance is ₹${balance.toFixed(2)}. You must maintain a minimum balance of ₹10 to go online and accept delivery orders.`,
+            'Wallet Empty',
+            'Please recharge your wallet (₹1+) to go online and receive booking requests.',
             [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Recharge Now', onPress: () => navigation.navigate('Wallet') },
+              { text: 'Recharge Wallet', onPress: () => navigation.navigate('Wallet') },
             ]
           );
           setIsOnline(false);
@@ -173,13 +171,26 @@ const DriverDashboardScreen = () => {
       // Driver wants to go ONLINE: check if foreground location permission is already granted
       const { status: fgStatus } = await Location.getForegroundPermissionsAsync();
       if (fgStatus === 'granted') {
-        setIsOnline(true);
-        await AsyncStorage.setItem('@driver_is_online', 'true');
         try {
-          await setDriverOnlineStatus('online');
+          const statusRes: any = await setDriverOnlineStatus('online');
+          if (statusRes && statusRes.success === false && statusRes.error === 'WALLET_EMPTY') {
+            Alert.alert(
+              'Wallet Empty',
+              statusRes.message || 'Please recharge your wallet (₹1+) to go online and receive booking requests.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Recharge Wallet', onPress: () => navigation.navigate('Wallet') },
+              ]
+            );
+            setIsOnline(false);
+            await AsyncStorage.setItem('@driver_is_online', 'false');
+            return;
+          }
         } catch (e) {
           console.warn('Background sync notice for online status:', e);
         }
+        setIsOnline(true);
+        await AsyncStorage.setItem('@driver_is_online', 'true');
       } else {
         // Permission not yet granted: MUST show Prominent Disclosure Modal BEFORE system permission dialog!
         setShowLocationDisclosure(true);
@@ -200,21 +211,19 @@ const DriverDashboardScreen = () => {
   const handleContinueDisclosure = async () => {
     setShowLocationDisclosure(false);
     try {
-      // Check wallet eligibility (Minimum ₹10 required) before going online
+      // Check wallet eligibility before going online
       try {
         const walRes = await getDriverWallet().catch(() => null);
         const balance = walRes?.wallet?.availableBalance ?? (typeof (walRes as any)?.availableBalance === 'number' ? (walRes as any).availableBalance : 0);
         setWalletBalance(balance);
-        const minReq = 10; // Strictly ₹10 minimum required balance
-        const isEligible = (walRes?.wallet?.isEligible !== false) && balance >= minReq;
 
-        if (!isEligible) {
+        if (balance <= 0) {
           Alert.alert(
-            '⚠ Wallet Recharge Required',
-            `Your wallet balance is ₹${balance.toFixed(2)}. You must maintain a minimum balance of ₹10 to go online and accept delivery orders.`,
+            'Wallet Empty',
+            'Please recharge your wallet (₹1+) to go online and receive booking requests.',
             [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Recharge Now', onPress: () => navigation.navigate('Wallet') },
+              { text: 'Recharge Wallet', onPress: () => navigation.navigate('Wallet') },
             ]
           );
           setIsOnline(false);
@@ -240,13 +249,26 @@ const DriverDashboardScreen = () => {
       }
 
       // Step 2: Turn Online and start tracking
-      setIsOnline(true);
-      await AsyncStorage.setItem('@driver_is_online', 'true');
       try {
-        await setDriverOnlineStatus('online');
+        const statusRes: any = await setDriverOnlineStatus('online');
+        if (statusRes && statusRes.success === false && statusRes.error === 'WALLET_EMPTY') {
+          Alert.alert(
+            'Wallet Empty',
+            statusRes.message || 'Please recharge your wallet (₹1+) to go online and receive booking requests.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Recharge Wallet', onPress: () => navigation.navigate('Wallet') },
+            ]
+          );
+          setIsOnline(false);
+          await AsyncStorage.setItem('@driver_is_online', 'false');
+          return;
+        }
       } catch (e) {
         console.warn('Background sync notice for online status:', e);
       }
+      setIsOnline(true);
+      await AsyncStorage.setItem('@driver_is_online', 'true');
     } catch (e) {
       console.error('Error requesting permissions after disclosure:', e);
       setIsOnline(false);
@@ -297,6 +319,16 @@ const DriverDashboardScreen = () => {
         try {
           const driverDb = await getDriverProfile();
           if (driverDb) {
+            const kycStatus = String(driverDb.kyc || (driverDb as any).kycStatus || '').toLowerCase();
+            if (kycStatus === 'rejected') {
+              navigation.reset({ index: 0, routes: [{ name: 'DriverRegistration', params: { mobile: driverDb.phone } }] });
+              return;
+            } else if (kycStatus !== 'verified' && kycStatus !== 'approved') {
+              // Not approved by Admin yet — send back to ApprovalPending waiting room
+              navigation.reset({ index: 0, routes: [{ name: 'ApprovalPending' }] });
+              return;
+            }
+
             if (typeof driverDb.name === 'string' && driverDb.name.trim().length > 0) {
               setDriverName(driverDb.name.trim().split(' ')[0]);
             }

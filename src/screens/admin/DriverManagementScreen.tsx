@@ -21,6 +21,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../../navigation/AppNavigator';
 
 import { getAllDrivers, updateDriverKyc } from '../../services/api';
+import { cleanUrl } from '../../utils/urlHelpers';
 
 const { width, height } = Dimensions.get('window');
 
@@ -38,24 +39,8 @@ const DriverManagementScreen = () => {
   const [rejectReason, setRejectReason] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
 
-  const cleanUrl = (url: string) => {
-    if (!url) return '';
-    if (url.startsWith('data:') || url.startsWith('file://')) return url;
-    let targetUrl = url;
-    const secondHttpIndex = url.indexOf('http', 6);
-    if (secondHttpIndex !== -1) {
-      targetUrl = url.substring(secondHttpIndex);
-    } else if (url.startsWith('/')) {
-      targetUrl = `${process.env.EXPO_PUBLIC_API_BASE_URL}${url}`;
-    } else if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      targetUrl = `${process.env.EXPO_PUBLIC_API_BASE_URL}/${url}`;
-    }
-    // Resolve non-regional S3 URLs to ap-south-2
-    if (targetUrl.includes('poteranusha.s3.amazonaws.com')) {
-      targetUrl = targetUrl.replace('poteranusha.s3.amazonaws.com', 'poteranusha.s3.ap-south-2.amazonaws.com');
-    }
-    return targetUrl;
-  };
+  // Fullscreen document preview state
+  const [previewDoc, setPreviewDoc] = useState<{ label: string; uri: string } | null>(null);
 
   const fetchDrivers = async () => {
     setLoading(true);
@@ -263,14 +248,14 @@ const DriverManagementScreen = () => {
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.auditName, { color: colors.text }]}>{selectedDriver.name}</Text>
                     <Text style={[styles.auditSub, { color: colors.textSecondary }]}>{selectedDriver.phone} • {selectedDriver.email}</Text>
-                    <Text style={[styles.auditSub, { color: colors.textMuted }]}>DOB: {selectedDriver.dob} • Gender: {selectedDriver.gender}</Text>
+                    <Text style={[styles.auditSub, { color: colors.textMuted }]}>DOB: {selectedDriver.dob || 'N/A'} • Gender: {selectedDriver.gender || 'N/A'}</Text>
                   </View>
                 </View>
 
                 <View style={[styles.cardDivider, { backgroundColor: colors.border, marginVertical: 16 }]} />
 
-                {/* Vehicle details */}
-                <Text style={[styles.sectionHeading, { color: colors.text }]}>Vehicle & Registration Details</Text>
+                {/* Vehicle & ID details */}
+                <Text style={[styles.sectionHeading, { color: colors.text }]}>Vehicle & Identity Numbers</Text>
                 <View style={[styles.detailTable, { backgroundColor: colors.cardLight }]}>
                   <View style={styles.tableRow}>
                     <Text style={[styles.rowLabel, { color: colors.textSecondary }]}>Vehicle Type</Text>
@@ -280,43 +265,87 @@ const DriverManagementScreen = () => {
                   </View>
                   <View style={styles.tableRow}>
                     <Text style={[styles.rowLabel, { color: colors.textSecondary }]}>Vehicle Number</Text>
-                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.vehicleNumber}</Text>
+                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.vehicleNumber || 'N/A'}</Text>
                   </View>
                   <View style={styles.tableRow}>
                     <Text style={[styles.rowLabel, { color: colors.textSecondary }]}>RC Book Number</Text>
-                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.rcNumber}</Text>
+                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.rcNumber || 'N/A'}</Text>
                   </View>
                   <View style={styles.tableRow}>
                     <Text style={[styles.rowLabel, { color: colors.textSecondary }]}>License Number</Text>
-                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.licenseNumber}</Text>
+                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.licenseNumber || 'N/A'}</Text>
                   </View>
                   <View style={styles.tableRow}>
                     <Text style={[styles.rowLabel, { color: colors.textSecondary }]}>Aadhaar Number</Text>
-                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.aadhaarNumber}</Text>
+                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.aadhaarNumber || 'N/A'}</Text>
+                  </View>
+                  <View style={styles.tableRow}>
+                    <Text style={[styles.rowLabel, { color: colors.textSecondary }]}>PAN Number</Text>
+                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.panNumber || 'N/A'}</Text>
+                  </View>
+                </View>
+
+                {/* Bank Details */}
+                <Text style={[styles.sectionHeading, { color: colors.text, marginTop: 18 }]}>Bank Account Information</Text>
+                <View style={[styles.detailTable, { backgroundColor: colors.cardLight }]}>
+                  <View style={styles.tableRow}>
+                    <Text style={[styles.rowLabel, { color: colors.textSecondary }]}>Bank Name</Text>
+                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.bankName || 'N/A'}</Text>
+                  </View>
+                  <View style={styles.tableRow}>
+                    <Text style={[styles.rowLabel, { color: colors.textSecondary }]}>Account Holder</Text>
+                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.accountHolderName || 'N/A'}</Text>
+                  </View>
+                  <View style={styles.tableRow}>
+                    <Text style={[styles.rowLabel, { color: colors.textSecondary }]}>Account Number</Text>
+                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.accountNumber || 'N/A'}</Text>
+                  </View>
+                  <View style={styles.tableRow}>
+                    <Text style={[styles.rowLabel, { color: colors.textSecondary }]}>IFSC Code</Text>
+                    <Text style={[styles.rowVal, { color: colors.text }]}>{selectedDriver.ifscCode || 'N/A'}</Text>
                   </View>
                 </View>
 
                 {/* Documents Grid */}
                 <Text style={[styles.sectionHeading, { color: colors.text, marginTop: 20 }]}>Submitted Verification Photos</Text>
+                <Text style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }}>Tap any document to preview in high resolution</Text>
                 <View style={styles.docsGrid}>
                   {[
-                    { label: 'Aadhaar Card copy', uri: selectedDriver.aadhaarUri || selectedDriver.documents?.aadhaarUrl },
-                    { label: 'Driving License copy', uri: selectedDriver.licenseUri || selectedDriver.documents?.licenseUrl },
-                    { label: 'Registration Certificate (RC)', uri: selectedDriver.rcUri || selectedDriver.documents?.rcUrl },
-                    { label: 'Bank Passbook / Cheque', uri: selectedDriver.bankPassbookUri || selectedDriver.documents?.bankPassbookUrl }
-                  ].map((doc, idx) => (
-                    <View key={idx} style={[styles.docPreviewCard, { backgroundColor: colors.cardLight, borderColor: colors.border }]}>
-                      <Text style={[styles.docCardLabel, { color: colors.textSecondary }]}>{doc.label}</Text>
-                      {doc.uri ? (
-                        <Image source={{ uri: cleanUrl(doc.uri) }} style={styles.docImage} resizeMode="cover" />
-                      ) : (
-                        <View style={styles.noDoc}>
-                          <Ionicons name="document-outline" size={24} color={colors.textMuted} />
-                          <Text style={{ fontSize: 11, color: colors.textMuted }}>No Attachment</Text>
+                    { label: 'Aadhaar Card copy', uri: selectedDriver.aadhaarUri || selectedDriver.aadhaarUrl || selectedDriver.documents?.aadhaarUrl },
+                    { label: 'PAN Card copy', uri: selectedDriver.panUri || selectedDriver.panUrl || selectedDriver.documents?.panUrl },
+                    { label: 'Driving License copy', uri: selectedDriver.licenseUri || selectedDriver.licenseUrl || selectedDriver.documents?.licenseUrl },
+                    { label: 'Registration Certificate (RC)', uri: selectedDriver.rcUri || selectedDriver.rcUrl || selectedDriver.documents?.rcUrl },
+                    { label: 'Bank Passbook / Cheque', uri: selectedDriver.bankPassbookUri || selectedDriver.bankPassbookUrl || selectedDriver.documents?.bankPassbookUrl }
+                  ].map((doc, idx) => {
+                    const resolvedUri = cleanUrl(doc.uri);
+                    return (
+                      <TouchableOpacity
+                        key={idx}
+                        style={[styles.docPreviewCard, { backgroundColor: colors.cardLight, borderColor: colors.border }]}
+                        activeOpacity={resolvedUri ? 0.8 : 1}
+                        onPress={() => {
+                          if (resolvedUri) setPreviewDoc({ label: doc.label, uri: resolvedUri });
+                        }}
+                      >
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                          <Text style={[styles.docCardLabel, { color: colors.textSecondary, flex: 1 }]} numberOfLines={1}>{doc.label}</Text>
+                          {resolvedUri ? <Ionicons name="expand-outline" size={14} color={colors.primary} /> : null}
                         </View>
-                      )}
-                    </View>
-                  ))}
+                        {resolvedUri ? (
+                          <Image
+                            source={{ uri: resolvedUri }}
+                            style={styles.docImage}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <View style={styles.noDoc}>
+                            <Ionicons name="document-outline" size={24} color={colors.textMuted} />
+                            <Text style={{ fontSize: 11, color: colors.textMuted }}>No Attachment</Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
 
                 {/* Decision inputs */}
@@ -354,6 +383,27 @@ const DriverManagementScreen = () => {
               </ScrollView>
             )}
           </View>
+        </View>
+      </Modal>
+
+      {/* Fullscreen Document Preview Modal */}
+      <Modal visible={!!previewDoc} transparent animationType="fade">
+        <View style={styles.previewModalOverlay}>
+          <View style={styles.previewHeader}>
+            <Text style={styles.previewTitle}>{previewDoc?.label}</Text>
+            <TouchableOpacity style={styles.previewCloseBtn} onPress={() => setPreviewDoc(null)}>
+              <Ionicons name="close" size={26} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+          {previewDoc?.uri ? (
+            <View style={styles.previewImageContainer}>
+              <Image
+                source={{ uri: previewDoc.uri }}
+                style={styles.previewImage}
+                resizeMode="contain"
+              />
+            </View>
+          ) : null}
         </View>
       </Modal>
     </View>
@@ -412,7 +462,13 @@ const styles = StyleSheet.create({
   auditInput: { borderRadius: 14, borderWidth: 1, padding: 12, fontSize: 12, fontWeight: '500', height: 70, textAlignVertical: 'top', marginBottom: 16 },
   decisionRow: { flexDirection: 'row', gap: 10 },
   actionBtn: { flex: 1, height: 48, borderRadius: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
-  btnLabel: { color: '#FFF', fontSize: 12, fontWeight: '800' }
+  btnLabel: { color: '#FFF', fontSize: 12, fontWeight: '800' },
+  previewModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', justifyContent: 'center' },
+  previewHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 50, paddingHorizontal: 20, paddingBottom: 16 },
+  previewTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '700', flex: 1 },
+  previewCloseBtn: { padding: 6, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.2)' },
+  previewImageContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 12 },
+  previewImage: { width: '100%', height: '100%', borderRadius: 12 }
 });
 
 export default DriverManagementScreen;

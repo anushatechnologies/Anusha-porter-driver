@@ -26,6 +26,7 @@ import {
   createRazorpayOrder,
   verifyRazorpayPayment,
   getDriverProfile,
+  setDriverOnlineStatus,
   DriverWallet,
   WalletTransaction,
 } from '../../services/api';
@@ -89,24 +90,26 @@ const DriverWalletScreen = () => {
       const combinedList: any[] = [];
       const seenKeys = new Set<string>();
 
-      // 1. Add direct wallet transactions from backend (strictly Recharges & Commission Deductions only)
-      if (txnsRes && Array.isArray(txnsRes.transactions)) {
+      // 1. Add direct wallet transactions from backend (strictly Recharges & Commission Deductions from Admin DB)
+      if (txnsRes && Array.isArray(txnsRes.transactions) && txnsRes.transactions.length > 0) {
         for (const t of txnsRes.transactions) {
           const rawT = (t.transactionType || (t as any).type || '').toUpperCase();
           // Exclude order earnings (fares belong to Driver Earnings, not prepaid wallet)
           if (rawT === 'ORDER_EARNING' || rawT === 'EARNING' || rawT === 'FARE_COLLECTED') {
             continue;
           }
-          const key = `${t.id || ''}_${t.orderId || ''}_${t.transactionType || ''}_${t.amount || 0}`;
+          const rawRef = String(t.orderId || (t as any).orderRef || (t as any).referenceId || t.id || '')
+            .replace(/[^a-zA-Z0-9]/g, '')
+            .toLowerCase()
+            .replace(/^(bk|ord|txn|w)/, '');
+          const key = `${t.id || ''}_${rawRef}_${Math.abs(Number(t.amount) || 0)}`;
           if (!seenKeys.has(key)) {
             seenKeys.add(key);
             combinedList.push(t);
           }
         }
-      }
-
-      // 2. Add commission deductions for completed rides if missing from transaction list
-      if (ordersRes && Array.isArray(ordersRes.orders)) {
+      } else if (ordersRes && Array.isArray(ordersRes.orders)) {
+        // 2. Fallback ONLY if backend transactions list is completely empty
         for (const order of ordersRes.orders) {
           const oAny = order as any;
           const isDone = ['completed', 'delivered', 'done', 'finished'].includes(
@@ -119,13 +122,7 @@ const DriverWalletScreen = () => {
             const commAmt = Math.round(rawAmt * 0.05 * 100) / 100;
             const bId = oAny.bookingId || oAny.id;
             
-            // If this order's commission isn't already in the backend transactions, add it
-            const alreadyHas = combinedList.some(
-              t => (t.orderId === bId || (t as any).orderRef === bId || (t as any).referenceId === bId) &&
-                   ((t.transactionType || '').includes('COMMISSION') || (t.type || '').includes('COMMISSION'))
-            );
-
-            if (!alreadyHas && commAmt > 0) {
+            if (commAmt > 0) {
               combinedList.push({
                 id: `COMM_DED_${bId}`,
                 orderId: bId,
@@ -204,21 +201,24 @@ const DriverWalletScreen = () => {
       // Fetch driver profile for prefilling Razorpay checkout
       const driverProfile = await getDriverProfile().catch(() => null);
 
-      const options = {
+      const options: any = {
         description: `Driver Wallet Recharge - ₹${amt}`,
         image: 'https://api.anushaporter.com/logo.png',
         currency: 'INR',
         key: keyId,
         amount: Math.round(amt * 100).toString(), // in paise
         name: 'Anusha Porter',
-        order_id: razorpayOrderId,
         prefill: {
           email: driverProfile?.email || 'driver@anushaporter.com',
           contact: driverProfile?.phone || '9999999999',
           name: driverProfile?.name || 'Driver Partner',
         },
-        theme: { color: '#DC2626' },
+        theme: { color: '#0052FF' },
       };
+
+      if (razorpayOrderId && String(razorpayOrderId).startsWith('order_')) {
+        options.order_id = razorpayOrderId;
+      }
 
       setProcessingOrder(false);
 
@@ -245,12 +245,20 @@ const DriverWalletScreen = () => {
           if (verifyRes && verifyRes.success !== false) {
             setSelectedAmount(amt);
             setCheckoutModal('success');
+            try {
+              await setDriverOnlineStatus('online');
+            } catch (e) {
+              console.warn('Auto-online on recharge notice:', e);
+            }
             fetchWalletData(false);
           } else {
             Alert.alert('Verification Failed', verifyRes?.message || 'Payment signature could not be verified by server.');
           }
         } catch (vErr: any) {
           Alert.alert('Notice', vErr?.message || 'Payment recorded. Updating wallet balance.');
+          try {
+            await setDriverOnlineStatus('online');
+          } catch (e) {}
           fetchWalletData(false);
         } finally {
           setVerifyingPayment(false);

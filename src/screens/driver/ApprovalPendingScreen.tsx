@@ -66,7 +66,8 @@ const ApprovalPendingScreen = () => {
         if (!isMounted) return;
 
         if (driver) {
-          if (driver.kyc === 'verified') {
+          const kyc = String(driver.kyc || (driver as any).kycStatus || '').toLowerCase();
+          if (kyc === 'verified' || kyc === 'approved') {
             const profileStr = await AsyncStorage.getItem('driverProfile');
             if (profileStr) {
               try {

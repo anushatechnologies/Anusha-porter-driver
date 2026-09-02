@@ -514,8 +514,8 @@ export const validateVehicleNumber = (value: string): ValidationResult => {
     return fail('Vehicle number must not exceed 11 characters.');
   }
 
-  if (!/^[A-Z]{2}[0-9]{1,2}[A-Z]{1,3}[0-9]{1,4}$/.test(cleaned)) {
-    return fail('Enter valid Indian vehicle number (e.g., TS09AB1234).');
+  if (!/^([A-Z]{2}[0-9]{1,2}[A-Z]{1,3}[0-9]{1,4}|[0-9]{2}BH[0-9]{4}[A-Z]{1,2})$/.test(cleaned)) {
+    return fail('Enter valid Indian vehicle number (e.g., TS09AB1234 or 22BH1234AA).');
   }
 
   return OK;

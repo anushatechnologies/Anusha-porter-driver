@@ -19,8 +19,9 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import AsyncStorage from '../../services/asyncStorageShim';
+import * as ImagePicker from 'expo-image-picker';
 import Svg, { Defs, LinearGradient, Stop, Path } from 'react-native-svg';
-import { getDriverProfile, getOrderHistory, getDriverPayoutAccount, setDriverOnlineStatus } from '../../services/api';
+import { getDriverProfile, getOrderHistory, getDriverPayoutAccount, setDriverOnlineStatus, uploadDriverPhoto } from '../../services/api';
 import { cleanUrl } from '../../utils/urlHelpers';
 import { getAuth, signOut } from '@react-native-firebase/auth';
 
@@ -291,6 +292,102 @@ const DriverProfileScreen = () => {
     }
   };
 
+  const handleEditPhoto = () => {
+    Alert.alert(
+      'Update Profile Photo',
+      'Choose an option to update your photo',
+      [
+        {
+          text: '📷 Open Camera',
+          onPress: async () => {
+            try {
+              if (Platform.OS !== 'web') {
+                const { status: existingStatus } = await ImagePicker.getCameraPermissionsAsync();
+                let finalStatus = existingStatus;
+                if (existingStatus !== 'granted') {
+                  const { status } = await ImagePicker.requestCameraPermissionsAsync();
+                  finalStatus = status;
+                }
+                if (finalStatus !== 'granted') {
+                  Alert.alert('Permission Required', 'Camera permission is required.');
+                  return;
+                }
+              }
+              setTimeout(async () => {
+                try {
+                  const result = await ImagePicker.launchCameraAsync({
+                    mediaTypes: ['images'],
+                    allowsEditing: false,
+                    quality: 0.7,
+                  });
+                  if (!result.canceled && result.assets && result.assets.length > 0) {
+                    const localUri = result.assets[0].uri;
+                    setImageError(false);
+                    setProfileData((prev: any) => ({ ...prev, profilePhotoUri: localUri }));
+                    const driverId = profileData?.id || profileData?.partnerId || profileData?.mobile;
+                    const res = await uploadDriverPhoto(localUri, driverId);
+                    if (res?.url) {
+                      setProfileData((prev: any) => ({ ...prev, profilePhotoUri: res.url }));
+                      Alert.alert('Success', 'Profile photo updated successfully!');
+                    }
+                  }
+                } catch (camErr) {
+                  console.warn('Camera launch error, fallback to gallery:', camErr);
+                }
+              }, 350);
+            } catch (e: any) {
+              console.warn('Camera photo error:', e);
+            }
+          },
+        },
+        {
+          text: '📁 Choose from Gallery',
+          onPress: async () => {
+            try {
+              if (Platform.OS !== 'web') {
+                const { status: existingStatus } = await ImagePicker.getMediaLibraryPermissionsAsync();
+                let finalStatus = existingStatus;
+                if (existingStatus !== 'granted') {
+                  const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+                  finalStatus = status;
+                }
+                if (finalStatus !== 'granted') {
+                  Alert.alert('Permission Required', 'Gallery permission is required.');
+                  return;
+                }
+              }
+              setTimeout(async () => {
+                try {
+                  const result = await ImagePicker.launchImageLibraryAsync({
+                    mediaTypes: ['images'],
+                    allowsEditing: false,
+                    quality: 0.7,
+                  });
+                  if (!result.canceled && result.assets && result.assets.length > 0) {
+                    const localUri = result.assets[0].uri;
+                    setImageError(false);
+                    setProfileData((prev: any) => ({ ...prev, profilePhotoUri: localUri }));
+                    const driverId = profileData?.id || profileData?.partnerId || profileData?.mobile;
+                    const res = await uploadDriverPhoto(localUri, driverId);
+                    if (res?.url) {
+                      setProfileData((prev: any) => ({ ...prev, profilePhotoUri: res.url }));
+                      Alert.alert('Success', 'Profile photo updated successfully!');
+                    }
+                  }
+                } catch (galErr) {
+                  console.warn('Gallery pick error:', galErr);
+                }
+              }, 350);
+            } catch (e: any) {
+              console.warn('Gallery photo error:', e);
+            }
+          },
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
+  };
+
   const isDark = theme === 'dark';
   const themeIcon = themeMode === 'light' ? 'sunny' : themeMode === 'dark' ? 'moon' : 'phone-portrait';
 
@@ -336,7 +433,7 @@ const DriverProfileScreen = () => {
 
         {/* Floating Avatar & Details */}
         <View style={styles.identitySection}>
-          <View style={[styles.avatarWrapper, { backgroundColor: colors.background }]}>
+          <TouchableOpacity activeOpacity={0.8} onPress={handleEditPhoto} style={[styles.avatarWrapper, { backgroundColor: colors.background }]}>
             <View style={[styles.avatarContainer, { backgroundColor: isDark ? '#1E293B' : '#CBD5E1', overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }]}>
               {profileData?.profilePhotoUri && !imageError ? (
                 <Image
@@ -349,12 +446,10 @@ const DriverProfileScreen = () => {
                 <Ionicons name="person" size={52} color={colors.primary} />
               )}
             </View>
-            {profileData?.kyc === 'verified' && (
-              <View style={styles.verifiedBadge}>
-                <Ionicons name="checkmark-circle" size={24} color="#10B981" />
-              </View>
-            )}
-          </View>
+            <View style={{ position: 'absolute', bottom: 0, right: 0, width: 30, height: 30, borderRadius: 15, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#FFFFFF' }}>
+              <Ionicons name="camera" size={16} color="#FFFFFF" />
+            </View>
+          </TouchableOpacity>
 
           <Text style={[styles.driverName, { color: colors.text }]}>{fullName}</Text>
           <Text style={[styles.partnerId, { color: colors.textSecondary }]}>Partner ID: {partnerId}</Text>

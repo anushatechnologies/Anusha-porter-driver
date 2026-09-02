@@ -2,7 +2,7 @@
   "expo": {
     "name": "Anusha Porter Driver",
     "slug": "anusha-porter-driver",
-    "version": "2.2.4",
+    "version": "2.18.0",
     "sdkVersion": "54.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -19,7 +19,7 @@
       }
     },
     "android": {
-      "versionCode": 24,
+      "versionCode": 45,
       "adaptiveIcon": {
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundColor": "#FFFFFF"
@@ -27,6 +27,7 @@
       "package": "com.anushaporter.driver",
       "googleServicesFile": "./google-services.json",
       "permissions": [
+        "CAMERA",
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
         "FOREGROUND_SERVICE",
@@ -45,6 +46,13 @@
     "plugins": [
       "expo-font",
       "expo-av",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "The app accesses your photos to let you upload KYC verification documents.",
+          "cameraPermission": "The app accesses your camera to let you take profile selfies and capture KYC documents."
+        }
+      ],
       [
         "expo-location",
         {

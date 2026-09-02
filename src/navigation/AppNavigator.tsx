@@ -7,7 +7,6 @@ import { useTheme } from '../theme/ThemeContext';
 
 // Auth Screens
 import SplashScreen from '../screens/auth/SplashScreen';
-import RoleSelectScreen from '../screens/auth/RoleSelectScreen';
 import LoginScreen from '../screens/auth/LoginScreen';
 
 // Driver Screens
@@ -49,7 +48,6 @@ export type ActiveOrderData = {
 
 export type RootStackParamList = {
   Splash: undefined;
-  RoleSelect: undefined;
   Login: { role?: 'driver' | 'admin'; phone?: string; mobile?: string } | undefined;
   DriverRegistration: { mobile?: string; firebaseIdToken?: string; fullName?: string } | undefined;
   ApprovalPending: undefined;
@@ -119,7 +117,6 @@ const AppNavigator = () => {
         screenOptions={{ headerShown: false, animation: 'slide_from_right' }}
       >
         <Stack.Screen name="Splash" component={SplashScreen} />
-        <Stack.Screen name="RoleSelect" component={RoleSelectScreen} />
         <Stack.Screen name="Login" component={LoginScreen} />
         <Stack.Screen name="DriverRegistration" component={DriverRegistrationScreen} />
         <Stack.Screen name="ApprovalPending" component={ApprovalPendingScreen} />

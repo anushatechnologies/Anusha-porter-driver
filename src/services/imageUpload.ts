@@ -14,9 +14,11 @@ import { authFetch } from './api';
  */
 const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'https://api.anushaporter.com';
 
+import { cleanUrl } from '../utils/urlHelpers';
+
 export const uploadImageToBackend = async (
   localUri: string,
-  category: 'profile' | 'aadhaar' | 'license' | 'rc' | 'bankpassbook' | 'misc' = 'misc'
+  category: 'profile' | 'aadhaar' | 'pan' | 'license' | 'rc' | 'bankpassbook' | 'misc' = 'misc'
 ): Promise<string | null> => {
   try {
     const backendUrl = `${BASE_URL}/api/upload/image`;
@@ -44,7 +46,7 @@ export const uploadImageToBackend = async (
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
     const res = await authFetch(backendUrl, { method: 'POST', body, signal: controller.signal });
     clearTimeout(timeoutId);
     if (!res.ok) {
@@ -52,17 +54,14 @@ export const uploadImageToBackend = async (
       return null;
     }
     const data = await res.json();
-    let url = data.url || data.fileUrl || '';
+    let url = data.url || data.fileUrl || data.path || data.imageUrl || data.s3Url || '';
     if (!url) return null;
 
-    // Clean up duplicate protocol prefix if backend prepends base URL to an absolute S3 URL
-    if (url.includes('http://') || url.includes('https://')) {
-      const lastHttpIndex = Math.max(url.lastIndexOf('https://'), url.lastIndexOf('http://'));
-      return url.substring(lastHttpIndex);
-    }
-    return `${BASE_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+    return cleanUrl(url);
   } catch (e) {
     console.warn('uploadImageToBackend error:', e);
     return null;
   }
 };
+
+export { uploadAndVerifyDocument, DocumentUploadResponse } from './documentService';

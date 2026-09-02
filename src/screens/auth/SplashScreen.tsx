@@ -111,14 +111,26 @@ const SplashScreen = () => {
             console.warn('Splash status check error:', err);
           }
 
-          if (currentKyc === 'pending') {
-            navigation.replace('ApprovalPending');
+          const isComplete = Boolean(
+            (profile.vehicleNumber || profile.vehicleType) &&
+            (profile.aadhaarNumber || profile.licenseNumber) &&
+            (profile.aadhaarUri || profile.licenseUri || profile.profilePhotoUri)
+          );
+
+          if (!isComplete) {
+            navigation.replace('DriverRegistration', { mobile: profile.mobile, fullName: profile.fullName });
+            return;
+          }
+
+          if (currentKyc === 'verified' || currentKyc === 'approved') {
+            navigation.replace('DriverTabs');
             return;
           } else if (currentKyc === 'rejected') {
-            navigation.replace('DriverRegistration', { mobile: profile.mobile });
+            navigation.replace('DriverRegistration', { mobile: profile.mobile, fullName: profile.fullName });
             return;
           } else {
-            navigation.replace('DriverTabs');
+            // New driver or pending verification — always route to ApprovalPending
+            navigation.replace('ApprovalPending');
             return;
           }
         }

@@ -1,0 +1,135 @@
+================================================================================
+  ANUSHA PORTER DRIVER APP — COMPLETE BACKEND API & BUG FIX ACTION PLAN
+  Target: Java / Spring Boot Backend Engineering Team | Date: 2026-08-27
+================================================================================
+
+BASE URL : https://api.anushaporter.com
+ENV VAR  : EXPO_PUBLIC_API_BASE_URL=https://api.anushaporter.com
+AUTH     : Bearer <JWT_TOKEN> (in Authorization Header)
+MEDIA S3 : poteranusha.s3.ap-south-2.amazonaws.com
+
+
+================================================================================
+  TOP 5 CRITICAL BACKEND BUGS TO FIX IMMEDIATELY
+================================================================================
+
+--------------------------------------------------------------------------------
+1. FACE VERIFICATION ENDPOINT (50% MATCH & OOM FIX)
+--------------------------------------------------------------------------------
+Endpoint: POST /api/drivers/verify-face  (and /api/verify-face)
+Content-Type: multipart/form-data (field: "file")
+
+ISSUES:
+  1) Throws "Handler dispatch failed: java.lang.OutOfMemoryError: Java heap space"
+     when processing full resolution smartphone camera photos.
+  2) Threshold is too strict, rejecting valid human selfies with normal indoor lighting.
+
+REQUIRED BACKEND FIXES:
+  • Auto-downscale incoming image to max 1024px before running AI/OpenCV model.
+  • Set Face Match Confidence Threshold to 50% (0.50).
+  • If Confidence >= 50% -> Return HTTP 200 OK with success: true.
+  • If Non-Human Object / Confidence < 50% -> Return HTTP 400 Bad Request.
+  • If Multiple Faces (> 1) -> Return HTTP 400 Bad Request.
+
+EXPECTED 200 OK RESPONSE:
+{
+  "success": true,
+  "isFace": true,
+  "faceVerified": true,
+  "faceCount": 1,
+  "confidence": 0.52,
+  "matchPercentage": 52,
+  "message": "Human Face Verified (52% Match) ✓",
+  "url": "https://poteranusha.s3.ap-south-2.amazonaws.com/uploads/driver_selfies/selfie_123.jpg"
+}
+
+
+--------------------------------------------------------------------------------
+2. DUPLICATE S3 URL PREFIX BUG
+--------------------------------------------------------------------------------
+Endpoint: POST /api/upload/image
+Content-Type: multipart/form-data (field: "file", "category")
+
+ISSUE:
+  Backend currently prepends its API base URL to an already absolute S3 URL:
+  "https://api.anushaporter.comhttps://poteranusha.s3.amazonaws.com/..."
+  This breaks image loading across the mobile app and admin portal.
+
+REQUIRED BACKEND FIX:
+  Return only the clean, single S3 URL directly.
+
+EXPECTED 200 OK RESPONSE:
+{
+  "success": true,
+  "url": "https://poteranusha.s3.amazonaws.com/profile/ddeb5a91.jpeg"
+}
+
+
+--------------------------------------------------------------------------------
+3. VEHICLE FIELD MAPPING IN DATABASE
+--------------------------------------------------------------------------------
+Endpoint: POST /api/drivers/register  &  GET /api/drivers
+
+ISSUE:
+  In the database, the 'vehicle' column is sometimes stored as null while
+  'vehicleType' has "Scooter", causing "Unregistered Vehicle" in Admin Portal.
+
+REQUIRED BACKEND FIX:
+  1) When saving driver on POST /api/drivers/register, populate both:
+     vehicle = payload.vehicleType
+     vehicleType = payload.vehicleType
+  2) Run a 1-line database update:
+     UPDATE drivers SET vehicle = vehicleType WHERE vehicle IS NULL AND vehicleType IS NOT NULL;
+
+
+--------------------------------------------------------------------------------
+4. ATOMIC ORDER ACCEPTANCE LOCK (PREVENT RACE CONDITIONS)
+--------------------------------------------------------------------------------
+Endpoint: PUT /api/orders/{id}/accept
+Headers: Authorization: Bearer <driver_token>
+
+ISSUE:
+  If two drivers tap "Accept Order" at the exact same millisecond, both get
+  assigned to the same order.
+
+REQUIRED BACKEND FIX:
+  Use atomic database conditional update (or Redis lock):
+  UPDATE orders SET driver_id = :driverId, status = 'ACCEPTED'
+  WHERE id = :orderId AND status = 'PENDING' AND driver_id IS NULL;
+
+  • If updated rows == 1 -> Return HTTP 200 OK (Driver successfully assigned).
+  • If updated rows == 0 -> Return HTTP 409 Conflict:
+    {
+      "success": false,
+      "message": "Order already accepted by another driver"
+    }
+
+
+--------------------------------------------------------------------------------
+5. TWO-STEP DELIVERY COMPLETION FLOW
+--------------------------------------------------------------------------------
+Endpoints:
+  Step 1) POST /api/driver/orders/{id}/verify-otp
+  Step 2) POST /api/driver/orders/{id}/confirm-payment
+
+FLOW:
+  Step 1: Driver verifies Customer Delivery OTP:
+    POST /api/driver/orders/{id}/verify-otp
+    Body: { "otp": "4821" }
+    Backend sets order status = 'OTP_VERIFIED'.
+
+  Step 2: Driver collects Cash / Online Payment:
+    POST /api/driver/orders/{id}/confirm-payment
+    Body: { "paymentMethod": "CASH", "amount": 250 }
+    Backend credits driver wallet, records platform commission,
+    and sets order status = 'COMPLETED'.
+
+
+================================================================================
+  SERVER JVM MEMORY SETTING (CRITICAL)
+================================================================================
+To permanently eliminate "java.lang.OutOfMemoryError: Java heap space",
+start the Spring Boot JAR with 2GB heap:
+
+java -Xms512m -Xmx2048m -XX:+UseG1GC -jar backend-application.jar
+================================================================================

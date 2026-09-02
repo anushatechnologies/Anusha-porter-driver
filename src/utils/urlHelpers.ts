@@ -1,45 +1,46 @@
 const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'https://api.anushaporter.com';
 
 // Centralized URL sanitisation helper used across the app.
-// Ensures local URIs (file://, data:) are preserved intact.
+// Ensures local URIs (file://, data:) are preserved intact when valid.
 // Fixes relative paths, duplicate protocols, and S3 regional endpoints.
 export const cleanUrl = (url: string | null | undefined): string => {
   if (!url) return '';
   let str = String(url).trim();
-  if (!str) return '';
+  if (!str || str === 'null' || str === 'undefined') return '';
 
   try {
-    // Preserve local file URIs, content URIs, local storage paths, and base64 data URIs
+    // 1. Preserve local base64 / blob / content URIs
     if (
       str.startsWith('data:') ||
-      str.startsWith('file://') ||
-      str.startsWith('file:/') ||
       str.startsWith('content://') ||
       str.startsWith('ph://') ||
-      str.startsWith('/data/') ||
-      str.startsWith('/storage/') ||
-      str.startsWith('/private/') ||
-      str.startsWith('/var/') ||
       str.startsWith('blob:')
     ) {
-      return str.startsWith('file:/') && !str.startsWith('file://') ? `file://${str.replace('file:/', '')}` : str;
+      return str;
     }
 
-    // Fix duplicate protocol prefixes like "https://https://..." or "undefinedhttps://..."
+    // 2. Fix double/nested protocols: "https://api.anushaporter.comhttps://poteranusha.s3..." or "undefinedhttps://..."
     if (str.includes('http://') || str.includes('https://')) {
       const lastHttpIndex = Math.max(str.lastIndexOf('https://'), str.lastIndexOf('http://'));
-      if (lastHttpIndex !== -1) {
+      if (lastHttpIndex > 0) {
         str = str.substring(lastHttpIndex);
       }
+    } else if (str.startsWith('file:/')) {
+      return str.startsWith('file://') ? str : `file://${str.replace(/^file:\/+/, '')}`;
+    } else if (str.startsWith('/data/') || str.startsWith('/storage/')) {
+      return `file://${str}`;
     } else if (str.startsWith('/')) {
       str = `${BASE_URL}${str}`;
     } else {
       str = `${BASE_URL}/${str}`;
     }
 
-    // Resolve non-regional S3 URLs to ap-south-2
-    if (str.includes('poteranusha.s3.amazonaws.com')) {
+    // 3. Resolve non-regional or misconfigured S3 URLs to AWS ap-south-2 (Hyderabad)
+    if (str.includes('poteranusha.s3.amazonaws.com') && !str.includes('ap-south-2')) {
       str = str.replace('poteranusha.s3.amazonaws.com', 'poteranusha.s3.ap-south-2.amazonaws.com');
+    }
+    if (str.includes('s3.ap-south-1.amazonaws.com/poteranusha')) {
+      str = str.replace('s3.ap-south-1.amazonaws.com/poteranusha', 'poteranusha.s3.ap-south-2.amazonaws.com');
     }
 
     return str;
@@ -48,4 +49,3 @@ export const cleanUrl = (url: string | null | undefined): string => {
     return str;
   }
 };
-
