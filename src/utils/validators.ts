@@ -453,28 +453,14 @@ export const validatePAN = (value: string): ValidationResult => {
 };
 
 /**
- * Validate Indian Driving License number.
- * Format: State code (2 letters) + RTO code (2 digits) + year/serial (4-13 alphanumeric)
- * Total length: 10-16 characters
+ * Validate Driving License number.
+ * Allows any characters / format entered by the driver.
  */
 export const validateDrivingLicense = (value: string): ValidationResult => {
-  const cleaned = value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+  const trimmed = value.trim();
 
-  if (!cleaned) {
+  if (!trimmed) {
     return fail('Please enter your driving license number.');
-  }
-
-  if (cleaned.length < 10) {
-    return fail('Driving license number must be at least 10 characters.');
-  }
-
-  if (cleaned.length > 16) {
-    return fail('Driving license number must not exceed 16 characters.');
-  }
-
-  // Basic Indian DL pattern: starts with 2 letters (state code), followed by digits and alphanumeric
-  if (!/^[A-Z]{2}\d{2}[A-Z0-9]+$/.test(cleaned)) {
-    return fail('Invalid driving license format. Expected format: e.g., DL1420110005432.');
   }
 
   return OK;
@@ -711,10 +697,14 @@ export const sanitizeField = (key: string, value: string): string => {
     case 'panNumber':
     case 'vehicleNumber':
     case 'rcNumber':
-    case 'licenseNumber':
     case 'ifscCode':
       // Strip special chars and uppercase
       sanitized = sanitized.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+      break;
+
+    case 'licenseNumber':
+      // Allow any characters, just trim and uppercase
+      sanitized = sanitized.trim().toUpperCase();
       break;
 
     case 'bankName':

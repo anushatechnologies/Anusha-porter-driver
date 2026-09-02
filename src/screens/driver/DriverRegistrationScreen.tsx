@@ -1768,7 +1768,7 @@ const DriverRegistrationScreen = () => {
               placeholder="e.g. DL-1420110005432"
               placeholderTextColor={colors.textMuted}
               autoCapitalize="characters"
-              maxLength={16}
+              maxLength={50}
               value={form.licenseNumber}
               onChangeText={text => updateForm('licenseNumber', text)}
               onFocus={() => setFocusedInput('licenseNumber')}
