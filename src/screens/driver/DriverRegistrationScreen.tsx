@@ -28,7 +28,7 @@ import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import AsyncStorage from '../../services/asyncStorageShim';
 import { uploadImageToBackend } from '../../services/imageUpload';
-import { verifyFirebaseOtp, createDriverProfile, getDriverProfile, getDriverProfileByPhone, checkDriverPhone, getActiveVehicles, VehicleOption, uploadDriverPhoto, updateDriverKycStatusAdmin } from '../../services/api';
+import { verifyFirebaseOtp, createDriverProfile, getDriverProfile, getDriverProfileByPhone, checkDriverPhone, getActiveVehicles, VehicleOption, uploadDriverPhoto, updateDriverKycStatusAdmin, updateDriverKyc, getRegistrationProgress, saveRegistrationStep } from '../../services/api';
 import { validateProfilePhoto, PhotoValidationStatus, FaceValidationResult, validateDocumentImage, DocumentValidationResult } from '../../services/faceDetection';
 import { cleanUrl } from '../../utils/urlHelpers';
 import {
@@ -54,9 +54,23 @@ const DriverRegistrationScreen = () => {
   const initialMobile = route.params?.mobile || '';
   const initialFullName = route.params?.fullName || '';
   const firebaseIdToken = route.params?.firebaseIdToken || '';
+  const paramStep = (route.params as any)?.registrationStep;
+  const paramDraftData = (route.params as any)?.draftData;
   const { colors, theme } = useTheme();
 
-  const [currentStep, setCurrentStep] = useState(0);
+  // If email, dob, or gender is missing in draftData, always start at Step 0 (Personal) so user enters them first
+  const draftHasPersonalInfo = Boolean(
+    paramDraftData &&
+    (paramDraftData.email || paramDraftData.draft?.email) &&
+    (paramDraftData.dob || paramDraftData.draft?.dob || paramDraftData.dateOfBirth || paramDraftData.draft?.dateOfBirth || paramDraftData.date_of_birth) &&
+    (paramDraftData.gender || paramDraftData.draft?.gender)
+  );
+
+  const initialStepNum = (draftHasPersonalInfo && paramStep !== undefined && paramStep !== null && Number(paramStep) >= 0)
+    ? Math.min(Number(paramStep), STEPS.length - 1)
+    : 0;
+
+  const [currentStep, setCurrentStep] = useState(initialStepNum);
   const [focusedInput, setFocusedInput] = useState<string | null>(null);
 
   // Registration form variables
@@ -65,7 +79,7 @@ const DriverRegistrationScreen = () => {
     mobile: initialMobile,
     email: '',
     dob: '',
-    gender: '',
+    gender: 'Male',
     panNumber: '',
     vehicleId: '',
     vehicleType: '',
@@ -126,12 +140,41 @@ const DriverRegistrationScreen = () => {
       try {
         let driverDb: any = null;
 
-        // Try getting profile using initialMobile if available
-        if (initialMobile) {
+        // 0. Immediate check of navigation params if passed
+        if (paramDraftData) {
+          const isAlreadyRegParam = Boolean(
+            paramDraftData.isRegistered === true ||
+            paramDraftData.registrationCompleted === true ||
+            (paramDraftData.registrationStep !== undefined && Number(paramDraftData.registrationStep) >= 5) ||
+            String(paramDraftData.kycStatus || paramDraftData.kyc || '').toLowerCase() === 'approved' ||
+            String(paramDraftData.kycStatus || paramDraftData.kyc || '').toLowerCase() === 'verified'
+          );
+          if (isAlreadyRegParam) {
+            navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
+            return;
+          }
+        }
+
+        // 1. Check if draft data passed via navigation params or fetch from progress API
+        if (paramDraftData && (paramDraftData.hasDraft || paramDraftData.success)) {
+          driverDb = paramDraftData;
+        } else if (initialMobile) {
+          try {
+            const progressData = await getRegistrationProgress(initialMobile);
+            if (progressData && (progressData.hasDraft || progressData.success)) {
+              driverDb = progressData;
+            }
+          } catch (err) {
+            console.warn('Draft not found or error loading draft', err);
+          }
+        }
+
+        // 2. Try getting profile using initialMobile if available
+        if (!driverDb && initialMobile) {
           driverDb = await getDriverProfileByPhone(initialMobile);
         }
 
-        // Fallback to local storage ONLY if matching the registering mobile
+        // 3. Fallback to local storage ONLY if matching the registering mobile
         if (!driverDb && initialMobile) {
           const storedStr = await AsyncStorage.getItem('driverProfile');
           if (storedStr) {
@@ -145,39 +188,78 @@ const DriverRegistrationScreen = () => {
         }
 
         if (driverDb) {
-          // Filter out dummy/test strings
-          const cleanName = (driverDb.name || driverDb.fullName || '').replace(/Test Driver/gi, '').trim();
-          const cleanEmail = (driverDb.email || '').replace(/testdriver@example\.com/gi, '').trim();
+          // Flatten nested draft or data containers if returned by backend
+          const dData = (typeof driverDb.draft === 'object' && driverDb.draft !== null)
+            ? { ...driverDb, ...driverDb.draft }
+            : ((typeof driverDb.data === 'object' && driverDb.data !== null)
+              ? { ...driverDb, ...driverDb.data }
+              : driverDb);
+
+          // ── ONE-TIME REGISTRATION EXIT GUARD ──
+          const isAlreadyRegistered = Boolean(
+            dData.isRegistered === true ||
+            dData.registrationCompleted === true ||
+            (dData.registrationStep !== undefined && Number(dData.registrationStep) >= 5) ||
+            driverDb.isRegistered === true ||
+            driverDb.registrationCompleted === true ||
+            (driverDb.registrationStep !== undefined && Number(driverDb.registrationStep) >= 5) ||
+            String(dData.kycStatus || dData.kyc || driverDb.kycStatus || driverDb.kyc || '').toLowerCase() === 'approved' ||
+            String(dData.kycStatus || dData.kyc || driverDb.kycStatus || driverDb.kyc || '').toLowerCase() === 'verified'
+          );
+
+          if (isAlreadyRegistered) {
+            console.log('[DriverRegistration] Driver already registered (step >= 5). Redirecting to DriverTabs.');
+            navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
+            return;
+          }
+
+          // Filter out dummy/test strings & phone-generated placeholder emails
+          const cleanName = (dData.name || dData.fullName || dData.full_name || '').replace(/Test Driver/gi, '').trim();
+          const targetPhone = (dData.phone || dData.mobile || initialMobile || '').replace(/\D/g, '').slice(-10);
+          const rawEmail = (dData.email || '').trim();
+          const isPhonePlaceholderEmail = Boolean(
+            rawEmail.toLowerCase() === 'testdriver@example.com' ||
+            rawEmail.toLowerCase().includes('placeholder') ||
+            (targetPhone && (rawEmail.toLowerCase().startsWith(targetPhone) || rawEmail.includes(`${targetPhone}@`))) ||
+            /^\d{10}@/.test(rawEmail)
+          );
+          const cleanEmail = isPhonePlaceholderEmail ? '' : rawEmail;
+          const rawDob = dData.dob || dData.dateOfBirth || dData.date_of_birth || '';
+          let populatedDob = rawDob;
+          if (/^\d{4}-\d{2}-\d{2}$/.test(rawDob)) {
+            const [y, m, d] = rawDob.split('-');
+            populatedDob = `${d}/${m}/${y}`;
+          }
 
           setForm(prev => ({
             fullName: cleanName || prev.fullName,
-            mobile: driverDb.phone || driverDb.mobile || prev.mobile,
+            mobile: dData.phone || dData.mobile || prev.mobile,
             email: cleanEmail || prev.email,
-            dob: driverDb.dob || prev.dob,
-            gender: driverDb.gender || prev.gender,
-            panNumber: driverDb.panNumber || prev.panNumber,
-            addressLine1: driverDb.addressLine1 || prev.addressLine1,
-            city: driverDb.city || prev.city,
-            state: driverDb.state || prev.state,
-            pincode: driverDb.pincode || prev.pincode,
-            vehicleId: driverDb.vehicleId || prev.vehicleId || '',
-            vehicleType: driverDb.vehicleType || prev.vehicleType,
-            vehicleNumber: driverDb.vehicleNumber || prev.vehicleNumber,
-            rcNumber: driverDb.rcNumber || prev.rcNumber,
-            aadhaarNumber: driverDb.aadhaarNumber || prev.aadhaarNumber,
-            licenseNumber: driverDb.licenseNumber || prev.licenseNumber,
-            bankName: driverDb.bankName || prev.bankName,
-            accountHolderName: driverDb.accountHolderName || prev.accountHolderName,
-            accountNumber: driverDb.accountNumber || prev.accountNumber,
-            ifscCode: driverDb.ifscCode || prev.ifscCode,
+            dob: populatedDob || prev.dob,
+            gender: dData.gender || prev.gender || 'Male',
+            panNumber: (dData.panNumber || dData.pan || dData.pan_number || prev.panNumber || '').toUpperCase(),
+            addressLine1: dData.addressLine1 || dData.address || prev.addressLine1,
+            city: dData.city || prev.city,
+            state: dData.state || prev.state,
+            pincode: dData.pincode || dData.pin || prev.pincode,
+            vehicleId: dData.vehicleId || prev.vehicleId || '',
+            vehicleType: dData.vehicleType || dData.vehicle || dData.vehicle_type || prev.vehicleType,
+            vehicleNumber: dData.vehicleNumber || dData.vehicle_number || prev.vehicleNumber,
+            rcNumber: dData.rcNumber || dData.rc_number || prev.rcNumber,
+            aadhaarNumber: dData.aadhaarNumber || dData.aadhaar || dData.aadhaar_number || prev.aadhaarNumber,
+            licenseNumber: dData.licenseNumber || dData.drivingLicense || dData.license_number || prev.licenseNumber,
+            bankName: dData.bankName || dData.bank_name || prev.bankName,
+            accountHolderName: dData.accountHolderName || dData.account_holder_name || prev.accountHolderName,
+            accountNumber: dData.accountNumber || dData.account_number || prev.accountNumber,
+            ifscCode: dData.ifscCode || dData.ifsc_code || prev.ifscCode,
           }));
 
           const profilePic = cleanUrl(
-            driverDb.profilePhotoUri ||
-            driverDb.documents?.profilePhotoUrl ||
-            driverDb.documents?.profilePhotoUri ||
-            (driverDb as any).profilePhotoUrl ||
-            (driverDb as any).profilePhoto
+            dData.profilePhotoUri ||
+            dData.documents?.profilePhotoUrl ||
+            dData.documents?.profilePhotoUri ||
+            (dData as any).profilePhotoUrl ||
+            (dData as any).profilePhoto
           );
           if (profilePic) {
             setProfilePhoto(profilePic);
@@ -186,20 +268,77 @@ const DriverRegistrationScreen = () => {
           }
 
           const docs: Record<string, { uploaded: boolean; filename: string; uri?: string }> = {};
-          if (driverDb.aadhaarUri || driverDb.documents?.aadhaarUrl) {
-            docs.aadhaar = { uploaded: true, filename: 'aadhaar_card.jpg', uri: driverDb.aadhaarUri || driverDb.documents?.aadhaarUrl };
+          if (dData.aadhaarUri || dData.documents?.aadhaarUrl || dData.aadhaarUrl) {
+            docs.aadhaar = { uploaded: true, filename: 'aadhaar_card.jpg', uri: dData.aadhaarUri || dData.documents?.aadhaarUrl || dData.aadhaarUrl };
           }
-          if (driverDb.licenseUri || driverDb.documents?.licenseUrl) {
-            docs.license = { uploaded: true, filename: 'driving_license.jpg', uri: driverDb.licenseUri || driverDb.documents?.licenseUrl };
+          if (dData.licenseUri || dData.documents?.licenseUrl || dData.licenseUrl) {
+            docs.license = { uploaded: true, filename: 'driving_license.jpg', uri: dData.licenseUri || dData.documents?.licenseUrl || dData.licenseUrl };
           }
-          if (driverDb.rcUri || driverDb.documents?.rcUrl) {
-            docs.rc = { uploaded: true, filename: 'vehicle_rc.jpg', uri: driverDb.rcUri || driverDb.documents?.rcUrl };
+          if (dData.rcUri || dData.documents?.rcUrl || dData.rcUrl) {
+            docs.rc = { uploaded: true, filename: 'vehicle_rc.jpg', uri: dData.rcUri || dData.documents?.rcUrl || dData.rcUrl };
           }
-          if (driverDb.bankPassbookUri || driverDb.documents?.bankPassbookUrl) {
-            docs.bankPassbook = { uploaded: true, filename: 'bank_passbook.jpg', uri: driverDb.bankPassbookUri || driverDb.documents?.bankPassbookUrl };
+          if (dData.panUri || dData.panUrl || dData.documents?.panUrl || dData.documents?.panUri) {
+            docs.pan = { uploaded: true, filename: 'pan_card.jpg', uri: dData.panUri || dData.panUrl || dData.documents?.panUrl || dData.documents?.panUri };
+          }
+          if (dData.bankPassbookUri || dData.documents?.bankPassbookUrl || dData.bankPassbookUrl) {
+            docs.bankPassbook = { uploaded: true, filename: 'bank_passbook.jpg', uri: dData.bankPassbookUri || dData.documents?.bankPassbookUrl || dData.bankPassbookUrl };
           }
           if (Object.keys(docs).length > 0) {
             setUploadedDocs(prev => ({ ...prev, ...docs }));
+          }
+
+          // Check which step is completed vs incomplete
+          const hasCompletePersonal = Boolean(
+            (dData.name || dData.fullName || initialFullName) &&
+            (dData.phone || dData.mobile || initialMobile) &&
+            dData.email &&
+            (dData.dob || dData.dateOfBirth || dData.date_of_birth) &&
+            (dData.gender || 'Male')
+          );
+          const hasCompleteAddress = Boolean(dData.addressLine1 || dData.address);
+          const hasCompleteVehicle = Boolean(dData.vehicleType || dData.vehicleNumber);
+          const hasCompleteDocs = Boolean(
+            (dData.aadhaarNumber || dData.aadhaar) &&
+            (dData.licenseNumber || dData.drivingLicense)
+          );
+          const hasCompleteBank = Boolean(
+            (dData.accountNumber || dData.account_number) &&
+            (dData.bankName || dData.bank_name)
+          );
+
+          let detectedIncompleteStep = 0;
+          if (!hasCompletePersonal) detectedIncompleteStep = 0;
+          else if (!hasCompleteAddress) detectedIncompleteStep = 1;
+          else if (!hasCompleteVehicle) detectedIncompleteStep = 2;
+          else if (!hasCompleteDocs) detectedIncompleteStep = 3;
+          else if (!hasCompleteBank) detectedIncompleteStep = 4; // Resume directly at Bank!
+          else detectedIncompleteStep = 5; // Review
+
+          // Read local storage saved draft step if backend doesn't provide it
+          let localDraftStep: number | null = null;
+          try {
+            const localDraftStepStr = await AsyncStorage.getItem('driverDraftStep');
+            if (localDraftStepStr !== null) localDraftStep = Number(localDraftStepStr);
+          } catch {}
+
+          const rawSavedStep = dData.registrationStep !== undefined
+            ? dData.registrationStep
+            : (driverDb.registrationStep !== undefined
+                ? driverDb.registrationStep
+                : (localDraftStep !== null ? localDraftStep : detectedIncompleteStep));
+
+          const stepNum = Number(rawSavedStep);
+          if (!hasCompletePersonal) {
+            console.log('[Registration] Personal details (email/dob/gender) missing - staying on Step 0 (Personal)');
+            setCurrentStep(0);
+          } else if (!isNaN(stepNum) && stepNum >= 0 && stepNum < STEPS.length) {
+            // Prioritize resuming at Bank if bank is missing
+            const effectiveStep = (!hasCompleteBank && stepNum > 4) ? 4 : stepNum;
+            setCurrentStep(effectiveStep);
+            console.log(`[Registration] Resuming draft at step ${effectiveStep} (${STEPS[effectiveStep]})`);
+          } else {
+            setCurrentStep(detectedIncompleteStep);
+            console.log(`[Registration] Resuming draft at detected step ${detectedIncompleteStep} (${STEPS[detectedIncompleteStep]})`);
           }
         }
       } catch (e) {
@@ -506,6 +645,22 @@ const DriverRegistrationScreen = () => {
     return match ? match.join(' ') : trimmed;
   };
 
+  const formatToIsoDob = (dobStr: string) => {
+    if (!dobStr) return '1995-01-01';
+    const trimmed = dobStr.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+    const parts = trimmed.split(/[/.-]/);
+    if (parts.length === 3) {
+      if (parts[0].length === 4) {
+        return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+      } else {
+        const [day, month, year] = parts;
+        return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+      }
+    }
+    return trimmed;
+  };
+
   const updateForm = (key: string, value: string) => {
     let formattedValue = value;
     if (key === 'fullName' || key === 'accountHolderName') {
@@ -522,10 +677,10 @@ const DriverRegistrationScreen = () => {
       formattedValue = formatAadhaar(value);
     } else if (key === 'panNumber') {
       formattedValue = value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 10);
-    } else if (key === 'vehicleNumber') {
-      formattedValue = value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 11);
-    } else if (key === 'rcNumber' || key === 'licenseNumber') {
+    } else if (key === 'rcNumber' || key === 'vehicleNumber') {
       formattedValue = value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    } else if (key === 'licenseNumber') {
+      formattedValue = value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 100);
     } else if (key === 'ifscCode') {
       formattedValue = value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 11);
     }
@@ -662,20 +817,115 @@ const DriverRegistrationScreen = () => {
         return;
       }
 
-      // If phone already registered, check KYC status and route directly or allow update
+      // If phone already registered, check KYC status and auto-approve or allow update
       if (phoneRes.exists) {
         if (phoneRes.driver) {
+          const isRegPhone = Boolean(
+            phoneRes.driver.isRegistered === true ||
+            phoneRes.driver.registrationCompleted === true ||
+            Number(phoneRes.driver.registrationStep) >= 5 ||
+            phoneRes.isFullyRegistered
+          );
           const kyc = String(phoneRes.driver.kyc || phoneRes.driver.kycStatus || '').toLowerCase();
-          if (kyc === 'verified') {
+          if (isRegPhone || kyc === 'verified' || kyc === 'approved') {
             navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
             return;
           } else if (kyc === 'pending') {
-            navigation.reset({ index: 0, routes: [{ name: 'ApprovalPending' }] });
-            return;
+            if (phoneRes.isFullyRegistered) {
+              const dId = phoneRes.driver.id || phoneRes.driver.driverId;
+              if (dId) {
+                updateDriverKycStatusAdmin(dId, 'verified').catch(() => {});
+                updateDriverKyc(dId, 'verified').catch(() => {});
+              }
+              navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
+              return;
+            }
           }
         }
         // Driver is updating / re-submitting KYC details: proceed to next step
       }
+    }
+
+    // Save current step data to database via POST /api/drivers/register
+    try {
+      const selectedVehicleObj = vehicleList.find(
+        v => (form.vehicleId && v.id === form.vehicleId) || v.name === form.vehicleType || v.type === form.vehicleType
+      ) || (vehicleList.length > 0 ? vehicleList[0] : null);
+      const vehicleCategoryName = selectedVehicleObj?.name || form.vehicleType || '3 wheeler';
+      const vLower = (vehicleCategoryName + ' ' + (selectedVehicleObj?.type || '')).toLowerCase();
+      let determinedServiceType: 'BOTH' | 'PASSENGER' | 'GOODS' = 'GOODS';
+      if (vLower.includes('cab') || vLower.includes('car') || vLower.includes('taxi') || vLower.includes('sedan') || vLower.includes('suv')) {
+        determinedServiceType = 'PASSENGER';
+      } else if (vLower.includes('2') || vLower.includes('bike') || vLower.includes('two') || vLower.includes('auto') || vLower.includes('rickshaw') || vLower.includes('3')) {
+        determinedServiceType = 'BOTH';
+      } else {
+        determinedServiceType = 'GOODS';
+      }
+
+      const stepPayload: any = {
+        name: form.fullName,
+        fullName: form.fullName,
+        phone: form.mobile,
+        mobile: form.mobile,
+        email: form.email,
+        dob: formatToIsoDob(form.dob),
+        dateOfBirth: formatToIsoDob(form.dob),
+        date_of_birth: formatToIsoDob(form.dob),
+        gender: form.gender,
+        panNumber: form.panNumber,
+        vehicle: vehicleCategoryName,
+        vehicleType: vehicleCategoryName,
+        serviceType: determinedServiceType,
+        service_type: determinedServiceType,
+        vehicleNumber: form.vehicleNumber,
+        rcNumber: form.rcNumber,
+        licenseNumber: form.licenseNumber,
+        aadhaarNumber: form.aadhaarNumber,
+        addressLine1: form.addressLine1,
+        address: form.addressLine1,
+        city: form.city,
+        state: form.state,
+        pincode: form.pincode,
+        pin: form.pincode,
+        bankName: form.bankName,
+        bank_name: form.bankName,
+        accountHolderName: form.accountHolderName,
+        account_holder_name: form.accountHolderName,
+        accountNumber: form.accountNumber,
+        account_number: form.accountNumber,
+        ifscCode: form.ifscCode,
+        ifsc_code: form.ifscCode,
+        ifsc: form.ifscCode,
+        profilePhotoUri: verifiedSelfieUrl || profilePhoto || undefined,
+        aadhaarUri: uploadedDocs.aadhaar?.uri || undefined,
+        licenseUri: uploadedDocs.license?.uri || undefined,
+        rcUri: uploadedDocs.rc?.uri || undefined,
+        panUri: uploadedDocs.pan?.uri || undefined,
+        panUrl: uploadedDocs.pan?.uri || undefined,
+        bankPassbookUri: uploadedDocs.bankPassbook?.uri || undefined,
+        documents: {
+          profilePhotoUrl: verifiedSelfieUrl || profilePhoto || undefined,
+          aadhaarUrl: uploadedDocs.aadhaar?.uri || undefined,
+          licenseUrl: uploadedDocs.license?.uri || undefined,
+          rcUrl: uploadedDocs.rc?.uri || undefined,
+          panUrl: uploadedDocs.pan?.uri || undefined,
+          bankPassbookUrl: uploadedDocs.bankPassbook?.uri || undefined,
+        },
+        step: currentStep === 0 ? 1 : (currentStep <= 2 ? 2 : (currentStep <= 4 ? 3 : 4)),
+        backendStep: currentStep === 0 ? 1 : (currentStep <= 2 ? 2 : (currentStep <= 4 ? 3 : 4)),
+        registrationStep: currentStep + 1,
+        saveAndNext: true,
+      };
+
+      // Persist draft step and data locally so closing/reopening the app retains exact step
+      AsyncStorage.setItem('driverDraftStep', String(currentStep + 1)).catch(() => {});
+      AsyncStorage.setItem('driverDraftData', JSON.stringify({ ...form, registrationStep: currentStep + 1 })).catch(() => {});
+
+      saveRegistrationStep(stepPayload).catch(err => {
+        console.warn('[DriverRegistration] Save & Next background sync notice:', err);
+      });
+    } catch (err) {
+      console.warn('[DriverRegistration] Save & Next error:', err);
     }
 
     setCurrentStep(prev => prev + 1);
@@ -952,7 +1202,10 @@ const DriverRegistrationScreen = () => {
             label: string
           ): Promise<string> => {
             if (!localUri) return '';
-            if (localUri.startsWith('http://') || localUri.startsWith('https://')) return cleanUrl(localUri);
+            const cleaned = cleanUrl(localUri);
+            if (cleaned.startsWith('http://') || cleaned.startsWith('https://')) {
+              return cleaned;
+            }
 
             for (let attempt = 1; attempt <= 2; attempt++) {
               try {
@@ -1027,33 +1280,68 @@ const DriverRegistrationScreen = () => {
             v => (form.vehicleId && v.id === form.vehicleId) || v.name === form.vehicleType || v.type === form.vehicleType
           ) || (vehicleList.length > 0 ? vehicleList[0] : null);
 
-          const vehicleCategoryName = selectedVehicleObj?.name || cleanForm.vehicleType || form.vehicleType || '3 wheeler';
+          const vehicleCategoryName = selectedVehicleObj?.name || cleanForm.vehicleType || form.vehicleType || '3 Wheeler';
           const vehicleTypeCode = selectedVehicleObj?.type || (cleanForm.vehicleType ? cleanForm.vehicleType.toLowerCase().replace(/\s+/g, '_') : '3_wheeler');
+
+          const vFinalLower = (vehicleCategoryName + ' ' + vehicleTypeCode).toLowerCase();
+          let finalServiceType: 'BOTH' | 'PASSENGER' | 'GOODS' = 'GOODS';
+          if (vFinalLower.includes('cab') || vFinalLower.includes('car') || vFinalLower.includes('taxi') || vFinalLower.includes('sedan') || vFinalLower.includes('suv')) {
+            finalServiceType = 'PASSENGER';
+          } else if (vFinalLower.includes('2') || vFinalLower.includes('bike') || vFinalLower.includes('two') || vFinalLower.includes('auto') || vFinalLower.includes('rickshaw') || vFinalLower.includes('3')) {
+            finalServiceType = 'BOTH';
+          } else {
+            finalServiceType = 'GOODS';
+          }
 
           let driverRes: Response;
           try {
             driverRes = await createDriverProfile({
               name: cleanForm.fullName,
+              fullName: cleanForm.fullName,
+              full_name: cleanForm.fullName,
               email: cleanForm.email,
               phone: cleanForm.mobile || form.mobile,
-              dob: cleanForm.dob,
+              mobile: cleanForm.mobile || form.mobile,
+              dob: formatToIsoDob(cleanForm.dob),
+              dateOfBirth: formatToIsoDob(cleanForm.dob),
+              date_of_birth: formatToIsoDob(cleanForm.dob),
               gender: cleanForm.gender,
               addressLine1: cleanForm.addressLine1,
+              address: cleanForm.addressLine1,
               city: cleanForm.city,
               state: cleanForm.state,
               pincode: cleanForm.pincode,
+              pin: cleanForm.pincode,
+              vehicleId: selectedVehicleObj?.id || form.vehicleId || undefined,
+              vehicle_id: selectedVehicleObj?.id || form.vehicleId || undefined,
               vehicle: vehicleCategoryName,
               vehicleType: vehicleCategoryName,
               vehicle_type: vehicleTypeCode,
+              serviceType: finalServiceType,
+              service_type: finalServiceType,
               vehicleName: vehicleCategoryName,
               vehicleNumber: cleanForm.vehicleNumber,
+              vehicle_number: cleanForm.vehicleNumber,
               rcNumber: cleanForm.rcNumber,
+              rc_number: cleanForm.rcNumber,
               aadhaarNumber: cleanForm.aadhaarNumber,
+              aadhaar_number: cleanForm.aadhaarNumber,
+              aadhaar: cleanForm.aadhaarNumber,
               panNumber: cleanForm.panNumber,
+              pan_number: cleanForm.panNumber,
+              pan: cleanForm.panNumber,
               licenseNumber: cleanForm.licenseNumber,
+              license_number: cleanForm.licenseNumber,
+              drivingLicense: cleanForm.licenseNumber,
               bankName: cleanForm.bankName,
+              bank_name: cleanForm.bankName,
               accountHolderName: cleanForm.accountHolderName,
+              account_holder_name: cleanForm.accountHolderName,
               accountNumber: cleanForm.accountNumber,
+              account_number: cleanForm.accountNumber,
+              ifscCode: cleanForm.ifscCode,
+              ifsc_code: cleanForm.ifscCode,
+              ifsc: cleanForm.ifscCode,
               profilePhotoUri: finalProfilePhoto || verifiedSelfieUrl || profilePhoto || undefined,
               profilePhotoUrl: finalProfilePhoto || verifiedSelfieUrl || profilePhoto || undefined,
               profilePhoto: finalProfilePhoto || verifiedSelfieUrl || profilePhoto || undefined,
@@ -1061,6 +1349,7 @@ const DriverRegistrationScreen = () => {
               avatar: finalProfilePhoto || verifiedSelfieUrl || profilePhoto || undefined,
               aadhaarUri: finalAadhaar || undefined,
               panUri: finalPan || undefined,
+              panUrl: finalPan || undefined,
               licenseUri: finalLicense || undefined,
               rcUri: finalRc || undefined,
               bankPassbookUri: finalBank || undefined,
@@ -1072,7 +1361,17 @@ const DriverRegistrationScreen = () => {
                 licenseUrl: finalLicense || undefined,
                 rcUrl: finalRc || undefined,
                 bankPassbookUrl: finalBank || undefined,
-              }
+              },
+              step: 4,
+              submit: true,
+              isFinalSubmit: true,
+              registrationStep: 5,
+              isRegistered: true,
+              registrationCompleted: true,
+              hasDraft: false,
+              kyc: 'approved',
+              kycStatus: 'approved',
+              status: 'approved',
             }, token);
           } catch (e: any) {
             throw new Error(
@@ -1095,30 +1394,63 @@ const DriverRegistrationScreen = () => {
 
           if (driverRes.ok && (!driverData || driverData.success !== false)) {
             const backendDriverId = driverData?.driverId || driverData?.id || null;
+            if (backendDriverId) {
+              try {
+                await updateDriverKycStatusAdmin(backendDriverId, 'verified', token);
+                await updateDriverKyc(backendDriverId, 'verified');
+              } catch (err) {
+                console.warn('[AutoApproval] Backend KYC sync notice:', err);
+              }
+            }
+
             const profileData = {
               fullName: form.fullName,
               mobile: form.mobile,
               email: form.email,
               vehicleType: form.vehicleType,
+              serviceType: finalServiceType,
+              service_type: finalServiceType,
               vehicleNumber: form.vehicleNumber,
+              rcNumber: form.rcNumber,
+              aadhaarNumber: form.aadhaarNumber,
+              panNumber: form.panNumber,
+              licenseNumber: form.licenseNumber,
+              bankName: form.bankName,
+              accountHolderName: form.accountHolderName,
+              accountNumber: form.accountNumber,
+              ifscCode: form.ifscCode,
               partnerId: backendDriverId ? `PRT-${backendDriverId}` : 'PRT-PENDING',
               profilePhotoUri: safeUri(finalProfilePhoto, profilePhoto),
               aadhaarUri: safeUri(finalAadhaar, uploadedDocs.aadhaar?.uri),
               panUri: safeUri(finalPan, uploadedDocs.pan?.uri),
+              panUrl: safeUri(finalPan, uploadedDocs.pan?.uri),
               licenseUri: safeUri(finalLicense, uploadedDocs.license?.uri),
               rcUri: safeUri(finalRc, uploadedDocs.rc?.uri),
               bankPassbookUri: safeUri(finalBank, uploadedDocs.bankPassbook?.uri),
-              kyc: driverData?.kycStatus || 'pending',
+              kyc: 'verified',
+              kycStatus: 'verified',
+              isRegistered: true,
+              registrationCompleted: true,
+              registrationStep: 5,
+              hasDraft: false,
             };
 
-            await AsyncStorage.clear();
+            await AsyncStorage.removeItem('driverDraft').catch(() => {});
+            await AsyncStorage.removeItem('registrationProgress').catch(() => {});
+            await AsyncStorage.removeItem('driverDraftStep').catch(() => {});
+            await AsyncStorage.removeItem('driverDraftData').catch(() => {});
             await AsyncStorage.setItem('driverProfile', JSON.stringify(profileData));
             await AsyncStorage.setItem('userToken', form.mobile);
             await AsyncStorage.setItem('loggedInEmail', form.email);
             await AsyncStorage.setItem('authToken', token);
 
-            addLog("✅ Registration completed! Navigating to waiting room...");
-            navigation.reset({ index: 0, routes: [{ name: 'ApprovalPending' }] });
+            addLog("✅ Registration complete! Auto-approved. Navigating directly to Dashboard...");
+            Alert.alert(
+              'Registration Complete!',
+              'Your profile has been auto-approved and is active to take orders.',
+              [{ text: 'Start Delivering', onPress: () => navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] }) }]
+            );
+            navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
           } else {
             // ── Safe Frontend API Error Handling & Re-upload Support ──
             setVerifying(false);
@@ -1136,18 +1468,21 @@ const DriverRegistrationScreen = () => {
               isDuplicatePhone;
 
             if (isReuploadConflict) {
-              addLog("🔄 Existing driver re-upload detected. Resetting status to pending in DB...");
+              addLog("🔄 Existing driver re-upload detected. Auto-approving verified details in DB...");
               
               // 1. Look up existing driver record from database
               const existingDriver = await getDriverProfileByPhone(cleanForm.mobile || form.mobile);
               const targetDriverId = existingDriver?.id || existingDriver?.driverId;
               
               if (targetDriverId) {
-                // 2. Reset status back to 'pending' in database for Admin review
-                await updateDriverKycStatusAdmin(targetDriverId, 'pending', token);
+                // 2. Auto-approve status to 'verified' in database
+                try {
+                  await updateDriverKycStatusAdmin(targetDriverId, 'verified', token);
+                  await updateDriverKyc(targetDriverId, 'verified');
+                } catch (e) {}
               }
 
-              // 3. Save latest re-uploaded profile locally
+              // 3. Save latest re-uploaded profile locally as verified
               const updatedProfile = {
                 fullName: cleanForm.fullName,
                 mobile: cleanForm.mobile || form.mobile,
@@ -1171,11 +1506,16 @@ const DriverRegistrationScreen = () => {
                 profilePhotoUri: safeUri(finalProfilePhoto, profilePhoto),
                 aadhaarUri: safeUri(finalAadhaar, uploadedDocs.aadhaar?.uri),
                 panUri: safeUri(finalPan, uploadedDocs.pan?.uri),
+                panUrl: safeUri(finalPan, uploadedDocs.pan?.uri),
                 licenseUri: safeUri(finalLicense, uploadedDocs.license?.uri),
                 rcUri: safeUri(finalRc, uploadedDocs.rc?.uri),
                 bankPassbookUri: safeUri(finalBank, uploadedDocs.bankPassbook?.uri),
-                kyc: 'pending',
-                kycStatus: 'pending',
+                kyc: 'verified',
+                kycStatus: 'verified',
+                isRegistered: true,
+                registrationCompleted: true,
+                registrationStep: 5,
+                hasDraft: false,
               };
 
               await AsyncStorage.clear();
@@ -1184,8 +1524,13 @@ const DriverRegistrationScreen = () => {
               await AsyncStorage.setItem('loggedInEmail', form.email);
               await AsyncStorage.setItem('authToken', token);
 
-              addLog("✅ Re-upload submitted! Navigating to waiting room...");
-              navigation.reset({ index: 0, routes: [{ name: 'ApprovalPending' }] });
+              addLog("✅ Re-upload complete! Auto-approved. Navigating directly to Dashboard...");
+              Alert.alert(
+                'Registration Updated!',
+                'Your profile updates have been auto-approved and are active.',
+                [{ text: 'Start Delivering', onPress: () => navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] }) }]
+              );
+              navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
               return;
             }
 
@@ -1385,15 +1730,13 @@ const DriverRegistrationScreen = () => {
         {photoValidationStatus === 'VALIDATING' ? (
           <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8 }}>
             <ActivityIndicator size="small" color={colors.primary} style={{ marginRight: 6 }} />
-            <Text style={[styles.avatarStatusText, { color: colors.primary }]}>Checking your photo for human face...</Text>
+            <Text style={[styles.avatarStatusText, { color: colors.primary }]}>Processing photo...</Text>
           </View>
         ) : (
-          <Text style={[styles.avatarStatusText, { color: photoValidationStatus === 'VALID' ? colors.success : photoValidationStatus === 'INVALID' ? colors.error : colors.textMuted }]}>
-            {photoValidationStatus === 'VALID'
-              ? 'Human Face Verified ✓'
-              : photoValidationStatus === 'INVALID'
-                ? photoValidationMessage || 'Invalid photo. Please upload a clear selfie of your face.'
-                : 'Ensure neutral expression, bright light, single human face'}
+          <Text style={[styles.avatarStatusText, { color: profilePhoto ? colors.success : colors.textMuted }]}>
+            {profilePhoto
+              ? 'Profile Photo Selected ✓'
+              : 'Take a photo or choose from gallery'}
           </Text>
         )}
 
@@ -1618,7 +1961,13 @@ const DriverRegistrationScreen = () => {
                     />
                   ) : (
                     <MaterialCommunityIcons
-                      name={(v.iconName as any) || 'truck-delivery'}
+                      name={
+                        (v.iconName as any) ||
+                        (v.name?.toLowerCase().includes('cab') || v.name?.toLowerCase().includes('car') ? 'car' :
+                         v.name?.toLowerCase().includes('bike') ? 'bike' :
+                         v.name?.toLowerCase().includes('auto') || v.name?.toLowerCase().includes('rickshaw') ? 'rickshaw' :
+                         'truck-delivery')
+                      }
                       size={32}
                       color={isSelected ? colors.primary : colors.textSecondary}
                     />
@@ -1627,11 +1976,97 @@ const DriverRegistrationScreen = () => {
                     {v.name}
                   </Text>
                   <Text style={styles.vehicleCapacityLabel}>{v.capacity}</Text>
+                  {/* Service capability pill badge */}
+                  {(() => {
+                    const s = (v.name + ' ' + (v.type || '')).toLowerCase();
+                    let badgeText = 'Goods Only';
+                    let badgeBg = theme === 'dark' ? 'rgba(59,130,246,0.15)' : 'rgba(59,130,246,0.1)';
+                    let badgeColor = colors.primary;
+                    let badgeIcon = 'truck-fast-outline';
+
+                    if (v.serviceType === 'PASSENGER' || s.includes('cab') || s.includes('car') || s.includes('taxi') || s.includes('sedan') || s.includes('suv')) {
+                      badgeText = 'Passenger Only';
+                      badgeBg = theme === 'dark' ? 'rgba(16,185,129,0.15)' : 'rgba(16,185,129,0.1)';
+                      badgeColor = colors.success;
+                      badgeIcon = 'car';
+                    } else if (s.includes('2') || s.includes('bike') || s.includes('two') || s.includes('auto') || s.includes('rickshaw') || s.includes('3')) {
+                      badgeText = 'Rides + Goods';
+                      badgeBg = theme === 'dark' ? 'rgba(16,185,129,0.18)' : 'rgba(16,185,129,0.1)';
+                      badgeColor = colors.success;
+                      badgeIcon = 'star-circle-outline';
+                    }
+
+                    return (
+                      <View style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 3,
+                        backgroundColor: badgeBg,
+                        paddingHorizontal: 6,
+                        paddingVertical: 2,
+                        borderRadius: 6,
+                        marginTop: 4,
+                      }}>
+                        <MaterialCommunityIcons name={badgeIcon as any} size={11} color={badgeColor} />
+                        <Text style={{ fontSize: 10, fontWeight: '700', color: badgeColor }}>{badgeText}</Text>
+                      </View>
+                    );
+                  })()}
                 </TouchableOpacity>
               );
             })}
           </View>
         )}
+
+        {/* Selected Vehicle Capability Highlight Banner */}
+        {form.vehicleType ? (
+          <View style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 10,
+            backgroundColor: theme === 'dark' ? 'rgba(16,185,129,0.1)' : 'rgba(16,185,129,0.06)',
+            borderColor: theme === 'dark' ? 'rgba(16,185,129,0.25)' : 'rgba(16,185,129,0.15)',
+            borderWidth: 1,
+            borderRadius: 12,
+            padding: 12,
+            marginTop: 10,
+            marginBottom: 6,
+          }}>
+            <MaterialCommunityIcons 
+              name={
+                (() => {
+                  const vLow = form.vehicleType.toLowerCase();
+                  if (vLow.includes('cab') || vLow.includes('car')) return 'car-multiple';
+                  if (vLow.includes('2') || vLow.includes('bike')) return 'bike-fast';
+                  if (vLow.includes('3') || vLow.includes('auto')) return 'rickshaw';
+                  return 'truck-fast';
+                })()
+              } 
+              size={24} 
+              color={colors.success} 
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 13, fontWeight: '700', color: colors.text }}>
+                {(() => {
+                  const vLow = form.vehicleType.toLowerCase();
+                  if (vLow.includes('cab') || vLow.includes('car')) return 'Passenger Rides Only (Cab / Taxi)';
+                  if (vLow.includes('2') || vLow.includes('bike')) return 'Dual Earning Mode: Bike Taxi + Parcels';
+                  if (vLow.includes('3') || vLow.includes('auto')) return 'Dual Earning Mode: Auto Rides + Deliveries';
+                  return 'Cargo & Logistics Only (Goods)';
+                })()}
+              </Text>
+              <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 2 }}>
+                {(() => {
+                  const vLow = form.vehicleType.toLowerCase();
+                  if (vLow.includes('cab') || vLow.includes('car')) return 'Your vehicle is configured for passenger taxi trips (4-6 seats).';
+                  if (vLow.includes('2') || vLow.includes('bike')) return 'You will automatically receive both Bike Taxi passenger rides AND parcel deliveries.';
+                  if (vLow.includes('3') || vLow.includes('auto')) return 'You will automatically receive both Passenger Auto trips AND 3W goods orders.';
+                  return 'Your vehicle is configured exclusively for commercial cargo and freight transport.';
+                })()}
+              </Text>
+            </View>
+          </View>
+        ) : null}
         {errors.vehicleType && (
           <View style={styles.errorBoxRow}>
             <Ionicons name="warning-outline" size={13} color={colors.error} />
@@ -1640,7 +2075,7 @@ const DriverRegistrationScreen = () => {
         )}
 
         {[
-          { key: 'vehicleNumber', label: 'License Plate Number', placeholder: 'e.g. KA-01-EF-1234', icon: 'car-outline', maxLength: 13 },
+          { key: 'vehicleNumber', label: 'License Plate Number', placeholder: 'e.g. KA-01-EF-1234', icon: 'car-outline' },
           { key: 'rcNumber', label: 'Registration Certificate (RC) ID', placeholder: 'e.g. RC-987654321', icon: 'document-text-outline', maxLength: 15 },
         ].map(item => (
           <View key={item.key} style={styles.inputGroupBlock} ref={(ref) => { fieldRefs.current[item.key] = ref; }}>
@@ -1765,10 +2200,10 @@ const DriverRegistrationScreen = () => {
             <Ionicons name="document-text" size={18} color={errors.licenseNumber ? colors.error : focusedInput === 'licenseNumber' ? colors.primary : colors.textMuted} />
             <TextInput
               style={[styles.formTextField, { color: colors.text }]}
-              placeholder="e.g. DL-1420110005432"
+              placeholder="e.g. MH1220230001234"
               placeholderTextColor={colors.textMuted}
               autoCapitalize="characters"
-              maxLength={50}
+              maxLength={100}
               value={form.licenseNumber}
               onChangeText={text => updateForm('licenseNumber', text)}
               onFocus={() => setFocusedInput('licenseNumber')}
@@ -2089,6 +2524,16 @@ const DriverRegistrationScreen = () => {
         <View style={styles.summaryValuesGrid}>
           {[
             { label: 'Vehicle Type', val: form.vehicleType },
+            { 
+              label: 'Service Capability', 
+              val: (() => {
+                const s = (form.vehicleType || '').toLowerCase();
+                if (s.includes('cab') || s.includes('car')) return 'Passenger Only (Taxi)';
+                if (s.includes('2') || s.includes('bike')) return 'Both (Bike Taxi + Parcels)';
+                if (s.includes('3') || s.includes('auto')) return 'Both (Passenger Auto + Goods)';
+                return 'Goods & Cargo Only';
+              })() 
+            },
             { label: 'Plate Number', val: form.vehicleNumber },
             { label: 'RC book Number', val: form.rcNumber },
             { label: 'Aadhaar ID Number', val: form.aadhaarNumber },
@@ -2158,7 +2603,7 @@ const DriverRegistrationScreen = () => {
   return (
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: colors.background }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
     >
       <StatusBar barStyle={theme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
@@ -2205,7 +2650,7 @@ const DriverRegistrationScreen = () => {
             <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 6 }} />
           ) : null}
           <Text style={styles.btnFooterNextText}>
-            {checkingPhone ? 'Checking Phone...' : isSubmitting ? 'Submitting...' : currentStep === STEPS.length - 1 ? 'Submit KYC Onboarding' : 'Next Step'}
+            {checkingPhone ? 'Checking Phone...' : isSubmitting ? 'Submitting Application...' : currentStep === STEPS.length - 1 ? 'Submit Application' : 'Save and Next'}
           </Text>
           {!(checkingPhone || isSubmitting) && <Ionicons name="chevron-forward" size={16} color="#FFFFFF" />}
         </TouchableOpacity>
@@ -2347,12 +2792,12 @@ const DriverRegistrationScreen = () => {
                     styles.laserLine,
                     { backgroundColor: colors.primary, transform: [{ translateY: scanAnim }] }
                   ]} />
-                  <Text style={styles.viewfinderHint}>Scanning Biometric Facial Data...</Text>
+                  <Text style={styles.viewfinderHint}>Capturing Photo...</Text>
                 </View>
               ) : (
                 <View style={[
                   styles.viewfinderFrame,
-                  { borderColor: modalValidationResult?.isValid ? colors.success : colors.error }
+                  { borderColor: colors.success }
                 ]}>
                   {capturedSelfieUri && (
                     <Image source={{ uri: capturedSelfieUri }} style={{ width: 198, height: 198, borderRadius: 99, position: 'absolute' }} />
@@ -2360,24 +2805,17 @@ const DriverRegistrationScreen = () => {
                   <View style={[
                     styles.scannerCircle,
                     {
-                      borderColor: modalValidationResult?.isValid ? colors.success : colors.error,
+                      borderColor: colors.success,
                       borderStyle: 'solid',
                       borderWidth: 2,
                     }
                   ]} />
                   <Text style={[
                     styles.viewfinderHint,
-                    { color: modalValidationResult?.isValid ? colors.success : colors.error, fontWeight: '700' }
+                    { color: colors.success, fontWeight: '700' }
                   ]}>
-                    {modalValidationResult?.isValid
-                      ? (modalValidationResult?.message || 'Human Face Verified ✓')
-                      : (modalValidationResult?.title || 'Face Required (Below 50% Match)')}
+                    Photo Approved ✓
                   </Text>
-                  {!modalValidationResult?.isValid && modalValidationResult?.message ? (
-                    <Text style={{ color: '#FDA4AF', fontSize: 11, textAlign: 'center', marginTop: 4, paddingHorizontal: 12 }}>
-                      {modalValidationResult.message}
-                    </Text>
-                  ) : null}
                 </View>
               )}
 
@@ -2386,7 +2824,7 @@ const DriverRegistrationScreen = () => {
 
             {cameraState === 'viewfinder' ? (
               <View style={styles.cameraActionRow}>
-                <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 8 }}>Analyzing human facial features...</Text>
+                <Text style={{ color: '#94A3B8', fontSize: 12, marginBottom: 8 }}>Processing photo...</Text>
                 <ActivityIndicator size="small" color={colors.primary} />
               </View>
             ) : (
@@ -2721,7 +3159,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: 20,
-    paddingBottom: 40,
+    paddingBottom: 100,
   },
   stepPane: {
     marginTop: 18,

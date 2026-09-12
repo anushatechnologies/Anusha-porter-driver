@@ -69,9 +69,9 @@ const SplashScreen = () => {
         let currentKyc = 'pending';
         if (profileStr) {
           const profile = JSON.parse(profileStr);
-          currentKyc = profile.kyc || 'verified';
+          let driverDb: any = null;
           try {
-            const driverDb = await getDriverProfile();
+            driverDb = await getDriverProfile();
             if (driverDb) {
               const cleanDbPhone = (driverDb.phone || '').replace(/\D/g, '').slice(-10);
               const cleanStoredPhone = (profile.mobile || token || '').replace(/\D/g, '').slice(-10);
@@ -96,13 +96,32 @@ const SplashScreen = () => {
                 fullName: driverDb.name || profile.fullName,
                 mobile: driverDb.phone || profile.mobile,
                 vehicleType: driverDb.vehicleType || profile.vehicleType,
-                vehicleNumber: driverDb.vehicleNumber || profile.vehicleNumber,
+                panNumber: driverDb.panNumber || profile.panNumber || '',
+                panUri: cleanUrl(driverDb.panUri || driverDb.panUrl || driverDb.documents?.panUrl || (driverDb.documents as any)?.panUri || profile.panUri || ''),
                 profilePhotoUri: cleanUrl(rawPhoto),
                 aadhaarUri: cleanUrl(driverDb.aadhaarUri || profile.aadhaarUri || ''),
                 licenseUri: cleanUrl(driverDb.licenseUri || profile.licenseUri || ''),
                 rcUri: cleanUrl(driverDb.rcUri || profile.rcUri || ''),
                 bankPassbookUri: cleanUrl(driverDb.bankPassbookUri || profile.bankPassbookUri || ''),
                 kyc: currentKyc,
+                kycStatus: currentKyc,
+                isRegistered: Boolean(
+                  driverDb.isRegistered ||
+                  driverDb.registrationCompleted ||
+                  Number(driverDb.registrationStep) >= 5 ||
+                  profile.isRegistered ||
+                  currentKyc === 'approved' ||
+                  currentKyc === 'verified'
+                ),
+                registrationCompleted: Boolean(
+                  driverDb.isRegistered ||
+                  driverDb.registrationCompleted ||
+                  Number(driverDb.registrationStep) >= 5 ||
+                  profile.registrationCompleted ||
+                  currentKyc === 'approved' ||
+                  currentKyc === 'verified'
+                ),
+                registrationStep: Number(driverDb.registrationStep || profile.registrationStep || 5),
                 rejectedReason: driverDb.rejectedReason || '',
               };
               await AsyncStorage.setItem('driverProfile', JSON.stringify(updatedProfile));
@@ -111,28 +130,44 @@ const SplashScreen = () => {
             console.warn('Splash status check error:', err);
           }
 
-          const isComplete = Boolean(
-            (profile.vehicleNumber || profile.vehicleType) &&
-            (profile.aadhaarNumber || profile.licenseNumber) &&
-            (profile.aadhaarUri || profile.licenseUri || profile.profilePhotoUri)
+          const isRegistered = Boolean(
+            (driverDb as any)?.isRegistered === true ||
+            (driverDb as any)?.registrationCompleted === true ||
+            ((driverDb as any)?.registrationStep !== undefined && Number((driverDb as any).registrationStep) >= 5) ||
+            profile.isRegistered === true ||
+            profile.registrationCompleted === true ||
+            (profile.registrationStep !== undefined && Number(profile.registrationStep) >= 5) ||
+            currentKyc === 'verified' ||
+            currentKyc === 'approved'
           );
 
-          if (!isComplete) {
-            navigation.replace('DriverRegistration', { mobile: profile.mobile, fullName: profile.fullName });
+          if (isRegistered) {
+            // Already registered driver -> Go directly to DriverTabs!
+            navigation.replace('DriverTabs');
             return;
           }
 
-          if (currentKyc === 'verified' || currentKyc === 'approved') {
-            navigation.replace('DriverTabs');
-            return;
-          } else if (currentKyc === 'rejected') {
-            navigation.replace('DriverRegistration', { mobile: profile.mobile, fullName: profile.fullName });
-            return;
-          } else {
-            // New driver or pending verification — always route to ApprovalPending
+          if (currentKyc === 'pending') {
             navigation.replace('ApprovalPending');
             return;
           }
+
+          const isComplete = Boolean(
+            (profile.vehicleNumber || profile.vehicleType) &&
+            (profile.aadhaarNumber || profile.licenseNumber) &&
+            (profile.aadhaarUri || profile.licenseUri || profile.profilePhotoUri) &&
+            (profile.accountNumber || (profile as any).account_number) &&
+            (profile.bankName || (profile as any).bank_name)
+          );
+
+          if (!isComplete || currentKyc === 'rejected') {
+            navigation.replace('DriverRegistration', { mobile: profile.mobile, fullName: profile.fullName });
+            return;
+          }
+
+          // Completed driver auto-approved directly to DriverTabs
+          navigation.replace('DriverTabs');
+          return;
         }
       } catch (e) {
         console.log('AsyncStorage error:', e);

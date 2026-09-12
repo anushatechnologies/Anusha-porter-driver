@@ -15,8 +15,12 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Speech from 'expo-speech';
 import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
-import { updateOrderStatus, acceptOrder } from '../../services/api';
-import { startAlarm, stopAlarm } from '../../services/alarmSound';
+import { updateOrderStatus, acceptOrder, respondToDriverOffer } from '../../services/api';
+import { startAlarm, stopAlarm, getAlarmSound } from '../../services/alarmSound';
+import { playOrderRingtone, stopOrderRingtone } from '../../services/orderSoundHelper';
+import { stopRingtone } from '../../services/soundManager';
+import { telemetrySocket, dismissOffer } from '../../services/telemetrySocket';
+import { safeOnMessage } from '../../services/fcmService';
 
 import { calculateRouteEstimate, formatDistance, formatDuration } from '../../services/routeService';
 
@@ -27,20 +31,37 @@ type IncomingRouteProp = RouteProp<RootStackParamList, 'IncomingOrder'>;
 const IncomingOrderScreen = () => {
   const navigation = useNavigation<NavProp>();
   const route = useRoute<IncomingRouteProp>();
-  const [countdown, setCountdown] = useState(30);
+  const order = route.params?.order;
+
+  // 60-second tiered countdown from spec (or remainingSeconds from backend offer)
+  const initialSeconds = Math.max(1, Math.min(60, Number(order?.remainingSeconds) || 60));
+  const maxCountdown = 60;
+  const [countdown, setCountdown] = useState(initialSeconds);
   const timerAnim = useRef(new Animated.Value(1)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const { colors, theme } = useTheme();
 
-  // Real order data from Dashboard polling
-  const order = route.params?.order;
+  // Real order data from Dashboard / WebSocket / Polling
   const rawBookingId = (order as any)?.bookingId;
   const orderId = rawBookingId
     ? (String(rawBookingId).startsWith('#') ? rawBookingId : `#${rawBookingId}`)
     : (order?.id ? `#BK_${order.id}` : '#New Order');
   const pickupAddress = order?.pickup || order?.pickupAddress || 'Awaiting pickup details';
   const dropAddress = order?.drop || order?.dropAddress || 'Awaiting drop details';
-  const fare = order?.amount ? `₹${order.amount}` : '₹--';
+  const fare = (order?.offeredFare !== undefined && order?.offeredFare !== null)
+    ? `₹${order.offeredFare}`
+    : (order?.amount ? `₹${order.amount}` : '₹--');
+  const serviceName = order?.serviceName || (order as any)?.vehicleLabel || (order as any)?.service || 'Tata Ace';
+  const goodsCategory = order?.goodsCategory || (order as any)?.category || '';
+  const serviceType = String(order?.serviceType || (order as any)?.service_type || (order as any)?.type || '').toUpperCase();
+  const serviceLabel = (order as any)?.serviceLabel || (order as any)?.label || '';
+  const passengerCount = Number((order as any)?.passengerCount || (order as any)?.passengers || 1);
+  const isPassenger = serviceType === 'PASSENGER' || 
+                      String(orderId).toUpperCase().includes('PASS') || 
+                      String(serviceLabel).toLowerCase().includes('passenger') || 
+                      String(serviceLabel).toLowerCase().includes('rider') ||
+                      String(serviceName).toLowerCase().includes('bike taxi') ||
+                      String(serviceName).toLowerCase().includes('cab');
 
   const resolveOrderDistance = (o: any): string => {
     // 1. Check distanceKm number first
@@ -170,8 +191,8 @@ const IncomingOrderScreen = () => {
   }, [order]);
 
   useEffect(() => {
-    // Trigger loud siren alarm & voice announcement for new incoming order
-    startAlarm().catch(e => console.warn('Alarm playback notice:', e));
+    // Trigger ringtone alarm for new incoming order
+    playOrderRingtone().catch(e => console.warn('Alarm playback notice:', e));
 
     const pulse = Animated.loop(
       Animated.sequence([
@@ -192,19 +213,86 @@ const IncomingOrderScreen = () => {
       });
     }, 1000);
 
+    // Guard against double-dismiss from concurrent WS + FCM + telemetrySocket listeners
+    let isDismissed = false;
+    const safeDismiss = () => {
+      if (isDismissed) return;
+      isDismissed = true;
+      if (navigation.canGoBack()) {
+        navigation.goBack();
+      }
+    };
+
+    // 1. WebSocket real-time dismissal listener
+    const cleanCurrentBk = String(rawBookingId || order?.id || '').replace(/^#+/, '');
+    const unsubscribeWs = telemetrySocket.onOfferStop((event) => {
+      const cleanIncomingBk = String(event.bookingId || '').replace(/^#+/, '');
+      if (!cleanIncomingBk || !cleanCurrentBk || cleanCurrentBk === cleanIncomingBk) {
+        console.log(`[IncomingOrder] Offer stopped via WS: ${event.bookingId} (${event.reason})`);
+        if (cleanCurrentBk) dismissOffer(cleanCurrentBk);
+        stopRingtone().catch(() => {});
+        safeDismiss();
+      }
+    });
+
+    // 2. FCM push dismiss listener (STOP_RINGTONE, OFFER_TOO_LATE, OFFER_DISMISSED, etc.)
+    const unsubscribeFcm = safeOnMessage(async (remoteMessage: any) => {
+      const action = remoteMessage.data?.action || remoteMessage.data?.type;
+      const isStopPush =
+        remoteMessage.data?.stopSound === 'true' ||
+        remoteMessage.data?.stopSound === true ||
+        action === 'STOP_RINGTONE' ||
+        action === 'OFFER_TOO_LATE' ||
+        action === 'OFFER_DISMISSED' ||
+        action === 'STOP_DRIVER_OFFER' ||
+        action === 'ORDER_ACCEPTED_STOP_RING' ||
+        action === 'ORDER_REJECTED_DISMISS' ||
+        action === 'ORDER_OFFER_CANCELLED' ||
+        remoteMessage.data?.status === 'TOO_LATE';
+
+      if (isStopPush) {
+        const cleanIncomingBk = String(remoteMessage.data?.bookingId || remoteMessage.data?.orderId || '').replace(/^#+/, '');
+        if (!cleanIncomingBk || !cleanCurrentBk || cleanIncomingBk === cleanCurrentBk) {
+          console.log(`[IncomingOrder] Offer stopped via FCM Push: ${action}`);
+          if (cleanCurrentBk) dismissOffer(cleanCurrentBk);
+          await stopRingtone().catch(() => {});
+          safeDismiss();
+        }
+      }
+    });
+
     return () => {
       clearInterval(interval);
       pulse.stop();
-      stopAlarm().catch(() => {});
+      stopRingtone().catch(() => {});
+      unsubscribeWs();
+      if (unsubscribeFcm) unsubscribeFcm();
     };
-  }, []);
+  }, [rawBookingId, order, navigation]);
 
   const handleReject = async () => {
-    stopAlarm().catch(() => {});
-    if (order?.id) {
-      await updateOrderStatus(order.id, 'searching');
+    // 1. Immediately stop ringtone locally
+    await stopRingtone();
+
+    const allIds = [
+      String(rawBookingId || '').replace(/^#+/, ''),
+      String(order?.bookingId || '').replace(/^#+/, ''),
+      String((order as any)?.orderId || '').replace(/^#+/, ''),
+      String((order as any)?.offerId || '').replace(/^#+/, ''),
+      String(order?.id || '').replace(/^#+/, ''),
+    ].filter(Boolean);
+
+    for (const id of allIds) {
+      dismissOffer(id);
     }
-    navigation.goBack();
+
+    const cleanBk = allIds[0] || '';
+    if (cleanBk) {
+      respondToDriverOffer(cleanBk, false).catch(() => {});
+    }
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    }
   };
 
   const [accepting, setAccepting] = useState(false);
@@ -212,19 +300,12 @@ const IncomingOrderScreen = () => {
   const handleAccept = async () => {
     if (accepting) return;
     setAccepting(true);
-    stopAlarm().catch(() => {});
 
-    const oAny = (order || {}) as any;
-    const targetId = 
-      order?.id || 
-      oAny?.bookingId || 
-      oAny?.booking_id || 
-      oAny?.orderId || 
-      oAny?.order_id || 
-      oAny?._id || 
-      oAny?.id;
+    // 1. Immediately stop ringtone locally
+    await stopRingtone();
 
-    if (!targetId) {
+    const cleanBk = String(rawBookingId || order?.bookingId || (order as any)?.orderId || order?.id || '').replace(/^#+/, '');
+    if (!cleanBk) {
       setAccepting(false);
       Alert.alert(
         'Order Verification Error',
@@ -234,45 +315,56 @@ const IncomingOrderScreen = () => {
       return;
     }
 
-    const res = await acceptOrder(targetId, {
-      bookingId: oAny?.bookingId || oAny?.booking_id || String(targetId),
-      customerName: order?.customerName || oAny?.customer_name,
-      amount: order?.amount || oAny?.amount,
-    });
+    try {
+      const res = await respondToDriverOffer(cleanBk, true);
 
-    if (res && res.success === false) {
-      setAccepting(false);
-      let alertTitle = 'Order Unavailable';
-      let alertMsg = res.message || 'This order could not be accepted.';
-
-      if (res.statusCode === 409) {
-        alertTitle = 'Order Already Claimed';
-        alertMsg = 'Another driver partner accepted this order a fraction of a second earlier. Returning to dashboard for new incoming orders.';
-      } else if (res.statusCode === 404) {
-        alertTitle = 'Order Expired';
-        alertMsg = 'This order request has expired or was cancelled by the customer.';
+      // Case A: Driver WON the ride (200 OK / ASSIGNED)
+      if (res && (res.status === 'ASSIGNED' || res.success)) {
+        setAccepting(false);
+        await stopRingtone();
+        const finalOrder = res.order ? { ...order, ...res.order } : order;
+        navigation.replace('ActiveOrder', { order: finalOrder });
+        return;
       }
 
-      Alert.alert(
-        alertTitle,
-        alertMsg,
-        [
-          {
-            text: 'OK',
-            onPress: () => navigation.goBack(),
-          },
-        ]
-      );
-      return;
-    }
+      // Case B: Driver was TOO LATE (409 Conflict)
+      if (res && (res.status === 'TOO_LATE' || (res as any).statusCode === 409 || (res as any).status === 409)) {
+        setAccepting(false);
+        await stopRingtone();
+        dismissOffer(cleanBk);
+        Alert.alert(
+          'Order Already Accepted',
+          res.message || 'Another driver partner has already accepted this booking.',
+          [{ text: 'OK', onPress: () => navigation.goBack() }]
+        );
+        return;
+      }
 
-    // Merge backend order details (e.g. deliveryOtp, driverName, etc.) into active order screen
-    const finalOrder = res.order ? { ...order, ...res.order } : order;
-    setAccepting(false);
-    navigation.replace('ActiveOrder', { order: finalOrder });
+      // Case C: Other failure
+      setAccepting(false);
+      await stopRingtone();
+      Alert.alert(
+        'Order Unavailable',
+        res?.message || 'This order could not be accepted.',
+        [{ text: 'OK', onPress: () => navigation.goBack() }]
+      );
+    } catch (err: any) {
+      setAccepting(false);
+      await stopRingtone();
+      if (err?.response?.status === 409 || err?.statusCode === 409 || err?.status === 'TOO_LATE') {
+        dismissOffer(cleanBk);
+        Alert.alert(
+          'Order Already Accepted',
+          err?.response?.data?.message || 'Another driver partner has already accepted this booking.',
+          [{ text: 'OK', onPress: () => navigation.goBack() }]
+        );
+      } else {
+        Alert.alert('Error', err?.message || 'Failed to accept order.');
+      }
+    }
   };
 
-  const progressWidth = (countdown / 30) * 100;
+  const progressWidth = Math.max(0, Math.min(100, (countdown / maxCountdown) * 100));
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -286,15 +378,17 @@ const IncomingOrderScreen = () => {
         <TouchableOpacity onPress={handleReject} style={[styles.closeBtn, { backgroundColor: colors.card }]}>
           <Ionicons name="close" size={20} color={colors.text} />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>New Order</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>
+          {isPassenger ? 'New Passenger Ride 🛵' : 'New Order'}
+        </Text>
         <View style={{ width: 40 }} />
       </View>
 
       {/* Pulsing Alert Icon */}
       <View style={styles.alertContainer}>
-        <Animated.View style={[styles.pulseRing, { backgroundColor: colors.primary, transform: [{ scale: pulseAnim }] }]} />
-        <View style={[styles.alertIcon, { backgroundColor: colors.primary, shadowColor: colors.primary }]}>
-          <MaterialCommunityIcons name="bell-ring-outline" size={32} color="#FFFFFF" />
+        <Animated.View style={[styles.pulseRing, { backgroundColor: isPassenger ? colors.success : colors.primary, transform: [{ scale: pulseAnim }] }]} />
+        <View style={[styles.alertIcon, { backgroundColor: isPassenger ? colors.success : colors.primary, shadowColor: isPassenger ? colors.success : colors.primary }]}>
+          <MaterialCommunityIcons name={isPassenger ? "account-clock" : "bell-ring-outline"} size={32} color="#FFFFFF" />
         </View>
       </View>
 
@@ -302,15 +396,56 @@ const IncomingOrderScreen = () => {
       <View style={[styles.orderCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <View style={styles.orderHeader}>
           <Text style={[styles.orderId, { color: colors.text }]}>{orderId}</Text>
-          <View style={[styles.typeBadge, {
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 4,
-            backgroundColor: theme === 'dark' ? 'rgba(0,82,255,0.2)' : 'rgba(0,82,255,0.08)',
-            borderColor: theme === 'dark' ? 'rgba(0,82,255,0.4)' : 'rgba(0,82,255,0.15)'
-          }]}>
-            <MaterialCommunityIcons name="bike" size={14} color={colors.primary} />
-            <Text style={[styles.typeText, { color: colors.primary }]}>Delivery</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            {isPassenger ? (
+              <View style={[styles.typeBadge, {
+                backgroundColor: theme === 'dark' ? 'rgba(16,185,129,0.2)' : 'rgba(16,185,129,0.1)',
+                borderColor: theme === 'dark' ? 'rgba(16,185,129,0.4)' : 'rgba(16,185,129,0.25)',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 4,
+              }]}>
+                <MaterialCommunityIcons name="account" size={13} color={colors.success} />
+                <Text style={[styles.typeText, { color: colors.success, fontWeight: '700' }]}>
+                  {passengerCount} {passengerCount === 1 ? 'Passenger' : 'Passengers'}
+                </Text>
+              </View>
+            ) : goodsCategory ? (
+              <View style={[styles.typeBadge, {
+                backgroundColor: theme === 'dark' ? 'rgba(255,165,0,0.15)' : 'rgba(255,165,0,0.1)',
+                borderColor: theme === 'dark' ? 'rgba(255,165,0,0.3)' : 'rgba(255,165,0,0.2)',
+              }]}>
+                <Text style={[styles.typeText, { color: colors.warning }]}>{goodsCategory}</Text>
+              </View>
+            ) : null}
+            <View style={[styles.typeBadge, {
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              backgroundColor: isPassenger 
+                ? (theme === 'dark' ? 'rgba(16,185,129,0.15)' : 'rgba(16,185,129,0.08)')
+                : (theme === 'dark' ? 'rgba(0,82,255,0.2)' : 'rgba(0,82,255,0.08)'),
+              borderColor: isPassenger
+                ? (theme === 'dark' ? 'rgba(16,185,129,0.3)' : 'rgba(16,185,129,0.2)')
+                : (theme === 'dark' ? 'rgba(0,82,255,0.4)' : 'rgba(0,82,255,0.15)')
+            }]}>
+              <MaterialCommunityIcons 
+                name={
+                  serviceName.toLowerCase().includes('bike') || serviceName.toLowerCase().includes('2')
+                    ? "bike"
+                    : (serviceName.toLowerCase().includes('auto') || serviceName.toLowerCase().includes('rickshaw') || serviceName.toLowerCase().includes('3'))
+                    ? "rickshaw"
+                    : (serviceName.toLowerCase().includes('cab') || serviceName.toLowerCase().includes('car') || serviceName.toLowerCase().includes('taxi'))
+                    ? "car"
+                    : "truck-fast-outline"
+                } 
+                size={14} 
+                color={isPassenger ? colors.success : colors.primary} 
+              />
+              <Text style={[styles.typeText, { color: isPassenger ? colors.success : colors.primary }]}>
+                {serviceLabel || (isPassenger ? `${serviceName} (Passenger)` : serviceName)}
+              </Text>
+            </View>
           </View>
         </View>
 

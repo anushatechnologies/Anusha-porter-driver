@@ -263,13 +263,6 @@ const DriverEarningsScreen = () => {
             <Text style={[styles.headerGreeting, { color: colors.textSecondary }]}>Total Earnings</Text>
             <Text style={[styles.headerTitle, { color: colors.text }]}>₹{balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
           </View>
-          <TouchableOpacity 
-            style={[styles.walletHeaderBtn, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' }]} 
-            onPress={() => (navigation as any).navigate('Wallet')}
-          >
-            <Ionicons name="wallet" size={16} color="#0052FF" />
-            <Text style={styles.walletHeaderBtnText}>Recharge Wallet</Text>
-          </TouchableOpacity>
         </View>
 
         {/* Sleek Segmented Control */}
@@ -311,38 +304,6 @@ const DriverEarningsScreen = () => {
           />
         }
       >
-        {/* Dedicated Driver Wallet Card (Prominent Live Recharge Balance) */}
-        <TouchableOpacity 
-          style={[styles.walletFeatureCard, { backgroundColor: colors.card, borderColor: '#3B82F6', borderWidth: 1.5 }]}
-          onPress={() => (navigation as any).navigate('Wallet')}
-          activeOpacity={0.88}
-        >
-          <View style={styles.walletFeatureLeft}>
-            <View style={[styles.walletFeatureIconBg, { backgroundColor: 'rgba(0, 82, 255, 0.12)' }]}>
-              <Ionicons name="wallet" size={26} color="#0052FF" />
-            </View>
-            <View style={{ marginLeft: 12, flex: 1 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginRight: 4 }}>
-                <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '700', letterSpacing: 0.5 }}>
-                  OPERATIONAL WALLET BALANCE
-                </Text>
-                <View style={styles.walletLiveTag}>
-                  <Text style={styles.walletLiveTagText}>Active</Text>
-                </View>
-              </View>
-              <Text style={{ fontSize: 24, fontWeight: '900', color: '#0052FF', marginTop: 2 }}>
-                ₹{walletBalance.toFixed(2)}
-              </Text>
-              <Text style={[styles.walletFeatureSub, { color: colors.textMuted, fontSize: 11, marginTop: 1 }]}>
-                Prepaid recharge for 5% ride commissions • Tap to add funds
-              </Text>
-            </View>
-          </View>
-          <View style={[styles.walletOpenBtn, { backgroundColor: '#0052FF', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 }]}>
-            <Text style={[styles.walletOpenBtnText, { color: '#FFFFFF', fontWeight: '800' }]}>+ Recharge</Text>
-          </View>
-        </TouchableOpacity>
-
         {/* Dynamic Glassmorphism Hero Graph */}
         <View style={[styles.heroCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <View style={styles.heroGlowTop} />
@@ -398,12 +359,14 @@ const DriverEarningsScreen = () => {
               <View style={[styles.heroStatDivider, { backgroundColor: colors.border }]} />
 
               <View style={styles.heroStatItem}>
-                <View style={[styles.heroStatIcon, { backgroundColor: 'rgba(0, 82, 255, 0.1)' }]}>
-                  <Ionicons name="wallet" size={18} color="#0052FF" />
+                <View style={[styles.heroStatIcon, { backgroundColor: 'rgba(245, 158, 11, 0.1)' }]}>
+                  <Ionicons name="trending-up" size={18} color="#F59E0B" />
                 </View>
                 <View>
-                  <Text style={[styles.heroStatValue, { color: '#0052FF' }]}>₹{walletBalance.toFixed(0)}</Text>
-                  <Text style={[styles.heroStatLabel, { color: colors.textSecondary }]}>Wallet</Text>
+                  <Text style={[styles.heroStatValue, { color: '#F59E0B' }]}>
+                    {currentData.trips > 0 ? `₹${Math.round(numAmount / currentData.trips)}` : '₹0'}
+                  </Text>
+                  <Text style={[styles.heroStatLabel, { color: colors.textSecondary }]}>Avg / Trip</Text>
                 </View>
               </View>
             </View>
@@ -415,7 +378,7 @@ const DriverEarningsScreen = () => {
         </View>
 
         {/* Breakdown Summary Card */}
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>Earnings & Wallet Breakdown</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Earnings Breakdown</Text>
         <View style={[styles.breakdownCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <View style={styles.breakdownRow}>
             <View style={styles.breakdownLabelGroup}>
@@ -429,21 +392,21 @@ const DriverEarningsScreen = () => {
 
           <View style={styles.breakdownRow}>
             <View style={styles.breakdownLabelGroup}>
-              <Ionicons name="wallet-outline" size={18} color="#0052FF" />
-              <Text style={[styles.breakdownLabel, { color: colors.text, fontWeight: '700' }]}>Operational Recharge Wallet</Text>
+              <Ionicons name="checkbox-outline" size={18} color={colors.primary} />
+              <Text style={[styles.breakdownLabel, { color: colors.text, fontWeight: '700' }]}>Total Completed Orders</Text>
             </View>
-            <Text style={[styles.breakdownVal, { color: '#0052FF', fontWeight: '800' }]}>₹{walletBalance.toFixed(2)}</Text>
+            <Text style={[styles.breakdownVal, { color: colors.primary, fontWeight: '800' }]}>{earningsData.total.trips} Trips</Text>
           </View>
 
           <View style={[styles.breakdownDivider, { backgroundColor: colors.border }]} />
 
           <View style={styles.breakdownRow}>
             <View style={styles.breakdownLabelGroup}>
-              <Ionicons name="pie-chart-outline" size={18} color="#64748B" />
-              <Text style={[styles.breakdownLabel, { color: colors.textSecondary, fontSize: 13 }]}>Platform Commission Rule</Text>
+              <Ionicons name="information-circle-outline" size={18} color="#64748B" />
+              <Text style={[styles.breakdownLabel, { color: colors.textSecondary, fontSize: 13 }]}>Driver Earnings</Text>
             </View>
-            <View style={{ backgroundColor: 'rgba(0, 82, 255, 0.08)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 }}>
-              <Text style={{ color: '#0052FF', fontSize: 11, fontWeight: '700' }}>5% Deducted from Wallet Recharge</Text>
+            <View style={{ backgroundColor: 'rgba(16, 185, 129, 0.08)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 }}>
+              <Text style={{ color: '#10B981', fontSize: 11, fontWeight: '700' }}>Direct Cash / Full Retention</Text>
             </View>
           </View>
         </View>

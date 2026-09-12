@@ -5,74 +5,29 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  TextInput,
-  Modal,
-  Alert,
   ActivityIndicator,
   RefreshControl,
   StatusBar,
-  Dimensions,
   Platform,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-// @ts-ignore
-import RazorpayCheckout from 'react-native-razorpay';
+import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../theme/ThemeContext';
 import {
   getDriverWallet,
   getWalletTransactions,
   getOrderHistory,
-  createRazorpayOrder,
-  verifyRazorpayPayment,
-  getDriverProfile,
-  setDriverOnlineStatus,
   DriverWallet,
-  WalletTransaction,
 } from '../../services/api';
-
-const { width } = Dimensions.get('window');
-
-interface RechargePerkOption {
-  amount: number;
-  extra?: number;
-  isMostPopular?: boolean;
-}
-
-const RECHARGE_OPTIONS: RechargePerkOption[] = [
-  { amount: 10 },
-  { amount: 20 },
-  { amount: 50 },
-  { amount: 100 },
-  { amount: 200 },
-  { amount: 500, extra: 25, isMostPopular: true },
-  { amount: 1000, extra: 50 },
-  { amount: 2000, extra: 200 },
-  { amount: 3000, extra: 300 },
-  { amount: 4000, extra: 480 },
-  { amount: 8000, extra: 960 },
-  { amount: 15000, extra: 2250 },
-  { amount: 20000, extra: 3000 },
-  { amount: 50000, extra: 10000 },
-];
 
 const DriverWalletScreen = () => {
   const navigation = useNavigation();
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [wallet, setWallet] = useState<DriverWallet | null>(null);
   const [transactions, setTransactions] = useState<any[]>([]);
-
-  // Selection states (Strictly minimum ₹10)
-  const [selectedAmount, setSelectedAmount] = useState<number>(10);
-  const [customAmountInput, setCustomAmountInput] = useState<string>('10');
-
-  // Razorpay Checkout Modal State: 'none' | 'success'
-  const [checkoutModal, setCheckoutModal] = useState<'none' | 'success'>('none');
-  const [processingOrder, setProcessingOrder] = useState(false);
-  const [verifyingPayment, setVerifyingPayment] = useState(false);
 
   const fetchWalletData = useCallback(async (showSpinner = true) => {
     if (showSpinner) setLoading(true);
@@ -90,11 +45,10 @@ const DriverWalletScreen = () => {
       const combinedList: any[] = [];
       const seenKeys = new Set<string>();
 
-      // 1. Add direct wallet transactions from backend (strictly Recharges & Commission Deductions from Admin DB)
+      // 1. Add direct wallet transactions from backend
       if (txnsRes && Array.isArray(txnsRes.transactions) && txnsRes.transactions.length > 0) {
         for (const t of txnsRes.transactions) {
           const rawT = (t.transactionType || (t as any).type || '').toUpperCase();
-          // Exclude order earnings (fares belong to Driver Earnings, not prepaid wallet)
           if (rawT === 'ORDER_EARNING' || rawT === 'EARNING' || rawT === 'FARE_COLLECTED') {
             continue;
           }
@@ -109,7 +63,7 @@ const DriverWalletScreen = () => {
           }
         }
       } else if (ordersRes && Array.isArray(ordersRes.orders)) {
-        // 2. Fallback ONLY if backend transactions list is completely empty
+        // 2. Fallback if backend transactions list is empty
         for (const order of ordersRes.orders) {
           const oAny = order as any;
           const isDone = ['completed', 'delivered', 'done', 'finished'].includes(
@@ -162,144 +116,27 @@ const DriverWalletScreen = () => {
     fetchWalletData(false);
   };
 
-  const handleSelectPerk = (opt: RechargePerkOption) => {
-    setSelectedAmount(opt.amount);
-    setCustomAmountInput(String(opt.amount));
-  };
-
-  const handleCustomAmountChange = (text: string) => {
-    setCustomAmountInput(text);
-    const parsed = parseFloat(text);
-    if (!isNaN(parsed) && parsed >= 10) {
-      setSelectedAmount(parsed);
-    }
-  };
-
-  const handleProceedToPay = async () => {
-    const amt = parseFloat(customAmountInput.trim());
-    if (isNaN(amt) || amt < 10) {
-      Alert.alert(
-        'Minimum Recharge is ₹10',
-        'The minimum wallet recharge amount is ₹10. Please enter ₹10 or select a perk above to proceed.'
-      );
-      return;
-    }
-
-    setProcessingOrder(true);
-    try {
-      const bookingId = `RECH_${Date.now()}`;
-      
-      // Step 1: Create real Razorpay order on live backend
-      const orderRes = await createRazorpayOrder(bookingId, amt);
-      const razorpayOrderId = orderRes?.razorpayOrderId;
-      const keyId = orderRes?.keyId || 'rzp_live_TO6q7NUVnPM6bA';
-
-      if (!razorpayOrderId) {
-        throw new Error('Backend failed to create Razorpay Order. Please try again.');
-      }
-
-      // Fetch driver profile for prefilling Razorpay checkout
-      const driverProfile = await getDriverProfile().catch(() => null);
-
-      const options: any = {
-        description: `Driver Wallet Recharge - ₹${amt}`,
-        image: 'https://api.anushaporter.com/logo.png',
-        currency: 'INR',
-        key: keyId,
-        amount: Math.round(amt * 100).toString(), // in paise
-        name: 'Anusha Porter',
-        prefill: {
-          email: driverProfile?.email || 'driver@anushaporter.com',
-          contact: driverProfile?.phone || '9999999999',
-          name: driverProfile?.name || 'Driver Partner',
-        },
-        theme: { color: '#0052FF' },
-      };
-
-      if (razorpayOrderId && String(razorpayOrderId).startsWith('order_')) {
-        options.order_id = razorpayOrderId;
-      }
-
-      setProcessingOrder(false);
-
-      // Step 2: Launch Real Native Razorpay Checkout (UPI / GPay / PhonePe / Card / Netbanking)
-      if (Platform.OS === 'web') {
-        // Fallback for Web browser testing
-        Alert.alert('Razorpay Checkout', `Initiating live payment for ₹${amt} with Order ID ${razorpayOrderId}`);
-        return;
-      }
-
-      RazorpayCheckout.open(options).then(async (data: any) => {
-        console.log('[RAZORPAY] Live Payment Succeeded:', data);
-        setVerifyingPayment(true);
-        try {
-          // Step 3: Verify real HMAC SHA256 signature with backend
-          const verifyRes = await verifyRazorpayPayment({
-            razorpay_payment_id: data.razorpay_payment_id,
-            razorpay_order_id: data.razorpay_order_id,
-            razorpay_signature: data.razorpay_signature,
-            bookingId,
-            amount: amt,
-          });
-
-          if (verifyRes && verifyRes.success !== false) {
-            setSelectedAmount(amt);
-            setCheckoutModal('success');
-            try {
-              await setDriverOnlineStatus('online');
-            } catch (e) {
-              console.warn('Auto-online on recharge notice:', e);
-            }
-            fetchWalletData(false);
-          } else {
-            Alert.alert('Verification Failed', verifyRes?.message || 'Payment signature could not be verified by server.');
-          }
-        } catch (vErr: any) {
-          Alert.alert('Notice', vErr?.message || 'Payment recorded. Updating wallet balance.');
-          try {
-            await setDriverOnlineStatus('online');
-          } catch (e) {}
-          fetchWalletData(false);
-        } finally {
-          setVerifyingPayment(false);
-        }
-      }).catch((error: any) => {
-        console.warn('[RAZORPAY] Payment cancelled or error:', error);
-        setVerifyingPayment(false);
-        if (error && error.code !== 0 && error.code !== 2) {
-          Alert.alert('Payment Incomplete', error?.description || error?.message || 'Payment was cancelled or could not be completed.');
-        }
-      });
-
-    } catch (err: any) {
-      setProcessingOrder(false);
-      Alert.alert('Payment Error', err?.message || 'Failed to initiate Razorpay checkout. Please check your internet connection.');
-    }
-  };
-
   const availableBalance = wallet?.availableBalance ?? 0;
-  const platformCommission = wallet?.platformCommission ?? 0;
-  const totalRecharged = Math.max(availableBalance + platformCommission, 0);
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <StatusBar barStyle="light-content" backgroundColor="#DC2626" />
 
-      {/* ── TOP RED HEADER ─────────────────────────────────── */}
+      {/* ── TOP HEADER ─────────────────────────────────── */}
       <View style={styles.redHeader}>
         <TouchableOpacity style={styles.headerBackBtn} onPress={() => navigation.goBack()}>
           <Ionicons name="arrow-back" size={26} color="#FFFFFF" />
         </TouchableOpacity>
-        <Text style={styles.headerTitleText}>Operational Wallet Recharge</Text>
+        <Text style={styles.headerTitleText}>Driver Wallet</Text>
         <TouchableOpacity style={styles.headerRefreshBtn} onPress={handleRefresh}>
           <Ionicons name="refresh" size={22} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
 
-      {loading ? (
+      {loading && !refreshing ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#DC2626" />
-          <Text style={[styles.loadingText, { color: colors.textMuted }]}>Loading wallet balance...</Text>
+          <Text style={[styles.loadingText, { color: colors.textMuted }]}>Loading Wallet & Transactions...</Text>
         </View>
       ) : (
         <View style={{ flex: 1 }}>
@@ -311,20 +148,20 @@ const DriverWalletScreen = () => {
               <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} colors={['#DC2626']} />
             }
           >
-            {/* ── AVAILABLE BALANCE SECTION ───────────────────── */}
-            <View style={[styles.balanceCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            {/* Balance Card */}
+            <View style={[styles.balanceCard, { backgroundColor: colors.card, borderColor: availableBalance < 0 ? colors.error : colors.border }]}>
               <View style={styles.balanceHeaderRow}>
                 <View style={{ flex: 1, paddingRight: 8 }}>
                   <Text style={[styles.balanceLabelText, { color: colors.textSecondary }]}>
                     CURRENT WALLET BALANCE
                   </Text>
-                  <Text style={styles.balanceMainValue}>
-                    ₹{availableBalance.toFixed(2)}
+                  <Text style={[styles.balanceMainValue, { color: availableBalance < 0 ? colors.error : colors.text }]}>
+                    {availableBalance < 0 ? `-₹${Math.abs(availableBalance).toFixed(2)}` : `₹${availableBalance.toFixed(2)}`}
                   </Text>
                 </View>
-                <View style={[styles.statusBadgePill, { backgroundColor: availableBalance >= 10 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)' }]}>
-                  <Text style={[styles.statusBadgePillText, { color: availableBalance >= 10 ? '#10B981' : '#EF4444' }]}>
-                    {availableBalance >= 10 ? '● ONLINE READY' : '● RECHARGE REQ.'}
+                <View style={[styles.statusBadgePill, { backgroundColor: availableBalance < 0 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.12)' }]}>
+                  <Text style={[styles.statusBadgePillText, { color: availableBalance < 0 ? '#EF4444' : '#10B981' }]}>
+                    {availableBalance < 0 ? '● DUES PENDING' : '● READY TO DRIVE'}
                   </Text>
                 </View>
               </View>
@@ -333,93 +170,42 @@ const DriverWalletScreen = () => {
 
               <View style={styles.balanceFooterRow}>
                 <View style={{ flex: 1, paddingRight: 8 }}>
-                  <Text style={[styles.metaFooterLabel, { color: colors.textMuted }]}>Platform Commission</Text>
-                  <Text style={[styles.metaFooterVal, { color: colors.text }]}>5% Deducted Per Ride</Text>
+                  <Text style={[styles.metaFooterLabel, { color: colors.textMuted }]}>Platform Status</Text>
+                  <Text style={[styles.metaFooterVal, { color: availableBalance < 0 ? colors.error : colors.text }]}>
+                    {availableBalance < 0 ? 'Negative Dues (Action Required)' : 'No Minimum Balance Required'}
+                  </Text>
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={[styles.metaFooterLabel, { color: colors.textMuted }]}>Min. to Go Online</Text>
-                  <Text style={[styles.metaFooterVal, { color: '#10B981' }]}>₹10.00</Text>
+                  <Text style={[styles.metaFooterLabel, { color: colors.textMuted }]}>Duty Eligibility</Text>
+                  <Text style={[styles.metaFooterVal, { color: availableBalance < 0 ? colors.error : '#10B981' }]}>
+                    {availableBalance < 0 ? 'Blocked Until Cleared' : 'Eligible for Orders'}
+                  </Text>
                 </View>
               </View>
             </View>
 
-            {/* ── RECHARGE WALLET SECTION ─────────────────────── */}
-            <View style={styles.rechargeSection}>
-              <Text style={[styles.sectionHeading, { color: colors.text }]}>Add Funds to Operational Wallet</Text>
-              <Text style={[styles.sectionSubtitle, { color: colors.textMuted }]}>
-                Choose from available recharge perks (Minimum ₹10)
-              </Text>
-
-              {/* Amount Input Box */}
-              <View style={[styles.inputBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                <TextInput
-                  style={[styles.textInput, { color: colors.text }]}
-                  placeholder="Enter Amount In INR (Min. ₹10)"
-                  placeholderTextColor={colors.textMuted}
-                  keyboardType="numeric"
-                  value={customAmountInput}
-                  onChangeText={handleCustomAmountChange}
-                />
+            {/* Info Card: Zero Balance Policy or Negative Dues Warning */}
+            {availableBalance < 0 ? (
+              <View style={[styles.disabledNoticeCard, { backgroundColor: colors.card, borderColor: colors.error }]}>
+                <View style={styles.disabledNoticeHeader}>
+                  <Ionicons name="alert-circle" size={22} color={colors.error} />
+                  <Text style={[styles.disabledNoticeTitle, { color: colors.error }]}>Clear Outstanding Balance</Text>
+                </View>
+                <Text style={[styles.disabledNoticeText, { color: colors.textSecondary }]}>
+                  Your wallet has an unpaid negative balance of ₹{Math.abs(availableBalance).toFixed(2)}. Please settle this balance to toggle online and start receiving customer rides.
+                </Text>
               </View>
-
-              {/* 3-Column Perks Grid */}
-              <View style={styles.gridContainer}>
-                {RECHARGE_OPTIONS.map(opt => {
-                  const isSelected = selectedAmount === opt.amount && customAmountInput === String(opt.amount);
-
-                  return (
-                    <TouchableOpacity
-                      key={opt.amount}
-                      style={[
-                        styles.perkCard,
-                        {
-                          backgroundColor: isSelected ? '#15803D' : colors.card,
-                          borderColor: isSelected ? '#15803D' : colors.border,
-                        },
-                      ]}
-                      activeOpacity={0.8}
-                      onPress={() => handleSelectPerk(opt)}
-                    >
-                      {/* Most Popular Badge on Top */}
-                      {opt.isMostPopular && (
-                        <View style={styles.mostPopularBadge}>
-                          <Text style={styles.mostPopularText}>🔥 MOST POPULAR</Text>
-                        </View>
-                      )}
-
-                      {/* Main Amount */}
-                      <Text
-                        style={[
-                          styles.perkAmountText,
-                          { color: isSelected ? '#FFFFFF' : colors.text },
-                        ]}
-                      >
-                        ₹{opt.amount}
-                      </Text>
-
-                      {/* Extra Perk Sub-Pill */}
-                      {opt.extra !== undefined && (
-                        <View
-                          style={[
-                            styles.extraPerkPill,
-                            { backgroundColor: isSelected ? 'rgba(255,255,255,0.2)' : '#DCFCE7' },
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.extraPerkText,
-                              { color: isSelected ? '#FFFFFF' : '#15803D' },
-                            ]}
-                          >
-                            ₹ {opt.extra} Extra
-                          </Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                  );
-                })}
+            ) : (
+              <View style={[styles.disabledNoticeCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                <View style={styles.disabledNoticeHeader}>
+                  <Ionicons name="checkmark-circle" size={22} color={colors.success} />
+                  <Text style={[styles.disabledNoticeTitle, { color: colors.text }]}>Zero-Balance Online Active</Text>
+                </View>
+                <Text style={[styles.disabledNoticeText, { color: colors.textSecondary }]}>
+                  You can toggle online and receive deliveries freely with ₹0.00 wallet balance. No minimum balance is required.
+                </Text>
               </View>
-            </View>
+            )}
 
             {/* ── RECENT TRANSACTIONS (Activity Feed) ─────────── */}
             <View style={styles.txnsSection}>
@@ -431,7 +217,7 @@ const DriverWalletScreen = () => {
                   <Text style={[styles.emptyTxnText, { color: colors.textSecondary }]}>No recent wallet transactions</Text>
                 </View>
               ) : (
-                transactions.slice(0, 8).map((txn, idx) => {
+                transactions.slice(0, 10).map((txn, idx) => {
                   const rawType = (txn.transactionType || (txn as any).type || '').toUpperCase();
                   const isCommission = rawType === 'COMMISSION' || rawType === 'COMMISSION_DEDUCTION' || rawType === 'PLATFORM_FEE';
                   const isCredit = (rawType === 'RECHARGE' || rawType === 'WALLET_RECHARGE') || (!isCommission && (txn.amount || 0) > 0);
@@ -442,15 +228,15 @@ const DriverWalletScreen = () => {
                   let subtext = txn.createdAt ? new Date(txn.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recent';
                   
                   if (isCommission) {
-                    title = 'Ride Commission (5%)';
+                    title = 'Ride Commission';
                     const fareText = txn.orderFare ? ` • Fare: ₹${Number(txn.orderFare).toFixed(0)}` : '';
                     subtext = `${refId ? `Order #${refId}` : 'Ride Fee'}${fareText} • ${txn.createdAt ? new Date(txn.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'Today'}`;
                   } else if (rawType === 'ORDER_EARNING') {
                     title = 'Ride Fare Collected';
                     subtext = `${refId ? `Order #${refId} • ` : ''}Cash in Hand`;
                   } else if (rawType === 'RECHARGE' || rawType === 'WALLET_RECHARGE' || isCredit) {
-                    title = 'Wallet Recharge (UPI)';
-                    subtext = `Prepaid Balance Added • ${txn.createdAt ? new Date(txn.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'Today'}`;
+                    title = 'Wallet Credit';
+                    subtext = `Balance Added • ${txn.createdAt ? new Date(txn.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'Today'}`;
                   }
 
                   return (
@@ -482,67 +268,10 @@ const DriverWalletScreen = () => {
               )}
             </View>
 
-            <View style={{ height: 100 }} />
+            <View style={{ height: 40 }} />
           </ScrollView>
-
-          {/* ── STICKY BOTTOM FOOTER BAR ─────────────────────── */}
-          <View style={[styles.bottomFooter, { backgroundColor: colors.card, borderTopColor: colors.border }]}>
-            <View style={styles.footerAmountBox}>
-              <Text style={[styles.footerTotalAmountText, { color: colors.text }]}>₹{selectedAmount}</Text>
-              <Text style={[styles.footerTotalLabel, { color: colors.textMuted }]}>Total Amount</Text>
-            </View>
-
-            <TouchableOpacity
-              style={[styles.proceedBtn, processingOrder && { opacity: 0.7 }]}
-              onPress={handleProceedToPay}
-              disabled={processingOrder}
-            >
-              {processingOrder ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
-              ) : (
-                <Text style={styles.proceedBtnText}>Proceed To Pay</Text>
-              )}
-            </TouchableOpacity>
-          </View>
         </View>
       )}
-
-      {/* ── PAYMENT SUCCESS MODAL ─────────────────────────── */}
-      <Modal visible={checkoutModal === 'success'} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.modalCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <View style={{ width: '100%', alignItems: 'center', paddingVertical: 14 }}>
-              <View style={styles.successCircle}>
-                <Ionicons name="checkmark" size={44} color="#FFFFFF" />
-              </View>
-              <Text style={[styles.successModalTitle, { color: colors.text }]}>Recharge Successful 🎉</Text>
-              <Text style={[styles.successModalSub, { color: colors.textSecondary }]}>
-                ₹{selectedAmount.toFixed(2)} has been credited to your wallet balance.
-              </Text>
-
-              <TouchableOpacity
-                style={styles.doneBtn}
-                onPress={() => setCheckoutModal('none')}
-              >
-                <Text style={styles.doneBtnText}>DONE</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* ── VERIFYING OVERLAY ─────────────────────────── */}
-      <Modal visible={verifyingPayment} transparent animationType="fade">
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.modalCard, { backgroundColor: colors.card, borderColor: colors.border, padding: 24 }]}>
-            <ActivityIndicator size="large" color="#DC2626" />
-            <Text style={[styles.successModalTitle, { color: colors.text, fontSize: 16, marginTop: 16 }]}>Verifying Payment...</Text>
-            <Text style={[styles.successModalSub, { color: colors.textSecondary }]}>
-              Securing transaction with Razorpay & Bank
-            </Text>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 };
@@ -645,74 +374,25 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 2,
   },
-  rechargeSection: {
+  disabledNoticeCard: {
+    padding: 16,
+    borderRadius: 14,
+    borderWidth: 1,
     marginBottom: 20,
   },
-  sectionHeading: {
-    fontSize: 16,
-    fontWeight: '800',
-    marginBottom: 4,
-  },
-  sectionSubtitle: {
-    fontSize: 13,
-    marginBottom: 14,
-  },
-  inputBox: {
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    height: 48,
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  textInput: {
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  gridContainer: {
+  disabledNoticeHeader: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    justifyContent: 'space-between',
-  },
-  perkCard: {
-    width: '31%',
-    minHeight: 68,
-    borderRadius: 10,
-    borderWidth: 1,
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 4,
-    position: 'relative',
+    gap: 8,
+    marginBottom: 6,
   },
-  mostPopularBadge: {
-    position: 'absolute',
-    top: -9,
-    backgroundColor: '#DC2626',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-    zIndex: 2,
+  disabledNoticeTitle: {
+    fontSize: 15,
+    fontWeight: '700',
   },
-  mostPopularText: {
-    color: '#FFFFFF',
-    fontSize: 8,
-    fontWeight: '900',
-  },
-  perkAmountText: {
-    fontSize: 16,
-    fontWeight: '900',
-  },
-  extraPerkPill: {
-    marginTop: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  extraPerkText: {
-    fontSize: 10,
-    fontWeight: '800',
+  disabledNoticeText: {
+    fontSize: 13,
+    lineHeight: 18,
   },
   txnsSection: {
     marginTop: 10,
@@ -760,161 +440,6 @@ const styles = StyleSheet.create({
   },
   txnAmountText: {
     fontSize: 14,
-    fontWeight: '800',
-  },
-  bottomFooter: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    borderTopWidth: 1,
-    elevation: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -3 },
-    shadowOpacity: 0.1,
-    shadowRadius: 6,
-  },
-  footerAmountBox: {
-    flex: 1,
-  },
-  footerTotalAmountText: {
-    fontSize: 22,
-    fontWeight: '900',
-  },
-  footerTotalLabel: {
-    fontSize: 12,
-    marginTop: 1,
-  },
-  proceedBtn: {
-    backgroundColor: '#15803D',
-    paddingHorizontal: 24,
-    paddingVertical: 14,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  proceedBtnText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modalCard: {
-    width: '100%',
-    borderRadius: 20,
-    borderWidth: 1,
-    padding: 20,
-    alignItems: 'center',
-  },
-  modalCloseBtn: {
-    position: 'absolute',
-    top: 14,
-    right: 14,
-    zIndex: 10,
-    padding: 4,
-  },
-  razorpayBrandBox: {
-    backgroundColor: '#0C2340',
-    borderRadius: 14,
-    padding: 16,
-    width: '100%',
-    alignItems: 'center',
-    marginBottom: 14,
-  },
-  razorpayBrandTitle: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  razorpayBrandSub: {
-    color: '#94A3B8',
-    fontSize: 11,
-    marginBottom: 6,
-  },
-  razorpayBrandAmount: {
-    color: '#38BDF8',
-    fontSize: 24,
-    fontWeight: '900',
-  },
-  selectMethodTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    marginBottom: 10,
-  },
-  methodList: {
-    gap: 8,
-    width: '100%',
-    marginBottom: 16,
-  },
-  methodItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 12,
-    borderRadius: 10,
-    borderWidth: 1.5,
-  },
-  methodItemTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  methodItemSub: {
-    fontSize: 10,
-    marginTop: 1,
-  },
-  payNowBtn: {
-    backgroundColor: '#15803D',
-    height: 48,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: '100%',
-  },
-  payNowBtnText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  successCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#10B981',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  successModalTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    marginTop: 12,
-  },
-  successModalSub: {
-    fontSize: 12,
-    textAlign: 'center',
-    marginTop: 4,
-    marginBottom: 16,
-  },
-  doneBtn: {
-    backgroundColor: '#15803D',
-    height: 46,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: '100%',
-  },
-  doneBtnText: {
-    color: '#FFFFFF',
-    fontSize: 15,
     fontWeight: '800',
   },
 });

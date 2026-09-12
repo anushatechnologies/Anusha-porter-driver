@@ -20,7 +20,7 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../../navigation/AppNavigator';
 
-import { getAllDrivers, updateDriverKyc } from '../../services/api';
+import { getAllDrivers, updateDriverKyc, deleteDriver } from '../../services/api';
 import { cleanUrl } from '../../utils/urlHelpers';
 
 const { width, height } = Dimensions.get('window');
@@ -38,6 +38,7 @@ const DriverManagementScreen = () => {
   const [selectedDriver, setSelectedDriver] = useState<any>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Fullscreen document preview state
   const [previewDoc, setPreviewDoc] = useState<{ label: string; uri: string } | null>(null);
@@ -46,7 +47,7 @@ const DriverManagementScreen = () => {
     setLoading(true);
     try {
       const list = await getAllDrivers(filter === 'all' ? undefined : filter);
-      setDrivers(list);
+      setDrivers(Array.isArray(list) ? list : []);
     } catch (e) {
       console.warn('Failed to load drivers:', e);
       Alert.alert('Network Error', 'Could not retrieve drivers from the backend.');
@@ -87,19 +88,60 @@ const DriverManagementScreen = () => {
     }
   };
 
-  const filtered = drivers.filter(d => {
+  const handleDeleteDriver = (driver: any) => {
+    const driverId = driver.driverId || driver.id;
+    const driverName = driver.name || 'this driver';
+    Alert.alert(
+      'Delete Driver Profile',
+      `Are you sure you want to permanently remove driver "${driverName}" (ID: ${driverId})? This will also remove their uploaded documents from the server.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Yes, Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingId(String(driverId));
+            try {
+              const res = await deleteDriver(driverId);
+              if (res.success) {
+                Alert.alert('Success', 'Driver profile removed successfully.');
+                if (selectedDriver && (selectedDriver.id === driverId || selectedDriver.driverId === driverId)) {
+                  setSelectedDriver(null);
+                }
+                fetchDrivers();
+              } else {
+                Alert.alert('Error', res.message || 'Failed to remove driver profile.');
+              }
+            } catch (error: any) {
+              Alert.alert('Error', error?.message || 'Failed to remove driver profile.');
+            } finally {
+              setDeletingId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const safeDrivers = Array.isArray(drivers) ? drivers : [];
+  const filtered = safeDrivers.filter(d => {
+    if (!d) return false;
     const matchesSearch = 
       (d.name || '').toLowerCase().includes(search.toLowerCase()) || 
       (d.phone || '').includes(search) || 
       (d.email || '').toLowerCase().includes(search.toLowerCase());
     
-    const matchesFilter = filter === 'all' || d.kyc === filter;
+    const dKyc = String(d.kyc || d.kycStatus || 'pending').toLowerCase();
+    const matchesFilter = 
+      filter === 'all' || 
+      (filter === 'verified' ? (dKyc === 'verified' || dKyc === 'approved') : dKyc === filter);
     
     return matchesSearch && matchesFilter;
   });
 
   const kycColors: Record<string, string> = {
     verified: colors.success,
+    approved: colors.success,
     pending: colors.warning,
     rejected: colors.error,
   };
@@ -170,55 +212,76 @@ const DriverManagementScreen = () => {
               <Text style={{ color: colors.textSecondary, marginTop: 12, fontWeight: '600' }}>No verification requests found</Text>
             </View>
           ) : (
-            filtered.map(driver => (
-              <TouchableOpacity
-                key={driver.id}
-                style={[styles.driverCard, { backgroundColor: colors.card, borderColor: colors.border }]}
-                activeOpacity={0.85}
-                onPress={() => setSelectedDriver(driver)}
-              >
-                <View style={styles.driverTop}>
-                  <View style={[styles.avatarBox, { backgroundColor: colors.cardLight }]}>
-                    {driver.profilePhotoUri || driver.documents?.profilePhotoUrl ? (
-                      <Image source={{ uri: cleanUrl(driver.profilePhotoUri || driver.documents?.profilePhotoUrl) }} style={styles.avatarImg} />
-                    ) : (
-                      <Ionicons name="person" size={20} color={colors.primary} />
-                    )}
-                  </View>
-                  <View style={styles.driverInfo}>
-                    <Text style={[styles.driverName, { color: colors.text }]}>{driver.name || 'Anonymous Partner'}</Text>
-                    <Text style={[styles.driverSub, { color: colors.textSecondary }]}>{driver.phone} • {driver.email}</Text>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
-                      <View style={{ backgroundColor: 'rgba(0, 82, 255, 0.1)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12 }}>
-                        <Text style={{ fontSize: 11, fontWeight: '700', color: colors.primary }}>
-                          {driver.vehicleType || driver.vehicle || driver.vehicle_type || 'Unspecified'}
-                        </Text>
+            filtered.map((driver, index) => {
+              const driverKey = String(driver.id || driver.driverId || (driver as any)._id || index);
+              const kycRaw = String(driver.kyc || driver.kycStatus || 'pending').toLowerCase();
+              const badgeColor = kycColors[kycRaw] || colors.warning;
+              return (
+                <TouchableOpacity
+                  key={driverKey}
+                  style={[styles.driverCard, { backgroundColor: colors.card, borderColor: colors.border }]}
+                  activeOpacity={0.85}
+                  onPress={() => setSelectedDriver(driver)}
+                >
+                  <View style={styles.driverTop}>
+                    <View style={[styles.avatarBox, { backgroundColor: colors.cardLight }]}>
+                      {driver.profilePhotoUri || driver.documents?.profilePhotoUrl ? (
+                        <Image source={{ uri: cleanUrl(driver.profilePhotoUri || driver.documents?.profilePhotoUrl) }} style={styles.avatarImg} />
+                      ) : (
+                        <Ionicons name="person" size={20} color={colors.primary} />
+                      )}
+                    </View>
+                    <View style={styles.driverInfo}>
+                      <Text style={[styles.driverName, { color: colors.text }]}>{driver.name || 'Anonymous Partner'}</Text>
+                      <Text style={[styles.driverSub, { color: colors.textSecondary }]}>{driver.phone || '—'} • {driver.email || '—'}</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                        <View style={{ backgroundColor: 'rgba(0, 82, 255, 0.1)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12 }}>
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: colors.primary }}>
+                            {driver.vehicleType || driver.vehicle || driver.vehicle_type || 'Unspecified'}
+                          </Text>
+                        </View>
+                        {driver.vehicleNumber ? (
+                          <Text style={{ fontSize: 11, color: colors.textMuted, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
+                            ({driver.vehicleNumber})
+                          </Text>
+                        ) : null}
                       </View>
-                      {driver.vehicleNumber ? (
-                        <Text style={{ fontSize: 11, color: colors.textMuted, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
-                          ({driver.vehicleNumber})
-                        </Text>
-                      ) : null}
+                    </View>
+                    <View style={[styles.kycBadge, { backgroundColor: `${badgeColor}20` }]}>
+                      <Text style={[styles.kycText, { color: badgeColor }]}>
+                        {kycRaw.toUpperCase()}
+                      </Text>
                     </View>
                   </View>
-                  <View style={[styles.kycBadge, { backgroundColor: `${kycColors[driver.kyc || 'pending']}15` }]}>
-                    <Text style={[styles.kycText, { color: kycColors[driver.kyc || 'pending'] }]}>
-                      {driver.kyc ? driver.kyc.toUpperCase() : 'PENDING'}
-                    </Text>
-                  </View>
-                </View>
-                <View style={[styles.cardDivider, { backgroundColor: colors.border }]} />
+                  <View style={[styles.cardDivider, { backgroundColor: colors.border }]} />
                 <View style={styles.cardFooter}>
                   <Text style={[styles.docCountText, { color: colors.textMuted }]}>
                     <Ionicons name="document-attach-outline" size={12} /> Documents uploaded
                   </Text>
-                  <View style={styles.actionPrompt}>
-                    <Text style={{ color: colors.primary, fontSize: 12, fontWeight: '700' }}>REVIEW DOCUMENTS</Text>
-                    <Ionicons name="chevron-forward" size={14} color={colors.primary} />
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <TouchableOpacity
+                      style={[styles.deleteBtn, { backgroundColor: 'rgba(239, 68, 68, 0.1)', borderColor: 'rgba(239, 68, 68, 0.25)' }]}
+                      disabled={deletingId === (driver.id || driver.driverId)}
+                      onPress={(e: any) => {
+                        e.stopPropagation?.();
+                        handleDeleteDriver(driver);
+                      }}
+                    >
+                      {deletingId === (driver.id || driver.driverId) ? (
+                        <ActivityIndicator size="small" color={colors.error} />
+                      ) : (
+                        <Ionicons name="trash-outline" size={15} color={colors.error} />
+                      )}
+                    </TouchableOpacity>
+                    <View style={styles.actionPrompt}>
+                      <Text style={{ color: colors.primary, fontSize: 12, fontWeight: '700' }}>REVIEW</Text>
+                      <Ionicons name="chevron-forward" size={14} color={colors.primary} />
+                    </View>
                   </View>
                 </View>
-              </TouchableOpacity>
-            ))
+                </TouchableOpacity>
+              );
+            })
           )}
         </ScrollView>
       )}
@@ -348,9 +411,8 @@ const DriverManagementScreen = () => {
                   })}
                 </View>
 
-                {/* Decision inputs */}
-                <View style={[styles.cardDivider, { backgroundColor: colors.border, marginVertical: 20 }]} />
-                <Text style={[styles.sectionHeading, { color: colors.text }]}>Actions & Feedback</Text>
+                {/* Status action decision panel */}
+                <Text style={[styles.sectionHeading, { color: colors.text, marginTop: 24 }]}>Decision & Actions</Text>
                 
                 <TextInput
                   style={[styles.auditInput, { backgroundColor: colors.cardLight, borderColor: colors.border, color: colors.text }]}
@@ -380,6 +442,22 @@ const DriverManagementScreen = () => {
                     <Text style={styles.btnLabel}>Approve & Verify</Text>
                   </TouchableOpacity>
                 </View>
+
+                {/* Permanent Delete Action Button */}
+                <TouchableOpacity
+                  style={[styles.deleteModalBtn, { borderColor: colors.error, backgroundColor: 'rgba(239, 68, 68, 0.08)' }]}
+                  onPress={() => handleDeleteDriver(selectedDriver)}
+                  disabled={deletingId === (selectedDriver?.id || selectedDriver?.driverId)}
+                >
+                  {deletingId === (selectedDriver?.id || selectedDriver?.driverId) ? (
+                    <ActivityIndicator size="small" color={colors.error} />
+                  ) : (
+                    <>
+                      <Ionicons name="trash-outline" size={16} color={colors.error} />
+                      <Text style={{ color: colors.error, fontSize: 13, fontWeight: '700' }}>Permanently Delete Driver Profile</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
               </ScrollView>
             )}
           </View>
@@ -463,6 +541,8 @@ const styles = StyleSheet.create({
   decisionRow: { flexDirection: 'row', gap: 10 },
   actionBtn: { flex: 1, height: 48, borderRadius: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
   btnLabel: { color: '#FFF', fontSize: 12, fontWeight: '800' },
+  deleteBtn: { width: 34, height: 34, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  deleteModalBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 48, borderRadius: 14, borderWidth: 1.5, marginTop: 14 },
   previewModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', justifyContent: 'center' },
   previewHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 50, paddingHorizontal: 20, paddingBottom: 16 },
   previewTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '700', flex: 1 },

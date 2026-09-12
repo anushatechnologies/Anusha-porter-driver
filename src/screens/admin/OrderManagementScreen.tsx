@@ -17,8 +17,15 @@ const OrderManagementScreen = () => {
 
   const statusColor: Record<string, string> = {
     active: colors.primary,
+    accepted: colors.primary,
+    picked_up: colors.primary,
+    transit: colors.primary,
+    in_transit: colors.primary,
+    arrived: colors.primary,
     completed: colors.success,
+    delivered: colors.success,
     pending: colors.warning,
+    created: colors.warning,
     cancelled: colors.error,
   };
 
@@ -38,14 +45,37 @@ const OrderManagementScreen = () => {
     fetchOrders();
   }, [fetchOrders]);
 
-  const filtered = filter === 'all' ? orders : orders.filter(o => o.status === filter);
+  const isActiveStatus = (status?: string) => {
+    if (!status) return false;
+    const s = status.toLowerCase();
+    return s === 'active' || s === 'accepted' || s === 'picked_up' || s === 'transit' || s === 'in_transit' || s === 'arrived';
+  };
+
+  const safeOrders = Array.isArray(orders) ? orders : [];
+
+  const filtered = filter === 'all'
+    ? safeOrders
+    : filter === 'active'
+      ? safeOrders.filter(o => isActiveStatus(o?.status))
+      : safeOrders.filter(o => {
+          const s = (o?.status || '').toLowerCase();
+          if (filter === 'completed') return s === 'completed' || s === 'delivered';
+          if (filter === 'pending') return s === 'pending' || s === 'created';
+          return s === filter;
+        });
 
   const counts: Record<FilterStatus, number> = {
-    all: orders.length,
-    active: orders.filter(o => o.status === 'active').length,
-    completed: orders.filter(o => o.status === 'completed').length,
-    pending: orders.filter(o => o.status === 'pending').length,
-    cancelled: orders.filter(o => o.status === 'cancelled').length,
+    all: safeOrders.length,
+    active: safeOrders.filter(o => isActiveStatus(o?.status)).length,
+    completed: safeOrders.filter(o => {
+      const s = (o?.status || '').toLowerCase();
+      return s === 'completed' || s === 'delivered';
+    }).length,
+    pending: safeOrders.filter(o => {
+      const s = (o?.status || '').toLowerCase();
+      return s === 'pending' || s === 'created';
+    }).length,
+    cancelled: safeOrders.filter(o => (o?.status || '').toLowerCase() === 'cancelled').length,
   };
 
   const formatTime = (dt?: string) => {
@@ -62,6 +92,8 @@ const OrderManagementScreen = () => {
       return <MaterialCommunityIcons name="bike" size={18} color={colors.primary} />;
     if (t.includes('auto'))
       return <MaterialCommunityIcons name="rickshaw" size={18} color={colors.info} />;
+    if (t.includes('cab') || t.includes('car') || t.includes('sedan') || t.includes('suv') || t.includes('taxi'))
+      return <MaterialCommunityIcons name="car" size={18} color={colors.primary} />;
     if (t.includes('truck') || t.includes('tata') || t.includes('mini'))
       return <MaterialCommunityIcons name="truck-delivery" size={18} color={colors.warning} />;
     return null;
@@ -71,13 +103,13 @@ const OrderManagementScreen = () => {
     <View style={[styles.orderCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
       <View style={styles.orderHeader}>
         <View style={styles.orderIdRow}>
-          <Text style={[styles.orderId, { color: colors.text }]}>#{item.id}</Text>
-          {renderVehicleIcon(item.vehicleType || (item as any).vehicle)}
+          <Text style={[styles.orderId, { color: colors.text }]}>#{item?.id || '—'}</Text>
+          {renderVehicleIcon(item?.vehicleType || (item as any)?.vehicle)}
         </View>
-        <View style={[styles.statusBadge, { backgroundColor: `${statusColor[item.status] || colors.gray}22` }]}>
-          <View style={[styles.statusDot, { backgroundColor: statusColor[item.status] || colors.gray }]} />
-          <Text style={[styles.statusText, { color: statusColor[item.status] || colors.gray }]}>
-            {item.status}
+        <View style={[styles.statusBadge, { backgroundColor: `${statusColor[item?.status || ''] || colors.gray}22` }]}>
+          <View style={[styles.statusDot, { backgroundColor: statusColor[item?.status || ''] || colors.gray }]} />
+          <Text style={[styles.statusText, { color: statusColor[item?.status || ''] || colors.gray }]}>
+            {item?.status || 'Unknown'}
           </Text>
         </View>
       </View>
@@ -165,7 +197,7 @@ const OrderManagementScreen = () => {
       ) : (
         <FlatList
           data={filtered}
-          keyExtractor={item => String(item.id)}
+          keyExtractor={(item, index) => String(item?.id ?? (item as any)?._id ?? index)}
           contentContainerStyle={styles.list}
           showsVerticalScrollIndicator={false}
           renderItem={renderOrder}

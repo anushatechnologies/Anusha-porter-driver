@@ -604,7 +604,7 @@ const OrderHistoryScreen = () => {
             {/* Call Customer Button */}
             {selectedOrder.customerPhone && selectedOrder.customerPhone !== '--' && (
               <TouchableOpacity
-                onPress={() => Linking.openURL(`tel:${selectedOrder.customerPhone}`)}
+                onPress={() => Linking.openURL(`tel:${selectedOrder.customerPhone}`).catch(() => {})}
                 activeOpacity={0.8}
                 style={{
                   flexDirection: 'row',

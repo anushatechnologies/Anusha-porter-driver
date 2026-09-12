@@ -12,10 +12,19 @@ import Svg, { Path, Defs, LinearGradient, Stop, Rect, Circle, Ellipse } from 're
 import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import AsyncStorage from '../../services/asyncStorageShim';
-import { verifyFirebaseOtp, getDriverProfile, checkDriverPhone, getDriverProfileByPhone } from '../../services/api';
+import {
+  verifyFirebaseOtp,
+  getDriverProfile,
+  checkDriverPhone,
+  getDriverProfileByPhone,
+  updateDriverKyc,
+  updateDriverKycStatusAdmin,
+  getRegistrationProgress,
+} from '../../services/api';
 import { cleanUrl } from '../../utils/urlHelpers';
 import { validateName, validateMobile } from '../../utils/validators';
 import { getAuth, signInWithPhoneNumber } from '@react-native-firebase/auth';
+import { setOtpActive } from '../../services/updateSafety';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 type RoutePropType = RouteProp<RootStackParamList, 'Login'>;
@@ -55,6 +64,32 @@ const LoginScreen = () => {
       setPhone(String(passedPhone).replace(/\D/g, ''));
     }
   }, [route.params]);
+
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => {
+        setKeyboardVisible(true);
+        if (otpMode) {
+          setTimeout(() => {
+            scrollViewRef.current?.scrollToEnd({ animated: true });
+          }, 80);
+        }
+      }
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardVisible(false);
+      }
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [otpMode]);
 
   const fullNameInputRef = useRef<TextInput>(null);
   const phoneInputRef = useRef<TextInput>(null);
@@ -147,6 +182,11 @@ const LoginScreen = () => {
     return () => clearInterval(timer);
   }, [otpMode, countdown]);
 
+  useEffect(() => {
+    setOtpActive(otpMode);
+    return () => setOtpActive(false);
+  }, [otpMode]);
+
   const handleSendOtp = async () => {
     Keyboard.dismiss();
     const newErrors: { fullName?: string; phone?: string } = {};
@@ -223,7 +263,7 @@ const LoginScreen = () => {
       setTimeout(() => {
         otpRefs[0].current?.focus();
         scrollViewRef.current?.scrollToEnd({ animated: true });
-      }, 150);
+      }, 280);
     } catch (error: any) {
       console.error('[AUTH] Send OTP error:', error);
       setLoading(false);
@@ -346,9 +386,8 @@ const LoginScreen = () => {
       // Phone from Firebase (strip +91 for backend lookup)
       const verifiedPhone = (firebasePhone || `+91${cleanPhone}`).replace(/^\+91/, '');
 
-      // Execute backend sync and profile lookup in fast parallel with 2.5s timeout
+      // Execute backend sync: POST /api/auth/verify-otp
       let data: any = null;
-      let driverDb: any = null;
 
       try {
         const syncRes = await verifyFirebaseOtp(
@@ -359,21 +398,15 @@ const LoginScreen = () => {
           cleanPhone || phone
         );
         data = syncRes;
-
-        const effectiveToken = (data && data.success && (data.accessToken || data.token))
-          ? (data.accessToken || data.token)
-          : firebaseIdToken;
-
-        const profileByPhone = await getDriverProfileByPhone(cleanPhone || phone);
-        const profileByToken = !profileByPhone ? await getDriverProfile(effectiveToken) : null;
-        driverDb = profileByPhone || profileByToken || (data && (data.driver || data.user || (data.data && typeof data.data === 'object' ? data.data : null)));
       } catch (syncErr) {
-        console.warn('[AUTH] Background sync notice:', syncErr);
+        console.warn('[AUTH] Verify OTP sync notice:', syncErr);
       }
 
-      const token = (data && data.success && (data.accessToken || data.token))
+      const effectiveToken = (data && data.success && (data.accessToken || data.token))
         ? (data.accessToken || data.token)
         : firebaseIdToken;
+
+      const token = effectiveToken;
 
       // Completely wipe any previous session to guarantee 100% multi-user isolation
       await AsyncStorage.clear();
@@ -389,8 +422,11 @@ const LoginScreen = () => {
         return;
       }
 
-      if (driverDb) {
-        const kycStatus = (driverDb.kyc || driverDb.kycStatus || 'pending') as 'verified' | 'pending' | 'rejected';
+      // Helper to serialize and save driver profile in local storage
+      const saveDriverProfileLocal = async (driverDb: any, forceVerified = false) => {
+        const kycStatus = forceVerified
+          ? 'verified'
+          : ((driverDb.kyc || driverDb.kycStatus || 'pending') as 'verified' | 'pending' | 'rejected');
         const profileData = {
           fullName: String(driverDb.name || fullName || 'Driver'),
           mobile: String(driverDb.phone || cleanPhone || phone),
@@ -405,6 +441,7 @@ const LoginScreen = () => {
           vehicleNumber: String(driverDb.vehicleNumber || ''),
           rcNumber: String(driverDb.rcNumber || ''),
           aadhaarNumber: String(driverDb.aadhaarNumber || ''),
+          panNumber: String(driverDb.panNumber || ''),
           licenseNumber: String(driverDb.licenseNumber || ''),
           bankName: String(driverDb.bankName || ''),
           accountHolderName: String(driverDb.accountHolderName || ''),
@@ -420,64 +457,216 @@ const LoginScreen = () => {
             ''
           ),
           aadhaarUri: cleanUrl(driverDb.aadhaarUri || driverDb.documents?.aadhaarUrl || ''),
+          panUri: cleanUrl(driverDb.panUri || driverDb.panUrl || driverDb.documents?.panUrl || driverDb.documents?.panUri || ''),
           licenseUri: cleanUrl(driverDb.licenseUri || driverDb.documents?.licenseUrl || ''),
           rcUri: cleanUrl(driverDb.rcUri || driverDb.documents?.rcUrl || ''),
           bankPassbookUri: cleanUrl(driverDb.bankPassbookUri || driverDb.documents?.bankPassbookUrl || ''),
           kyc: kycStatus,
+          kycStatus: kycStatus,
+          isRegistered: Boolean(driverDb.isRegistered || driverDb.registrationCompleted || Number(driverDb.registrationStep) >= 5 || forceVerified),
+          registrationCompleted: Boolean(driverDb.isRegistered || driverDb.registrationCompleted || Number(driverDb.registrationStep) >= 5 || forceVerified),
+          registrationStep: Number(driverDb.registrationStep || (forceVerified ? 5 : 1)),
           rejectedReason: String(driverDb.rejectedReason || ''),
           rating: String(driverDb.rating || '5.0'),
           trips: driverDb.trips !== undefined ? Number(driverDb.trips) : 0,
           tenure: String(driverDb.tenure || '0m'),
         };
-
         await AsyncStorage.setItem('driverProfile', JSON.stringify(profileData));
         if (profileData.email) await AsyncStorage.setItem('loggedInEmail', profileData.email);
+        return profileData;
+      };
 
-        setLoading(false);
-        const normalizedKyc = String(kycStatus).toLowerCase();
-
-        // Check if driver has REAL registration data (not just a bare appuser record from OTP)
-        const hasRealName = Boolean(
-          profileData.fullName && profileData.fullName !== 'Driver' && profileData.fullName !== 'null' && profileData.fullName.trim().length > 1
+      // Helper to check if driver has completed all 5 required registration sections
+      const isDriverFullyCompleted = (d: any) => {
+        if (!d) return false;
+        const hasName = Boolean(String(d.name || d.fullName || '').trim().length > 1);
+        const hasVehicle = Boolean(d.vehicleType || d.vehicleNumber || d.vehicle || d.vehicle_type);
+        const hasDocs = Boolean(d.aadhaarNumber || d.licenseNumber || d.aadhaarUri || d.licenseUri || d.documents);
+        const hasBank = Boolean(
+          (d.accountNumber || d.account_number) &&
+          (d.bankName || d.bank_name)
         );
-        const hasVehicleData = Boolean(profileData.vehicleNumber || driverDb.vehicleNumber);
-        const hasDocData = Boolean(
-          profileData.aadhaarNumber || driverDb.aadhaarNumber ||
-          profileData.licenseNumber || driverDb.licenseNumber ||
-          profileData.aadhaarUri || profileData.licenseUri ||
-          driverDb.documents
-        );
-        const hasCompletedKyc = hasRealName && hasVehicleData && hasDocData;
+        return hasName && hasVehicle && hasDocs && hasBank;
+      };
 
-        // If the driver is in Create Account mode OR has not submitted their 5 steps, open Registration
-        if (isRegisterMode || !hasCompletedKyc) {
-          navigation.navigate('DriverRegistration', {
-            mobile: profileData.mobile || cleanPhone || phone,
-            firebaseIdToken,
-            fullName: profileData.fullName || fullName || '',
-          });
+      // Helper to find the first incomplete step index (0: Personal, 1: Address, 2: Vehicle, 3: Documents, 4: Bank, 5: Review)
+      const getIncompleteStep = (d: any): number => {
+        if (!d) return 0;
+        const hasName = Boolean(String(d.name || d.fullName || '').trim().length > 1);
+        const hasEmail = Boolean(d.email && !String(d.email).includes('placeholder'));
+        const hasDob = Boolean(d.dob || d.dateOfBirth || d.date_of_birth);
+        if (!hasName || !hasEmail || !hasDob) return 0;
+
+        const hasAddress = Boolean(d.addressLine1 || d.address);
+        if (!hasAddress) return 1;
+
+        const hasVehicle = Boolean(d.vehicleType || d.vehicleNumber);
+        if (!hasVehicle) return 2;
+
+        const hasDocs = Boolean(
+          (d.aadhaarNumber || d.aadhaar) &&
+          (d.licenseNumber || d.drivingLicense)
+        );
+        if (!hasDocs) return 3;
+
+        const hasBank = Boolean(
+          (d.accountNumber || d.account_number) &&
+          (d.bankName || d.bank_name)
+        );
+        if (!hasBank) return 4;
+
+        return 5;
+      };
+
+      // ── HIGH-LEVEL STATE FLOW (FROM BACKEND INTEGRATION GUIDE) ──
+      const userRole = String(data?.user?.role || data?.role || '').trim();
+
+      // Check unified backend flags from login/OTP response
+      const isRegisteredBackend = Boolean(
+        data?.isRegistered === true ||
+        data?.registrationCompleted === true ||
+        data?.user?.isRegistered === true ||
+        data?.user?.registrationCompleted === true ||
+        (data?.registrationStep !== undefined && Number(data.registrationStep) >= 5) ||
+        (data?.user?.registrationStep !== undefined && Number(data.user.registrationStep) >= 5)
+      );
+
+      if (userRole === 'Driver' || isRegisteredBackend) {
+        // 1. Role is Driver or already marked registered -> Fetch Driver Profile (GET /api/drivers/me)
+        let driverDb = await getDriverProfile(token) || await getDriverProfileByPhone(cleanPhone || phone);
+        if (!driverDb && data?.driver) driverDb = data.driver;
+        if (!driverDb && data?.user) driverDb = data.user;
+
+        const isDriverApprovedOrRegistered = Boolean(
+          isRegisteredBackend ||
+          driverDb?.isRegistered === true ||
+          driverDb?.registrationCompleted === true ||
+          (driverDb?.registrationStep !== undefined && Number(driverDb.registrationStep) >= 5) ||
+          (driverDb && String(driverDb.kycStatus || driverDb.kyc || '').toLowerCase() === 'approved') ||
+          (driverDb && String(driverDb.kycStatus || driverDb.kyc || '').toLowerCase() === 'verified') ||
+          (driverDb && isDriverFullyCompleted(driverDb))
+        );
+
+        if (isDriverApprovedOrRegistered) {
+          // ONE-TIME REGISTRATION CHECK:
+          // Driver has already registered once in their lifetime: Go straight to DriverTabs!
+          if (driverDb) {
+            await saveDriverProfileLocal({ ...driverDb, isRegistered: true, registrationStep: 5 }, true);
+          } else {
+            await AsyncStorage.setItem('driverProfile', JSON.stringify({
+              fullName: String(fullName || data?.user?.name || 'Driver'),
+              mobile: String(cleanPhone || phone),
+              isRegistered: true,
+              registrationCompleted: true,
+              registrationStep: 5,
+              kyc: 'verified',
+              kycStatus: 'verified',
+            }));
+          }
+          setLoading(false);
+          navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
           return;
         }
 
-        // Only approved drivers can access the Dashboard
-        if (normalizedKyc === 'verified' || normalizedKyc === 'approved') {
-          navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
-        } else if (normalizedKyc === 'rejected') {
-          navigation.navigate('DriverRegistration', { mobile: profileData.mobile, firebaseIdToken, fullName: profileData.fullName });
+        if (driverDb) {
+          const kycStatus = String(driverDb.kycStatus || driverDb.kyc || 'pending').toLowerCase();
+          await saveDriverProfileLocal(driverDb);
+          const isComplete = isDriverFullyCompleted(driverDb);
+          const targetStep = getIncompleteStep(driverDb);
+          setLoading(false);
+
+          if (isComplete && kycStatus === 'pending') {
+            // Show KYC Under Review Screen
+            navigation.reset({ index: 0, routes: [{ name: 'ApprovalPending' }] });
+          } else {
+            // Draft or incomplete -> Resume Registration Form at incomplete step
+            navigation.navigate('DriverRegistration', {
+              mobile: cleanPhone || phone,
+              firebaseIdToken,
+              fullName: driverDb.name || fullName || '',
+              registrationStep: targetStep,
+              draftData: driverDb,
+            });
+          }
         } else {
-          // New registration or pending approval — hold in ApprovalPending
-          navigation.reset({ index: 0, routes: [{ name: 'ApprovalPending' }] });
+          // Check draft progress via GET /api/drivers/register/progress before assuming step 0
+          try {
+            const progressRes = await getRegistrationProgress(cleanPhone || phone);
+            if (progressRes?.isRegistered === true || Number(progressRes?.registrationStep) >= 5) {
+              await saveDriverProfileLocal({ ...progressRes, isRegistered: true, registrationStep: 5 }, true);
+              setLoading(false);
+              navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
+              return;
+            }
+            if (progressRes?.hasDraft) {
+              setLoading(false);
+              const targetStep = getIncompleteStep(progressRes);
+              navigation.navigate('DriverRegistration', {
+                mobile: cleanPhone || phone,
+                firebaseIdToken,
+                fullName: progressRes.name || fullName || '',
+                registrationStep: targetStep,
+                draftData: progressRes,
+              });
+              return;
+            }
+          } catch {}
+
+          setLoading(false);
+          navigation.navigate('DriverRegistration', {
+            mobile: cleanPhone || phone,
+            firebaseIdToken,
+            fullName: fullName || '',
+            registrationStep: 0,
+          });
         }
       } else {
-        // Driver profile not found on backend — navigate to Registration to complete 5 steps
-        setLoading(false);
-        navigation.navigate('DriverRegistration', { mobile: cleanPhone || phone, firebaseIdToken, fullName: fullName || '' });
+        // 2. Role is NOT Driver (e.g. 'Customer') -> Check Draft Progress (GET /api/drivers/register/progress)
+        const progressRes = await getRegistrationProgress(cleanPhone || phone);
+        const kycStatus = String(progressRes.kycStatus || '').toLowerCase();
+        const driverDb = await getDriverProfile(token) || await getDriverProfileByPhone(cleanPhone || phone);
+        const effectiveDb = driverDb || progressRes;
+        const isRegisteredProg = Boolean(
+          progressRes.isRegistered === true ||
+          Number(progressRes.registrationStep) >= 5 ||
+          effectiveDb?.isRegistered === true ||
+          Number(effectiveDb?.registrationStep) >= 5 ||
+          kycStatus === 'approved' ||
+          kycStatus === 'verified'
+        );
+        const isComplete = isDriverFullyCompleted(effectiveDb);
+        const targetStep = getIncompleteStep(effectiveDb);
+
+        if (isRegisteredProg || (isComplete && (kycStatus === 'approved' || kycStatus === 'verified'))) {
+          if (effectiveDb) {
+            await saveDriverProfileLocal({ ...effectiveDb, isRegistered: true, registrationStep: 5 }, true);
+          }
+          setLoading(false);
+          navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
+        } else if (isComplete && kycStatus === 'pending') {
+          setLoading(false);
+          navigation.reset({ index: 0, routes: [{ name: 'ApprovalPending' }] });
+        } else {
+          // Registration in progress / incomplete bank details -> Restore pre-filled data and jump to incomplete step
+          setLoading(false);
+          navigation.navigate('DriverRegistration', {
+            mobile: cleanPhone || phone,
+            firebaseIdToken,
+            fullName: progressRes.name || (driverDb && driverDb.name) || fullName || '',
+            registrationStep: targetStep,
+            draftData: effectiveDb,
+          });
+        }
       }
     } catch (generalErr: any) {
       console.error('[AUTH] Post-OTP navigation error:', generalErr);
       setLoading(false);
       // Fallback navigation to registration with verified token
-      navigation.navigate('DriverRegistration', { mobile: cleanPhone || phone, firebaseIdToken, fullName: fullName || '' });
+      navigation.navigate('DriverRegistration', {
+        mobile: (phone || '').replace(/\D/g, '').slice(-10),
+        firebaseIdToken,
+        fullName: fullName || '',
+      });
     }
   };
 
@@ -499,36 +688,66 @@ const LoginScreen = () => {
         </Svg>
       </View>
 
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+      >
         <ScrollView
           ref={scrollViewRef}
           style={{ flex: 1 }}
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[
+            styles.scrollContent,
+            otpMode && {
+              paddingTop: Platform.OS === 'android' ? 10 : 18,
+              paddingBottom: keyboardVisible ? (Platform.OS === 'android' ? 140 : 80) : 40,
+            },
+          ]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
           {/* Top Brand Header */}
-          <View style={styles.brandHeader}>
-            <View style={styles.logoBadgeContainer}>
-              <Image
-                source={require('../../../assets/splash-icon.png')}
-                style={styles.logoImage}
-                resizeMode="contain"
-              />
+          {otpMode ? (
+            <View style={styles.brandHeaderCompact}>
+              <View style={styles.logoBadgeCompact}>
+                <Image
+                  source={require('../../../assets/splash-icon.png')}
+                  style={styles.logoImageCompact}
+                  resizeMode="contain"
+                />
+              </View>
+              <View>
+                <Text style={styles.brandTitleCompact}>ANUSHA PORTER</Text>
+                <Text style={styles.roleTagTextCompact}>DELIVERY PARTNER</Text>
+              </View>
             </View>
-            <Text style={styles.brandTitle}>ANUSHA PORTER</Text>
-            <View style={styles.roleTag}>
-              <Ionicons name="flash" size={11} color="#0052FF" />
-              <Text style={styles.roleTagText}>DELIVERY PARTNER</Text>
+          ) : (
+            <View style={styles.brandHeader}>
+              <View style={styles.logoBadgeContainer}>
+                <Image
+                  source={require('../../../assets/splash-icon.png')}
+                  style={styles.logoImage}
+                  resizeMode="contain"
+                />
+              </View>
+              <Text style={styles.brandTitle}>ANUSHA PORTER</Text>
+              <View style={styles.roleTag}>
+                <Ionicons name="flash" size={11} color="#0052FF" />
+                <Text style={styles.roleTagText}>DELIVERY PARTNER</Text>
+              </View>
             </View>
-          </View>
+          )}
 
           {/* White Login Card */}
-          <View style={styles.loginCard}>
-            <Text style={styles.welcomeText}>{isRegisterMode ? 'Create Account' : 'Welcome Back!'}</Text>
-            <Text style={styles.subWelcomeText}>{isRegisterMode ? 'Register to start delivering' : 'Login to continue delivering'}</Text>
+          <View style={[styles.loginCard, otpMode && { padding: 20, marginVertical: 4 }]}>
+            <Text style={[styles.welcomeText, otpMode && { fontSize: 20 }]}>
+              {otpMode ? 'Verification Code' : (isRegisterMode ? 'Create Account' : 'Welcome Back!')}
+            </Text>
+            <Text style={[styles.subWelcomeText, otpMode && { marginBottom: 16 }]}>
+              {otpMode ? 'Enter the 6-digit OTP sent to your phone' : (isRegisterMode ? 'Register to start delivering' : 'Login to continue delivering')}
+            </Text>
 
-            {isRegisterMode && (
+            {isRegisterMode && !otpMode && (
               <View style={{ marginBottom: 16 }}>
                 <Text style={styles.inputLabel}>Full Name</Text>
                 <Pressable
@@ -569,44 +788,73 @@ const LoginScreen = () => {
               </View>
             )}
 
-            <View style={{ marginBottom: 8 }}>
-              <Text style={styles.inputLabel}>Mobile Number</Text>
-              <Pressable
-                style={[
-                  styles.inputRow,
-                  focusedInput === 'phone' && styles.inputRowFocused,
-                  errors.phone && styles.inputRowError,
-                ]}
-                onPress={() => phoneInputRef.current?.focus()}
-              >
-                <View style={styles.countryCodeBox}>
-                  <Text style={styles.flagText}>🇮🇳</Text>
-                  <Text style={styles.countryCodeText}>+91</Text>
-                  <Ionicons name="chevron-down" size={14} color="#64748B" style={{ marginLeft: 4 }} />
+            {otpMode ? (
+              <View style={styles.phoneChipRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, marginRight: 8 }}>
+                  <Ionicons name={isRegisterMode ? 'person-circle' : 'call'} size={20} color="#0052FF" />
+                  <View style={{ flex: 1 }}>
+                    {isRegisterMode && fullName ? (
+                      <Text style={{ fontSize: 13, fontWeight: '700', color: '#0F172A' }} numberOfLines={1}>
+                        {fullName}
+                      </Text>
+                    ) : null}
+                    <Text style={[styles.phoneChipText, isRegisterMode && fullName ? { fontSize: 12, color: '#64748B', fontWeight: '600' } : null]}>
+                      +91 {phone}
+                    </Text>
+                  </View>
                 </View>
-                <View style={styles.inputDivider} />
-                <TextInput
-                  ref={phoneInputRef}
-                  style={styles.inputField}
-                  placeholder="Enter 10-digit mobile number"
-                  placeholderTextColor="#94A3B8"
-                  keyboardType="phone-pad"
-                  maxLength={10}
-                  multiline={false}
-                  numberOfLines={1}
-                  value={phone}
-                  onChangeText={handlePhoneChange}
-                  onFocus={() => setFocusedInput('phone')}
-                  onBlur={() => handleBlur('phone')}
-                />
-              </Pressable>
-              {errors.phone && (
-                <View style={styles.errorBoxRow}>
-                  <Ionicons name="warning-outline" size={13} color="#EF4444" />
-                  <Text style={styles.errorText}>{errors.phone}</Text>
-                </View>
-              )}
-            </View>
+                <TouchableOpacity
+                  onPress={() => {
+                    setOtpMode(false);
+                    setOtp(['', '', '', '', '', '']);
+                  }}
+                  style={styles.editPhoneBtn}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="pencil" size={12} color="#0052FF" />
+                  <Text style={styles.editPhoneText}>Edit</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={{ marginBottom: 8 }}>
+                <Text style={styles.inputLabel}>Mobile Number</Text>
+                <Pressable
+                  style={[
+                    styles.inputRow,
+                    focusedInput === 'phone' && styles.inputRowFocused,
+                    errors.phone && styles.inputRowError,
+                  ]}
+                  onPress={() => phoneInputRef.current?.focus()}
+                >
+                  <View style={styles.countryCodeBox}>
+                    <Text style={styles.flagText}>🇮🇳</Text>
+                    <Text style={styles.countryCodeText}>+91</Text>
+                    <Ionicons name="chevron-down" size={14} color="#64748B" style={{ marginLeft: 4 }} />
+                  </View>
+                  <View style={styles.inputDivider} />
+                  <TextInput
+                    ref={phoneInputRef}
+                    style={styles.inputField}
+                    placeholder="Enter 10-digit mobile number"
+                    placeholderTextColor="#94A3B8"
+                    keyboardType="phone-pad"
+                    maxLength={10}
+                    multiline={false}
+                    numberOfLines={1}
+                    value={phone}
+                    onChangeText={handlePhoneChange}
+                    onFocus={() => setFocusedInput('phone')}
+                    onBlur={() => handleBlur('phone')}
+                  />
+                </Pressable>
+                {errors.phone && (
+                  <View style={styles.errorBoxRow}>
+                    <Ionicons name="warning-outline" size={13} color="#EF4444" />
+                    <Text style={styles.errorText}>{errors.phone}</Text>
+                  </View>
+                )}
+              </View>
+            )}
 
             {!otpMode && (
               <View style={styles.shieldRow}>
@@ -618,15 +866,7 @@ const LoginScreen = () => {
             {otpMode && (
               <View style={styles.otpSection}>
                 <View style={styles.otpLabelRow}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <Text style={styles.inputLabel}>Enter OTP</Text>
-                    <TouchableOpacity
-                      onPress={() => { setOtpMode(false); setOtp(['', '', '', '', '', '']); }}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
-                      <Text style={{ fontSize: 12, color: '#0052FF', fontWeight: '700', marginBottom: 8 }}>Edit</Text>
-                    </TouchableOpacity>
-                  </View>
+                  <Text style={styles.inputLabel}>Enter 6-Digit OTP</Text>
                   <Text style={styles.timerText}>00:{countdown.toString().padStart(2, '0')}</Text>
                 </View>
 
@@ -650,6 +890,8 @@ const LoginScreen = () => {
                       selectTextOnFocus
                       textContentType="oneTimeCode"
                       autoComplete="sms-otp"
+                      multiline={false}
+                      numberOfLines={1}
                     />
                   ))}
                 </View>
@@ -682,21 +924,23 @@ const LoginScreen = () => {
           </View>
 
           {/* New to Anusha Porter */}
-          <View style={styles.registerPrompt}>
-            <Text style={styles.registerPromptText}>{isRegisterMode ? 'Already have an account? ' : 'New to Anusha Porter? '}</Text>
-            <TouchableOpacity
-              onPress={() => {
-                setIsRegisterMode(!isRegisterMode);
-                setFullName('');
-                setPhone('');
-                setErrors({});
-                setOtpMode(false);
-                setOtp(['', '', '', '', '', '']);
-              }}
-            >
-              <Text style={styles.registerNowText}>{isRegisterMode ? 'Login Now' : 'Register Now'} <Ionicons name="chevron-forward" size={12} /></Text>
-            </TouchableOpacity>
-          </View>
+          {!otpMode && (
+            <View style={styles.registerPrompt}>
+              <Text style={styles.registerPromptText}>{isRegisterMode ? 'Already have an account? ' : 'New to Anusha Porter? '}</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setIsRegisterMode(!isRegisterMode);
+                  setFullName('');
+                  setPhone('');
+                  setErrors({});
+                  setOtpMode(false);
+                  setOtp(['', '', '', '', '', '']);
+                }}
+              >
+                <Text style={styles.registerNowText}>{isRegisterMode ? 'Login Now' : 'Register Now'} <Ionicons name="chevron-forward" size={12} /></Text>
+              </TouchableOpacity>
+            </View>
+          )}
 
         </ScrollView>
       </KeyboardAvoidingView>
@@ -847,6 +1091,74 @@ const styles = StyleSheet.create({
     color: '#0052FF',
     letterSpacing: 0.8,
   },
+  brandHeaderCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    marginBottom: 8,
+    marginTop: Platform.OS === 'android' ? 2 : 6,
+  },
+  logoBadgeCompact: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  logoImageCompact: {
+    width: '80%',
+    height: '80%',
+  },
+  brandTitleCompact: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: '#0F172A',
+    letterSpacing: 0.8,
+  },
+  roleTagTextCompact: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#0052FF',
+    letterSpacing: 0.6,
+  },
+  phoneChipRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  phoneChipText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  editPhoneBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#EFF6FF',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#DBEAFE',
+  },
+  editPhoneText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0052FF',
+  },
   loginCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 24,
@@ -887,18 +1199,29 @@ const styles = StyleSheet.create({
   otpSection: { marginTop: 16 },
   otpLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   timerText: { fontSize: 13, fontWeight: '700', color: '#0052FF' },
-  otpBoxesRow: { flexDirection: 'row', justifyContent: 'space-between', marginVertical: 4 },
+  otpBoxesRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginVertical: 6,
+  },
   otpBox: {
-    width: 46,
+    flex: 1,
+    maxWidth: 44,
     height: 52,
     borderRadius: 12,
     borderWidth: 1.5,
     borderColor: '#E2E8F0',
     backgroundColor: '#FFFFFF',
     textAlign: 'center',
+    textAlignVertical: 'center',
     fontSize: 22,
     fontWeight: '800',
     color: '#0F172A',
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    includeFontPadding: false,
+    marginHorizontal: 3,
   },
   otpBoxFocused: { borderColor: '#0052FF', backgroundColor: '#F0F6FF', borderWidth: 2 },
   otpBoxFilled: { backgroundColor: '#F8FAFC', borderColor: '#CBD5E1' },

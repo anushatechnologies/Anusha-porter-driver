@@ -36,12 +36,15 @@ import { cleanUrl } from '../../utils/urlHelpers';
 const { width } = Dimensions.get('window');
 
 const ICON_OPTIONS = [
-  { label: 'Bike', icon: 'bike', type: 'two_wheeler' },
-  { label: 'Scooter', icon: 'scooter', type: 'scooter' },
-  { label: 'Rickshaw', icon: 'rickshaw', type: 'three_wheeler' },
-  { label: 'Truck Delivery', icon: 'truck-delivery', type: 'tata_ace' },
-  { label: 'Van', icon: 'van-utility', type: 'pickup' },
-  { label: 'Truck', icon: 'truck', type: 'truck_8ft' },
+  { label: 'Cab / Taxi', icon: 'car', type: 'cab', serviceType: 'PASSENGER' as const },
+  { label: 'Sedan (Cab)', icon: 'car-side', type: 'cab_sedan', serviceType: 'PASSENGER' as const },
+  { label: 'SUV (Cab)', icon: 'car-estate', type: 'cab_suv', serviceType: 'PASSENGER' as const },
+  { label: 'Auto / Rickshaw', icon: 'rickshaw', type: 'three_wheeler', serviceType: 'BOTH' as const },
+  { label: 'Bike', icon: 'bike', type: 'two_wheeler', serviceType: 'BOTH' as const },
+  { label: 'Scooter', icon: 'scooter', type: 'scooter', serviceType: 'BOTH' as const },
+  { label: 'Truck Delivery', icon: 'truck-delivery', type: 'tata_ace', serviceType: 'GOODS' as const },
+  { label: 'Van / Pickup', icon: 'van-utility', type: 'pickup', serviceType: 'GOODS' as const },
+  { label: 'Heavy Truck', icon: 'truck', type: 'truck_8ft', serviceType: 'GOODS' as const },
 ];
 
 const VehicleManagementScreen = () => {
@@ -66,13 +69,14 @@ const VehicleManagementScreen = () => {
     capacity: '',
     capacityKg: 20,
     dimensions: '',
-    iconName: 'bike',
+    iconName: 'car',
     imageUrl: '',
     baseFare: 50,
     baseKm: 1.0,
     perKmRate: 15,
     status: 'active',
     priority: 1,
+    serviceType: 'PASSENGER',
   });
 
   const loadVehicles = useCallback(async () => {
@@ -627,6 +631,40 @@ const VehicleManagementScreen = () => {
                 />
               </View>
 
+              {/* Service Mode Selector: Passenger vs Goods vs Both */}
+              <View style={styles.inputCol}>
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Service Mode (Dispatch Type) *</Text>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {[
+                    { key: 'PASSENGER', label: '🚖 Passenger (Cab)', color: '#3B82F6' },
+                    { key: 'GOODS', label: '📦 Goods (Cargo)', color: '#10B981' },
+                    { key: 'BOTH', label: '⚡ Both', color: '#F59E0B' },
+                  ].map(m => {
+                    const isSelected = (formData.serviceType || 'GOODS') === m.key;
+                    return (
+                      <TouchableOpacity
+                        key={m.key}
+                        style={[
+                          styles.actionBtn,
+                          {
+                            flex: 1,
+                            height: 42,
+                            borderColor: isSelected ? m.color : colors.border,
+                            backgroundColor: isSelected ? `${m.color}20` : colors.cardLight,
+                            borderWidth: isSelected ? 2 : 1,
+                          },
+                        ]}
+                        onPress={() => setFormData(prev => ({ ...prev, serviceType: m.key as any }))}
+                      >
+                        <Text style={{ color: isSelected ? m.color : colors.textSecondary, fontWeight: '700', fontSize: 11 }}>
+                          {m.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
               {/* Icon Selector */}
               <View style={styles.inputCol}>
                 <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Select Icon (Fallback)</Text>
@@ -641,7 +679,14 @@ const VehicleManagementScreen = () => {
                           { backgroundColor: colors.cardLight, borderColor: colors.border },
                           isSelected && { borderColor: colors.primary, backgroundColor: `${colors.primary}15`, borderWidth: 2 },
                         ]}
-                        onPress={() => setFormData(prev => ({ ...prev, iconName: opt.icon }))}
+                        onPress={() =>
+                          setFormData(prev => ({
+                            ...prev,
+                            iconName: opt.icon,
+                            serviceType: opt.serviceType,
+                            ...(!isEditing && (!prev.type || prev.type === 'vehicle') ? { type: opt.type } : {}),
+                          }))
+                        }
                       >
                         <MaterialCommunityIcons
                           name={opt.icon as any}

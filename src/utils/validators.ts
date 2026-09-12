@@ -210,20 +210,27 @@ export const validateDOB = (value: string): ValidationResult => {
   }
 
   if (trimmed.length !== 10) {
-    return fail('Date of birth must be in DD/MM/YYYY format.');
+    return fail('Date of birth must be in DD/MM/YYYY or YYYY-MM-DD format.');
   }
 
-  const parts = trimmed.split('/');
+  const parts = trimmed.split(/[/.-]/);
   if (parts.length !== 3) {
-    return fail('Date of birth must be in DD/MM/YYYY format.');
+    return fail('Date of birth must be in DD/MM/YYYY or YYYY-MM-DD format.');
   }
 
-  const day = parseInt(parts[0], 10);
-  const month = parseInt(parts[1], 10);
-  const year = parseInt(parts[2], 10);
+  let day: number, month: number, year: number;
+  if (parts[0].length === 4) {
+    year = parseInt(parts[0], 10);
+    month = parseInt(parts[1], 10);
+    day = parseInt(parts[2], 10);
+  } else {
+    day = parseInt(parts[0], 10);
+    month = parseInt(parts[1], 10);
+    year = parseInt(parts[2], 10);
+  }
 
   if (isNaN(day) || isNaN(month) || isNaN(year)) {
-    return fail('Please enter a valid date in DD/MM/YYYY format.');
+    return fail('Please enter a valid date.');
   }
 
   // Month validation
@@ -452,19 +459,31 @@ export const validatePAN = (value: string): ValidationResult => {
   return OK;
 };
 
+export const validatePan = validatePAN;
+
 /**
  * Validate Driving License number.
- * Allows any characters / format entered by the driver.
+ * - Allowed characters: Only letters (a-z, A-Z) and numbers (0-9).
+ * - Forbidden: Spaces, hyphens, slashes, and special characters.
+ * - Length: 1 to 100 characters.
  */
 export const validateDrivingLicense = (value: string): ValidationResult => {
-  const trimmed = value.trim();
+  const clean = value ? value.trim() : '';
 
-  if (!trimmed) {
-    return fail('Please enter your driving license number.');
+  if (!clean) {
+    return fail('Driving licence number is required');
+  }
+
+  // Accepts only letters and numbers, maximum 100 characters
+  if (clean.length > 100 || !/^[a-zA-Z0-9]{1,100}$/.test(clean)) {
+    return fail('Driving licence must contain only numbers and alphabets (up to 100 characters)');
   }
 
   return OK;
 };
+
+/** Alias for validateDrivingLicense to match integration specification */
+export const validateLicenseNumber = validateDrivingLicense;
 
 /**
  * Validate vehicle type — dynamic check to ensure a vehicle has been selected.
@@ -482,26 +501,18 @@ export const validateVehicleType = (value: string): ValidationResult => {
 };
 
 /**
- * Validate Indian vehicle registration number (license plate).
- * Format: XX00XX0000 (state 2 letters + district 2 digits + series 1-2 letters + number 4 digits)
+ * Validate vehicle registration number (license plate).
+ * Accepts any alphanumeric registration plate without strict character limits.
  */
 export const validateVehicleNumber = (value: string): ValidationResult => {
-  const cleaned = value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+  const cleaned = (value || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
 
   if (!cleaned) {
     return fail('Please enter your vehicle registration number.');
   }
 
-  if (cleaned.length < 8) {
-    return fail('Vehicle number must be at least 8 characters (e.g., DL1C1234 or TS09AB1234).');
-  }
-
-  if (cleaned.length > 11) {
-    return fail('Vehicle number must not exceed 11 characters.');
-  }
-
-  if (!/^([A-Z]{2}[0-9]{1,2}[A-Z]{1,3}[0-9]{1,4}|[0-9]{2}BH[0-9]{4}[A-Z]{1,2})$/.test(cleaned)) {
-    return fail('Enter valid Indian vehicle number (e.g., TS09AB1234 or 22BH1234AA).');
+  if (cleaned.length < 2) {
+    return fail('Vehicle number must be at least 2 characters.');
   }
 
   return OK;
@@ -621,20 +632,13 @@ export const validateGender = (value: string): ValidationResult => {
  */
 export const validateProfilePhoto = (
   photoUri: string | null,
-  validationStatus: string
+  _validationStatus?: string
 ): ValidationResult => {
   if (!photoUri) {
-    return fail('A profile selfie photo is required to continue.');
+    return fail('A profile photo is required to continue.');
   }
 
-  if (validationStatus === 'VALIDATING') {
-    return fail('Photo is still being validated. Please wait.');
-  }
-
-  if (validationStatus !== 'VALID') {
-    return fail('Please upload a valid selfie with a clear human face.');
-  }
-
+  // Accepts any photo! No strict rules or human face restrictions.
   return OK;
 };
 

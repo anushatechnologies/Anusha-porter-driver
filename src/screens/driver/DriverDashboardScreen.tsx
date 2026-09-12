@@ -34,13 +34,24 @@ import {
   setDriverOnlineStatus,
   registerDeviceToken,
   updateDriverLocation,
-  getDriverWallet,
+  updateDriverKyc,
+  updateDriverKycStatusAdmin,
+  getActiveDriverOffers,
 } from '../../services/api';
 import { startAlarm, stopAlarm } from '../../services/alarmSound';
+import { playOrderRingtone, stopOrderRingtone } from '../../services/orderSoundHelper';
+import { stopRingtone, dismissIncomingOrderModal } from '../../services/soundManager';
+import { telemetrySocket, dismissOffer, isOfferDismissed } from '../../services/telemetrySocket';
 import * as Location from 'expo-location';
 import LocationDisclosureModal from '../../components/LocationDisclosureModal';
-// @ts-ignore
-import messaging from '@react-native-firebase/messaging';
+import {
+  safeRequestPermission,
+  safeGetToken,
+  safeOnTokenRefresh,
+  safeOnMessage,
+  safeOnNotificationOpenedApp,
+  AuthorizationStatus,
+} from '../../services/fcmService';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 
@@ -72,6 +83,7 @@ const DriverDashboardScreen = () => {
   const navigation = useNavigation<NavProp>();
   const { colors, theme } = useTheme();
 
+
   // App States
   const [isOnline, setIsOnline] = useState(false);
   const [showLocationDisclosure, setShowLocationDisclosure] = useState(false);
@@ -82,26 +94,15 @@ const DriverDashboardScreen = () => {
   const [driverTenure, setDriverTenure] = useState('0m');
   const [historyOrders, setHistoryOrders] = useState<any[]>([]);
   const [driverProfilePhoto, setDriverProfilePhoto] = useState<string | null>(null);
-  const [walletBalance, setWalletBalance] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const locationWatcherRef = useRef<Location.LocationSubscription | null>(null);
+  const dismissedOfferIdsRef = useRef<Set<string>>(new Set());
 
   const handleRefresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      // 0. Refresh live wallet balance
-      try {
-        const walRes = await getDriverWallet();
-        const bal = walRes?.wallet?.availableBalance ?? (typeof (walRes as any)?.availableBalance === 'number' ? (walRes as any).availableBalance : 0);
-        setWalletBalance(bal);
-        if (bal < 10 && isOnline) {
-          setIsOnline(false);
-          await AsyncStorage.setItem('@driver_is_online', 'false');
-          await setDriverOnlineStatus('offline').catch(() => {});
-        }
-      } catch (wErr) {}
-
-      // 1. Refresh driver profile info
+      // 0. Refresh driver profile info
       const driverDb = await getDriverProfile();
       if (driverDb) {
         if (typeof driverDb.name === 'string' && driverDb.name.trim().length > 0) {
@@ -139,51 +140,74 @@ const DriverDashboardScreen = () => {
     }
   };
 
+  // Centralized handler for online status update errors
+  const handleOnlineStatusError = (statusRes: any) => {
+    setIsOnline(false);
+    AsyncStorage.setItem('@driver_is_online', 'false').catch(() => {});
+
+    const rawMsg = String(statusRes?.message || '');
+    const isAuth =
+      statusRes?.isAuthError ||
+      statusRes?.error === 'SESSION_EXPIRED' ||
+      statusRes?.error === 'UNAUTHORIZED' ||
+      statusRes?.status === 401 ||
+      /session.*expired|login again|unauthorized|invalid token/i.test(rawMsg);
+
+    if (isAuth) {
+      Alert.alert(
+        'Session Expired',
+        statusRes?.message || 'Your session has expired. Please log in again to go online and receive delivery requests.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Log In Again',
+            onPress: async () => {
+              try {
+                await AsyncStorage.removeItem('authToken');
+                const authModule = require('@react-native-firebase/auth');
+                const authFn = authModule.getAuth || authModule.default;
+                const auth = typeof authFn === 'function' ? authFn() : null;
+                if (auth && typeof auth.signOut === 'function') {
+                  await auth.signOut().catch(() => {});
+                }
+              } catch {}
+              navigation.reset({ index: 0, routes: [{ name: 'Login', params: { role: 'driver' } }] });
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    if (statusRes?.error === 'KYC_PENDING' || /kyc|approval|pending/i.test(rawMsg)) {
+      Alert.alert(
+        'Approval Pending',
+        statusRes?.message || 'Your driver profile is currently pending verification. You will be notified once approved.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'View Status', onPress: () => navigation.navigate('ApprovalPending') },
+        ]
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Unable to Go Online',
+      statusRes?.message || 'Could not update your online status. Please check your internet connection and try again.',
+      [{ text: 'OK' }]
+    );
+  };
+
   // User toggles duty switch
   const handleToggleOnline = async (targetValue: boolean) => {
     if (targetValue) {
-      // Step 0: Strict Wallet Balance Verification before going online
-      try {
-        const walRes = await getDriverWallet().catch(() => null);
-        const balance = walRes?.wallet?.availableBalance ?? (typeof (walRes as any)?.availableBalance === 'number' ? (walRes as any).availableBalance : 0);
-        setWalletBalance(balance);
-
-        if (balance <= 0) {
-          Alert.alert(
-            'Wallet Empty',
-            'Please recharge your wallet (₹1+) to go online and receive booking requests.',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Recharge Wallet', onPress: () => navigation.navigate('Wallet') },
-            ]
-          );
-          setIsOnline(false);
-          await AsyncStorage.setItem('@driver_is_online', 'false');
-          try {
-            await setDriverOnlineStatus('offline');
-          } catch (e) {}
-          return;
-        }
-      } catch (e) {
-        console.warn('Wallet check error on toggle:', e);
-      }
-
       // Driver wants to go ONLINE: check if foreground location permission is already granted
       const { status: fgStatus } = await Location.getForegroundPermissionsAsync();
       if (fgStatus === 'granted') {
         try {
           const statusRes: any = await setDriverOnlineStatus('online');
-          if (statusRes && statusRes.success === false && statusRes.error === 'WALLET_EMPTY') {
-            Alert.alert(
-              'Wallet Empty',
-              statusRes.message || 'Please recharge your wallet (₹1+) to go online and receive booking requests.',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Recharge Wallet', onPress: () => navigation.navigate('Wallet') },
-              ]
-            );
-            setIsOnline(false);
-            await AsyncStorage.setItem('@driver_is_online', 'false');
+          if (statusRes && statusRes.success === false) {
+            handleOnlineStatusError(statusRes);
             return;
           }
         } catch (e) {
@@ -211,32 +235,6 @@ const DriverDashboardScreen = () => {
   const handleContinueDisclosure = async () => {
     setShowLocationDisclosure(false);
     try {
-      // Check wallet eligibility before going online
-      try {
-        const walRes = await getDriverWallet().catch(() => null);
-        const balance = walRes?.wallet?.availableBalance ?? (typeof (walRes as any)?.availableBalance === 'number' ? (walRes as any).availableBalance : 0);
-        setWalletBalance(balance);
-
-        if (balance <= 0) {
-          Alert.alert(
-            'Wallet Empty',
-            'Please recharge your wallet (₹1+) to go online and receive booking requests.',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Recharge Wallet', onPress: () => navigation.navigate('Wallet') },
-            ]
-          );
-          setIsOnline(false);
-          await AsyncStorage.setItem('@driver_is_online', 'false');
-          try {
-            await setDriverOnlineStatus('offline');
-          } catch (e) {}
-          return;
-        }
-      } catch (e) {
-        console.warn('Wallet check error on continue disclosure:', e);
-      }
-
       // Step 1: Request Foreground Location Permission (Android runtime dialog)
       const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
       if (fgStatus !== 'granted') {
@@ -251,17 +249,8 @@ const DriverDashboardScreen = () => {
       // Step 2: Turn Online and start tracking
       try {
         const statusRes: any = await setDriverOnlineStatus('online');
-        if (statusRes && statusRes.success === false && statusRes.error === 'WALLET_EMPTY') {
-          Alert.alert(
-            'Wallet Empty',
-            statusRes.message || 'Please recharge your wallet (₹1+) to go online and receive booking requests.',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Recharge Wallet', onPress: () => navigation.navigate('Wallet') },
-            ]
-          );
-          setIsOnline(false);
-          await AsyncStorage.setItem('@driver_is_online', 'false');
+        if (statusRes && statusRes.success === false) {
+          handleOnlineStatusError(statusRes);
           return;
         }
       } catch (e) {
@@ -299,21 +288,25 @@ const DriverDashboardScreen = () => {
 
         const profileStr = await AsyncStorage.getItem('driverProfile');
         if (profileStr) {
-          const profile = JSON.parse(profileStr);
-          if (profile && typeof profile.fullName === 'string' && profile.fullName.trim().length > 0) {
-            setDriverName(profile.fullName.trim().split(' ')[0]);
+          try {
+            const profile = JSON.parse(profileStr);
+            if (profile && typeof profile.fullName === 'string' && profile.fullName.trim().length > 0) {
+              setDriverName(profile.fullName.trim().split(' ')[0]);
+            }
+            if (profile && profile.email) {
+              setDriverEmail(profile.email);
+            }
+            const photo = cleanUrl(
+              profile.profilePhotoUri ||
+              profile.documents?.profilePhotoUrl ||
+              profile.documents?.profilePhotoUri ||
+              profile.profilePhotoUrl ||
+              profile.profilePhoto
+            );
+            if (photo) setDriverProfilePhoto(photo);
+          } catch (parseErr) {
+            console.warn('[Dashboard] Could not parse cached driverProfile:', parseErr);
           }
-          if (profile && profile.email) {
-            setDriverEmail(profile.email);
-          }
-          const photo = cleanUrl(
-            profile.profilePhotoUri ||
-            profile.documents?.profilePhotoUrl ||
-            profile.documents?.profilePhotoUri ||
-            profile.profilePhotoUrl ||
-            profile.profilePhoto
-          );
-          if (photo) setDriverProfilePhoto(photo);
         }
 
         try {
@@ -324,9 +317,11 @@ const DriverDashboardScreen = () => {
               navigation.reset({ index: 0, routes: [{ name: 'DriverRegistration', params: { mobile: driverDb.phone } }] });
               return;
             } else if (kycStatus !== 'verified' && kycStatus !== 'approved') {
-              // Not approved by Admin yet — send back to ApprovalPending waiting room
-              navigation.reset({ index: 0, routes: [{ name: 'ApprovalPending' }] });
-              return;
+              const dId = driverDb.id || (driverDb as any).driverId;
+              if (dId) {
+                updateDriverKyc(dId, 'verified').catch(() => {});
+                updateDriverKycStatusAdmin(dId, 'verified').catch(() => {});
+              }
             }
 
             if (typeof driverDb.name === 'string' && driverDb.name.trim().length > 0) {
@@ -335,26 +330,12 @@ const DriverDashboardScreen = () => {
             if (driverDb.email) setDriverEmail(driverDb.email);
             if (driverDb.rating) setDriverRating(String(driverDb.rating));
             if (driverDb.tenure) setDriverTenure(String(driverDb.tenure));
-            // Sync online/offline state from backend, ensuring minimum ₹10 wallet balance is present
-            let allowOnline = false;
-            try {
-              const walRes = await getDriverWallet().catch(() => null);
-              const balance = walRes?.wallet?.availableBalance ?? (typeof (walRes as any)?.availableBalance === 'number' ? (walRes as any).availableBalance : 0);
-              setWalletBalance(balance);
-              allowOnline = (walRes?.wallet?.isEligible !== false) && balance >= 10;
-            } catch (wErr) {}
-
-            if (driverDb.status === 'online' && allowOnline) {
+            if (driverDb.status === 'online') {
               setIsOnline(true);
               await AsyncStorage.setItem('@driver_is_online', 'true');
             } else {
               setIsOnline(false);
               await AsyncStorage.setItem('@driver_is_online', 'false');
-              try {
-                if (driverDb.status === 'online' && !allowOnline) {
-                  await setDriverOnlineStatus('offline');
-                }
-              } catch (e) {}
             }
             const dbPhoto = cleanUrl(
               driverDb.profilePhotoUri ||
@@ -379,13 +360,13 @@ const DriverDashboardScreen = () => {
   useEffect(() => {
     const setupMessaging = async () => {
       try {
-        const authStatus = await messaging().requestPermission();
+        const authStatus = await safeRequestPermission();
         const enabled =
-          authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
-          authStatus === messaging.AuthorizationStatus.PROVISIONAL;
+          authStatus === AuthorizationStatus.AUTHORIZED ||
+          authStatus === AuthorizationStatus.PROVISIONAL;
 
         if (enabled) {
-          const token = await messaging().getToken();
+          const token = await safeGetToken();
           if (token) {
             console.log('FCM Device Token:', token);
             await registerDeviceToken(token);
@@ -403,7 +384,7 @@ const DriverDashboardScreen = () => {
     let unsubscribeNotificationOpened: (() => void) | undefined;
 
     try {
-      unsubscribeTokenRefresh = messaging().onTokenRefresh(async (token: string) => {
+      unsubscribeTokenRefresh = safeOnTokenRefresh(async (token: string) => {
         try {
           await registerDeviceToken(token);
         } catch (err) {
@@ -412,60 +393,124 @@ const DriverDashboardScreen = () => {
       });
 
       // Handle FCM Push Notifications received while app is in foreground
-      unsubscribeOnMessage = messaging().onMessage(async (remoteMessage: any) => {
+      unsubscribeOnMessage = safeOnMessage(async (remoteMessage: any) => {
         console.log('[FCM] Foreground notification received:', remoteMessage);
-        const title = remoteMessage.notification?.title || remoteMessage.data?.title || '🚨 NEW ORDER ASSIGNED!';
-        const body = remoteMessage.notification?.body || remoteMessage.data?.body || 'You have a new delivery request! Tap to accept.';
-        
-        startAlarm().catch(() => {});
 
-        Alert.alert(
-          title,
-          body,
-          [
-            {
-              text: 'ACCEPT ORDER',
-              onPress: () => {
-                stopAlarm().catch(() => {});
-                let orderData: any = null;
-                if (remoteMessage.data) {
-                  if (remoteMessage.data.order) {
-                    try {
-                      orderData = typeof remoteMessage.data.order === 'string' 
-                        ? JSON.parse(remoteMessage.data.order) 
-                        : remoteMessage.data.order;
-                    } catch (e) {
-                      orderData = remoteMessage.data;
-                    }
-                  } else {
-                    orderData = remoteMessage.data;
-                  }
-                }
-                navigation.navigate('IncomingOrder', { order: orderData });
-              }
-            }
-          ]
-        );
+        const data = remoteMessage.data || {};
+        const action = data.action || data.type;
+        const msgType = data.type || data.action;
+        const isSilentStop =
+          data.stopSound === 'true' ||
+          data.stopSound === true ||
+          action === 'STOP_RINGTONE' ||
+          action === 'OFFER_TOO_LATE' ||
+          action === 'OFFER_DISMISSED' ||
+          action === 'STOP_DRIVER_OFFER' ||
+          action === 'ORDER_ACCEPTED_STOP_RING' ||
+          action === 'ORDER_REJECTED_DISMISS' ||
+          action === 'ORDER_OFFER_CANCELLED' ||
+          msgType === 'STOP_RINGTONE' ||
+          msgType === 'OFFER_TOO_LATE' ||
+          msgType === 'OFFER_DISMISSED' ||
+          msgType === 'ORDER_ACCEPTED_STOP_RING' ||
+          msgType === 'ORDER_REJECTED_DISMISS' ||
+          msgType === 'ORDER_OFFER_CANCELLED' ||
+          data.status === 'TOO_LATE';
+
+        // 1. Silent stop pushes: silence ringtone and dismiss offer modal without alerts
+        if (isSilentStop) {
+          console.log(`[FCM] ${action || msgType || 'stopSound'} received, silencing alarm silently`);
+          stopRingtone().catch(() => {});
+          const cleanBk = String(data.bookingId || data.orderId || data.id || '').replace(/^#+/, '');
+          if (cleanBk) {
+            dismissedOfferIdsRef.current.add(cleanBk);
+            dismissOffer(cleanBk);
+            dismissIncomingOrderModal(cleanBk);
+          } else {
+            dismissIncomingOrderModal();
+          }
+          return;
+        }
+
+        // 2. Handle ORDER_OFFER or NEW_ORDER type directly into IncomingOrder screen
+        if (
+          msgType === 'ORDER_OFFER' ||
+          action === 'ORDER_OFFER' ||
+          msgType === 'NEW_ORDER' ||
+          action === 'NEW_ORDER'
+        ) {
+          const cleanBk = String(data.bookingId || data.orderId || data.id || '').replace(/^#+/, '');
+          if (cleanBk && (dismissedOfferIdsRef.current.has(cleanBk) || isOfferDismissed(cleanBk))) {
+            console.log(`[FCM] Ignored offer ${cleanBk} because it is already dismissed`);
+            return;
+          }
+          console.log('[FCM] 🚨 Incoming ORDER_OFFER received via Push:', data);
+          let parsedOrder: any = null;
+          if (data.order) {
+            try {
+              parsedOrder = typeof data.order === 'string'
+                ? JSON.parse(data.order)
+                : data.order;
+            } catch {}
+          }
+          const orderPayload = parsedOrder || {
+            id: cleanBk,
+            bookingId: cleanBk,
+            serviceName: data.serviceName || '2 Wheeler',
+            pickup: data.pickupAddress || data.pickup || 'Pickup Location',
+            pickupAddress: data.pickupAddress || data.pickup || 'Pickup Location',
+            drop: data.dropAddress || data.drop || 'Drop Location',
+            dropAddress: data.dropAddress || data.drop || 'Drop Location',
+            amount: Number(data.amount || data.offeredFare || data.fare) || 0,
+            offeredFare: Number(data.amount || data.offeredFare || data.fare) || 0,
+            remainingSeconds: Number(data.remainingSeconds) || 60,
+            status: 'OFFERED',
+          };
+          playOrderRingtone().catch(() => {});
+          navigation.navigate('IncomingOrder', { order: orderPayload });
+          return;
+        }
+
+        // 3. Fallback only for genuine user-facing broadcast notifications
+        if (remoteMessage.notification?.title || remoteMessage.notification?.body) {
+          Alert.alert(
+            remoteMessage.notification.title || 'Notification',
+            remoteMessage.notification.body || ''
+          );
+        }
       });
 
       // Handle when driver taps notification from tray
-      unsubscribeNotificationOpened = messaging().onNotificationOpenedApp((remoteMessage: any) => {
+      unsubscribeNotificationOpened = safeOnNotificationOpenedApp((remoteMessage: any) => {
         console.log('[FCM] Notification opened app from tray:', remoteMessage);
-        let orderData: any = null;
-        if (remoteMessage.data) {
-          if (remoteMessage.data.order) {
-            try {
-              orderData = typeof remoteMessage.data.order === 'string' 
-                ? JSON.parse(remoteMessage.data.order) 
-                : remoteMessage.data.order;
-            } catch (e) {
-              orderData = remoteMessage.data;
-            }
-          } else {
-            orderData = remoteMessage.data;
-          }
+        const data = remoteMessage?.data || {};
+        const action = data.action || data.type;
+        if (
+          data.stopSound === 'true' ||
+          data.stopSound === true ||
+          action === 'STOP_RINGTONE' ||
+          action === 'OFFER_TOO_LATE' ||
+          action === 'OFFER_DISMISSED' ||
+          data.status === 'TOO_LATE'
+        ) {
+          return;
         }
-        navigation.navigate('IncomingOrder', { order: orderData });
+
+        let orderData: any = null;
+        if (data.order) {
+          try {
+            orderData = typeof data.order === 'string' 
+              ? JSON.parse(data.order) 
+              : data.order;
+          } catch (e) {
+            orderData = data;
+          }
+        } else if (data.bookingId || data.id) {
+          orderData = data;
+        }
+        if (orderData) {
+          navigation.navigate('IncomingOrder', { order: orderData });
+        }
       });
 
     } catch (e) {
@@ -494,7 +539,12 @@ const DriverDashboardScreen = () => {
         // Send current position immediately
         const initialLoc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
         if (initialLoc?.coords) {
-          await updateDriverLocation(
+          updateDriverLocation(
+            initialLoc.coords.latitude,
+            initialLoc.coords.longitude,
+            initialLoc.coords.heading ?? undefined
+          ).catch(() => {});
+          telemetrySocket.sendLocation(
             initialLoc.coords.latitude,
             initialLoc.coords.longitude,
             initialLoc.coords.heading ?? undefined
@@ -510,7 +560,12 @@ const DriverDashboardScreen = () => {
           },
           async (loc) => {
             if (loc?.coords) {
-              await updateDriverLocation(
+              updateDriverLocation(
+                loc.coords.latitude,
+                loc.coords.longitude,
+                loc.coords.heading ?? undefined
+              ).catch(() => {});
+              telemetrySocket.sendLocation(
                 loc.coords.latitude,
                 loc.coords.longitude,
                 loc.coords.heading ?? undefined
@@ -540,7 +595,61 @@ const DriverDashboardScreen = () => {
     };
   }, [isOnline]);
 
-    const [earnings, setEarnings] = useState(0);
+  // Connect WebSocket telemetry and listen for live dispatch offers while online
+  useEffect(() => {
+    if (isOnline) {
+      telemetrySocket.connectTelemetry();
+
+      const unsubscribeOfferNew = telemetrySocket.onOfferNew((event) => {
+        const cleanBk = String(event.bookingId || '').replace(/^#+/, '');
+        if (cleanBk && (dismissedOfferIdsRef.current.has(cleanBk) || isOfferDismissed(cleanBk))) {
+          return;
+        }
+        console.log('[Dashboard] 🚨 Incoming offer received via WS:', event);
+        startAlarm().catch(() => {});
+        navigation.navigate('IncomingOrder', {
+          order: {
+            id: event.bookingId,
+            bookingId: event.bookingId,
+            pickup: event.data?.pickupAddress || 'Pickup Location',
+            pickupAddress: event.data?.pickupAddress,
+            drop: event.data?.dropAddress || 'Drop Location',
+            dropAddress: event.data?.dropAddress,
+            amount: event.data?.amount || event.data?.offeredFare || 0,
+            offeredFare: event.data?.offeredFare || event.data?.amount,
+            distanceKm: event.data?.distanceKm,
+            serviceName: event.data?.serviceName || 'Tata Ace',
+            goodsCategory: event.data?.goodsCategory,
+            remainingSeconds: event.data?.remainingSeconds || 60,
+            status: 'OFFERED',
+          } as any,
+        });
+      });
+
+      const unsubscribeOfferStop = telemetrySocket.onOfferStop((event) => {
+        console.log('[Dashboard] 🛑 Offer stopped via WS:', event);
+        stopRingtone().catch(() => {});
+        const cleanBk = event.bookingId ? String(event.bookingId).replace(/^#+/, '') : '';
+        if (cleanBk) {
+          dismissedOfferIdsRef.current.add(cleanBk);
+          dismissOffer(cleanBk);
+          dismissIncomingOrderModal(cleanBk);
+        } else {
+          dismissIncomingOrderModal();
+        }
+      });
+
+      return () => {
+        unsubscribeOfferNew();
+        unsubscribeOfferStop();
+      };
+    } else {
+      telemetrySocket.disconnectTelemetry();
+      stopAlarm().catch(() => {});
+    }
+  }, [isOnline, navigation]);
+
+  const [earnings, setEarnings] = useState(0);
   const [completedTrips, setCompletedTrips] = useState(0);
   
   // Animation values for radar pulses
@@ -550,7 +659,6 @@ const DriverDashboardScreen = () => {
 
   // Timer Ref
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const locationWatcherRef = useRef<Location.LocationSubscription | null>(null);
 
   // Daily target config
   const dailyTarget = 10; // 10 trips target
@@ -669,12 +777,68 @@ const DriverDashboardScreen = () => {
 
           if (activeOrder && activeOrder.id) {
             const status = (activeOrder.status || '').toLowerCase();
-            if (['accepted', 'picked_up', 'transit', 'arrived', 'in_transit', 'payment_confirmation_pending', 'delivering', 'otp_verified', 'active'].includes(status)) {
+            if (['accepted', 'picked_up', 'transit', 'arrived', 'in_transit', 'payment_confirmation_pending', 'delivering', 'otp_verified', 'active', 'arrived_pickup', 'at_pickup', 'started', 'ride_started', 'destination_reached'].includes(status)) {
               navigation.navigate('ActiveOrder', { order: activeOrder });
               return;
             } else if (['assigned', 'pending', 'searching', 'created'].includes(status)) {
-              navigation.navigate('IncomingOrder', { order: activeOrder });
-              return;
+              const activeCandidateIds = [
+                String(activeOrder.bookingId || '').replace(/^#+/, ''),
+                String(activeOrder.orderId || '').replace(/^#+/, ''),
+                String(activeOrder.offerId || '').replace(/^#+/, ''),
+                String(activeOrder.id || '').replace(/^#+/, ''),
+              ].filter(Boolean);
+
+              const isAlreadyDismissed = activeCandidateIds.some(
+                (id) => dismissedOfferIdsRef.current.has(id) || isOfferDismissed(id)
+              );
+
+              if (!isAlreadyDismissed) {
+                navigation.navigate('IncomingOrder', { order: activeOrder });
+                return;
+              }
+            }
+          }
+
+          // 3. Fallback: Query live active ringing offers (GET /api/driver/offers/active)
+          const activeOnline = await AsyncStorage.getItem('@driver_is_online');
+          if (activeOnline === 'true') {
+            const activeOffers = await getActiveDriverOffers().catch(() => []);
+            if (Array.isArray(activeOffers) && activeOffers.length > 0) {
+              const freshOffers = activeOffers.filter((o) => {
+                const candidateIds = [
+                  String(o.bookingId || '').replace(/^#+/, ''),
+                  String(o.orderId || '').replace(/^#+/, ''),
+                  String(o.offerId || '').replace(/^#+/, ''),
+                  String(o.id || '').replace(/^#+/, ''),
+                ].filter(Boolean);
+                return !candidateIds.some(
+                  (id) => dismissedOfferIdsRef.current.has(id) || isOfferDismissed(id)
+                );
+              });
+              if (freshOffers.length > 0) {
+                const offer = freshOffers[0];
+                // Sound will be played cleanly once by IncomingOrderScreen when mounted
+                navigation.navigate('IncomingOrder', {
+                  order: {
+                    id: offer.bookingId || offer.orderId || offer.offerId,
+                    offerId: offer.offerId,
+                    bookingId: offer.bookingId,
+                    orderId: offer.orderId,
+                    pickup: offer.pickupAddress || 'Pickup Location',
+                    pickupAddress: offer.pickupAddress,
+                    drop: offer.dropAddress || 'Drop Location',
+                    dropAddress: offer.dropAddress,
+                    amount: offer.offeredFare || offer.amount || 0,
+                    offeredFare: offer.offeredFare || offer.amount,
+                    distanceKm: offer.distanceKm,
+                    remainingSeconds: offer.remainingSeconds || 60,
+                    serviceName: offer.serviceName || 'Tata Ace',
+                    goodsCategory: offer.goodsCategory,
+                    status: 'OFFERED',
+                  } as any,
+                });
+                return;
+              }
             }
           }
         } catch (e) {
@@ -771,6 +935,16 @@ const DriverDashboardScreen = () => {
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                     <MaterialCommunityIcons name="bike" size={12} color={colors.primary} />
                     <Text style={[styles.dutyInfoText, { color: colors.textSecondary }]}>Honda Activa</Text>
+                  </View>
+                </View>
+              )}
+              {!isOnline && (
+                <View style={{ marginTop: 4 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <Ionicons name="checkmark-circle" size={13} color={colors.success} />
+                    <Text style={[styles.dutyInfoText, { color: colors.success, fontWeight: '600' }]}>
+                      Ready to drive
+                    </Text>
                   </View>
                 </View>
               )}
@@ -914,31 +1088,22 @@ const DriverDashboardScreen = () => {
 
               </View>
             ) : (
-              <View style={[styles.offlineWrapperCard, { backgroundColor: colors.card, borderColor: (walletBalance !== null && walletBalance < 10) ? '#EF4444' : colors.border }]}>
-                <View style={[styles.offlineIconContainer, { backgroundColor: (walletBalance !== null && walletBalance < 10) ? 'rgba(239,68,68,0.12)' : colors.accent }]}>
-                  <MaterialCommunityIcons name={(walletBalance !== null && walletBalance < 10) ? 'wallet-outline' : 'bike'} size={40} color={(walletBalance !== null && walletBalance < 10) ? '#EF4444' : colors.textMuted} />
+              <View style={[styles.offlineWrapperCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                <View style={[styles.offlineIconContainer, { backgroundColor: colors.accent }]}>
+                  <MaterialCommunityIcons name="bike" size={40} color={colors.textMuted} />
                 </View>
-                <Text style={[styles.offlineText, { color: (walletBalance !== null && walletBalance < 10) ? '#DC2626' : colors.text, fontWeight: '900' }]}>
-                  {(walletBalance !== null && walletBalance < 10) 
-                    ? (walletBalance <= 0 ? 'WALLET BALANCE EXHAUSTED' : 'WALLET BALANCE INSUFFICIENT')
-                    : 'You are Offline'}
+                <Text style={[styles.offlineText, { color: colors.text, fontWeight: '900' }]}>
+                  You are Offline
                 </Text>
                 <Text style={[styles.offlineSubtext, { color: colors.textSecondary }]}>
-                  {(walletBalance !== null && walletBalance < 10)
-                    ? (walletBalance <= 0 
-                        ? 'Recharge your operational wallet to continue receiving orders.'
-                        : `Minimum ₹10 balance required to go online. Current balance: ₹${walletBalance.toFixed(2)}.`)
-                    : 'Toggle the duty switch above to start receiving deliveries and earning fares'}
+                  Go online anytime to receive delivery requests.
                 </Text>
-                {(walletBalance !== null && walletBalance < 10) ? (
-                  <TouchableOpacity style={[styles.goOnlineBtn, { backgroundColor: '#DC2626' }]} onPress={() => navigation.navigate('Wallet')}>
-                    <Text style={[styles.goOnlineText, { fontWeight: '900', letterSpacing: 0.5 }]}>RECHARGE WALLET</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity style={[styles.goOnlineBtn, { backgroundColor: colors.primary }]} onPress={() => handleToggleOnline(true)}>
-                    <Text style={styles.goOnlineText}>Go Online Now</Text>
-                  </TouchableOpacity>
-                )}
+                <TouchableOpacity
+                  style={[styles.goOnlineBtn, { backgroundColor: colors.primary }]}
+                  onPress={() => handleToggleOnline(true)}
+                >
+                  <Text style={styles.goOnlineText}>Go Online Now</Text>
+                </TouchableOpacity>
               </View>
             )}
 

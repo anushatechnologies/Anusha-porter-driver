@@ -23,17 +23,24 @@ import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import Svg, { Path, Rect, Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
-import { updateOrderStatus, getActiveOrder, getOrderDetails, sendDeliveryNotification, createPaymentOrder, getPaymentStatus, verifyDeliveryOtpOnly, confirmPaymentAndCompleteOrder, getDriverWallet, setDriverOnlineStatus } from '../../services/api';
+import { updateOrderStatus, getActiveOrder, getOrderDetails, sendDeliveryNotification, createPaymentOrder, getPaymentStatus, verifyDeliveryOtpOnly, verifyStartRideOtp, confirmPaymentAndCompleteOrder, getDriverWallet, setDriverOnlineStatus } from '../../services/api';
+import { dismissOffer } from '../../services/telemetrySocket';
 import AsyncStorage from '../../services/asyncStorageShim';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 type ActiveRouteProp = RouteProp<RootStackParamList, 'ActiveOrder'>;
 
-const STEPS = [
+const GOODS_STEPS = [
   { key: 'reached_pickup', label: 'Reached Pickup', iconName: 'location', desc: 'Arrived at pickup location' },
   { key: 'picked_up', label: 'Picked Up', iconName: 'cube', desc: 'Package collected from sender' },
   { key: 'start_delivery', label: 'Start Delivery', iconName: 'rocket', desc: 'En route to delivery address' },
   { key: 'delivered', label: 'Delivered', iconName: 'checkmark-circle', desc: 'Package delivered successfully' },
+];
+
+const PASSENGER_STEPS = [
+  { key: 'reached_pickup', label: 'Reached Pickup', iconName: 'location', desc: 'Arrived at passenger pickup' },
+  { key: 'start_ride', label: 'Start Ride', iconName: 'shield-checkmark', desc: 'Verify passenger 4-digit PIN' },
+  { key: 'end_ride', label: 'End Ride & Collect Fare', iconName: 'flag', desc: 'Arrived at destination, collect fare' },
 ];
 
 const UBER_MAP_STYLE = [
@@ -74,6 +81,18 @@ const ActiveOrderScreen = () => {
   // Real live order data from params or live backend sync
   const [activeOrder, setActiveOrder] = useState<any>(route.params?.order || null);
 
+  const isPassenger = Boolean(
+    String(activeOrder?.serviceType || (activeOrder as any)?.service_type || '').toUpperCase() === 'PASSENGER' || 
+    String(activeOrder?.serviceLabel || '').toLowerCase().includes('passenger') ||
+    String(activeOrder?.bookingId || activeOrder?.id || '').toUpperCase().includes('PASS') ||
+    String((activeOrder as any)?.category || '').toLowerCase().includes('passenger') ||
+    String(activeOrder?.vehicleType || activeOrder?.vehicle || '').toLowerCase().includes('cab') ||
+    String(activeOrder?.serviceName || activeOrder?.vehicleName || '').toLowerCase().includes('bike taxi') ||
+    String(activeOrder?.serviceName || activeOrder?.vehicleName || '').toLowerCase().includes('passenger')
+  );
+
+  const STEPS = isPassenger ? PASSENGER_STEPS : GOODS_STEPS;
+
   useEffect(() => {
     let isMounted = true;
     const syncLiveOrder = async () => {
@@ -104,10 +123,26 @@ const ActiveOrderScreen = () => {
 
           const s = (live.status || '').toLowerCase();
           let backendStep = 0;
-          if (s === 'accepted') backendStep = 0;
-          else if (s === 'picked_up') backendStep = 1;
-          else if (s === 'transit' || s === 'in_transit') backendStep = 2;
-          else if (s === 'arrived') backendStep = 3;
+          if (isPassenger) {
+            if (s === 'accepted' || s === 'assigned') backendStep = 0;
+            else if (s === 'arrived' || s === 'arrived_pickup' || s === 'at_pickup') backendStep = 1;
+            else if (s === 'transit' || s === 'in_transit' || s === 'started' || s === 'ride_started') backendStep = 2;
+            else if (s === 'completed' || s === 'delivered' || s === 'destination_reached' || s === 'arrived_drop') {
+              if (s === 'completed' || s === 'delivered') {
+                setCompleted(true);
+              }
+              backendStep = 2;
+            }
+          } else {
+            if (s === 'accepted') backendStep = 0;
+            else if (s === 'picked_up') backendStep = 1;
+            else if (s === 'transit' || s === 'in_transit') backendStep = 2;
+            else if (s === 'arrived') backendStep = 3;
+            else if (s === 'delivered' || s === 'completed') {
+              setCompleted(true);
+              backendStep = 3;
+            }
+          }
 
           // Only advance currentStep, never regress back to 0
           setCurrentStep(prev => Math.max(prev, backendStep));
@@ -172,7 +207,11 @@ const ActiveOrderScreen = () => {
 
   const handleMapPress = () => {
     const targetAddr = currentStep < 2 ? pickupAddress : dropAddress;
-    Linking.openURL(`google.navigation:q=${encodeURIComponent(targetAddr)}`);
+    const navUrl = `google.navigation:q=${encodeURIComponent(targetAddr)}`;
+    const webUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(targetAddr)}`;
+    Linking.openURL(navUrl).catch(() => {
+      Linking.openURL(webUrl).catch(() => {});
+    });
   };
 
   // Map step index to backend status values (Step 3 is null so it strictly opens OTP modal)
@@ -281,31 +320,76 @@ const ActiveOrderScreen = () => {
     });
 
     try {
-      if (currentStep < STEPS.length - 1) {
-        const statusToSend = stepStatuses[currentStep];
-        const meta = { bookingId: displayOrderId, driverName: driverName || 'Driver', customerName, amount: fare };
-        
-        if (statusToSend) {
+      if (isPassenger) {
+        if (currentStep === 0) {
+          // Passenger Step 0: "Reached Pickup" -> notify backend / passenger that driver has arrived
           if (orderId) {
-            const res = await updateOrderStatus(orderId, statusToSend, undefined, meta);
-            if (!res || !res.success) throw new Error(`Backend update status failed for step ${currentStep + 1}`);
-          } else {
-            await sendDeliveryNotification({ orderId: 'LIVE', status: statusToSend, ...meta });
+            await updateOrderStatus(orderId, 'arrived', undefined, {
+              bookingId: displayOrderId,
+              driverName: driverName || 'Driver',
+              status: 'ARRIVED_PICKUP',
+            }).catch(() => {});
           }
+          const nextStep = 1;
+          setCurrentStep(nextStep);
+          if (orderId) {
+            await AsyncStorage.setItem(`@active_cargo_step_${orderId}`, String(nextStep));
+          }
+        } else if (currentStep === 1) {
+          // Passenger Step 1: "Start Ride" -> strictly open Start OTP modal!
+          setShowOtpModal(true);
+        } else if (currentStep === 2) {
+          // Passenger Step 2: "End Ride" -> arrived at destination, complete trip & collect fare!
+          if (orderId) {
+            await updateOrderStatus(orderId, 'arrived', undefined, {
+              bookingId: displayOrderId,
+              driverName: driverName || 'Driver',
+              status: 'DESTINATION_REACHED',
+            }).catch(() => {});
+          }
+
+          const grossFare = typeof fare === 'number' ? fare : parseFloat(String(fare || 0)) || 100;
+          const commission = Math.round(grossFare * (commRate / 100));
+          const netEarning = grossFare - commission;
+          const paymentId = `PAY_${displayOrderId}_${Date.now().toString().slice(-6)}`;
+
+          setPaymentDetails({
+            grossFare,
+            commission,
+            netEarning,
+            paymentId,
+          });
+          setPaymentMethod(null);
+          setCollectedAmount(String(grossFare));
+          setShowPaymentQrModal(true);
         }
-
-        const nextStep = Math.min(currentStep + 1, STEPS.length - 1);
-        setCurrentStep(nextStep);
-
-        // Persist active step state
-        if (orderId) {
-          await AsyncStorage.setItem(`@active_cargo_step_${orderId}`, String(nextStep));
-        }
-
-        console.log('[CARGO] Transition successful to step:', nextStep + 1);
       } else {
-        // Final step (Delivered swipe) strictly opens Customer Delivery OTP modal
-        setShowOtpModal(true);
+        if (currentStep < STEPS.length - 1) {
+          const statusToSend = stepStatuses[currentStep];
+          const meta = { bookingId: displayOrderId, driverName: driverName || 'Driver', customerName, amount: fare };
+          
+          if (statusToSend) {
+            if (orderId) {
+              const res = await updateOrderStatus(orderId, statusToSend, undefined, meta);
+              if (!res || !res.success) throw new Error(`Backend update status failed for step ${currentStep + 1}`);
+            } else {
+              await sendDeliveryNotification({ orderId: 'LIVE', status: statusToSend, ...meta });
+            }
+          }
+
+          const nextStep = Math.min(currentStep + 1, STEPS.length - 1);
+          setCurrentStep(nextStep);
+
+          // Persist active step state
+          if (orderId) {
+            await AsyncStorage.setItem(`@active_cargo_step_${orderId}`, String(nextStep));
+          }
+
+          console.log('[CARGO] Transition successful to step:', nextStep + 1);
+        } else {
+          // Final step (Delivered swipe) strictly opens Customer Delivery OTP modal
+          setShowOtpModal(true);
+        }
       }
     } catch (error) {
       console.error('[CARGO] STEP TRANSITION ERROR', {
@@ -350,7 +434,7 @@ const ActiveOrderScreen = () => {
 
     const enteredOtp = deliveryOtp.join('');
     if (enteredOtp.length < 4) {
-      Alert.alert('Incomplete OTP', 'Please enter the 4-digit Customer Delivery OTP.');
+      Alert.alert('Incomplete OTP', isPassenger && currentStep === 1 ? 'Please enter the 4-digit Passenger Start PIN.' : 'Please enter the 4-digit Customer Delivery OTP.');
       return;
     }
 
@@ -373,6 +457,52 @@ const ActiveOrderScreen = () => {
     completionTriggered.current = true;
     setCompletionState('submitting');
     setVerifyingOtp(true);
+
+    // Handle Passenger Start-Ride OTP verification at pickup
+    if (isPassenger && currentStep === 1) {
+      try {
+        console.log('[PASSENGER] Verifying Start-Ride OTP with backend:', enteredOtp);
+        const res = await verifyStartRideOtp(activeOrder?.bookingId || orderId || displayOrderId, enteredOtp, {
+          lat: PICKUP_COORD.latitude,
+          lng: PICKUP_COORD.longitude,
+          bookingId: activeOrder?.bookingId || displayOrderId,
+        } as any);
+
+        if (!res || !res.success) {
+          setVerifyingOtp(false);
+          completionTriggered.current = false;
+          setCompletionState('failed');
+          Alert.alert(
+            'Incorrect Passenger PIN',
+            res?.message || 'The PIN entered is incorrect. Please ask the passenger for their 4-digit verification code.',
+            [{ text: 'Re-enter PIN', onPress: () => setDeliveryOtp(['', '', '', '']) }]
+          );
+          return;
+        }
+
+        console.log('[PASSENGER] Start-Ride OTP Verified! Moving to IN_TRANSIT.');
+        completionTriggered.current = false;
+        setCompletionState('ready');
+        setVerifyingOtp(false);
+        setShowOtpModal(false);
+        setDeliveryOtp(['', '', '', '']);
+
+        const nextStep = 2; // in_transit
+        setCurrentStep(nextStep);
+        if (orderId) {
+          await AsyncStorage.setItem(`@active_cargo_step_${orderId}`, String(nextStep));
+        }
+
+        Alert.alert('Trip Started! 🛵', 'Passenger verified successfully. You can now begin driving to the destination.');
+        return;
+      } catch (error: any) {
+        completionTriggered.current = false;
+        setVerifyingOtp(false);
+        setCompletionState('failed');
+        Alert.alert('Verification Failed', error?.message || 'Unable to verify PIN with server. Please try again.');
+        return;
+      }
+    }
 
     console.log('[DELIVERY] Swipe started');
     console.log('[DELIVERY] Completion API started', {
@@ -453,13 +583,13 @@ const ActiveOrderScreen = () => {
     }
 
     const parsedCollected = parseFloat(collectedAmount) || 0;
-    const dueAmount = paymentDetails?.grossFare || fare;
+    const dueAmount = Number(paymentDetails?.grossFare ?? fare) || 0;
 
-    if (parsedCollected !== dueAmount) {
+    if (Math.abs(parsedCollected - dueAmount) > 0.01) {
       setPaymentVerifying(false);
       Alert.alert(
         'Validation Error',
-        `Collected amount (₹${parsedCollected}) must match the Amount Due (₹${dueAmount}).`
+        `Collected amount (₹${parsedCollected.toFixed(2)}) must match the Amount Due (₹${dueAmount.toFixed(2)}).`
       );
       return;
     }
@@ -479,29 +609,36 @@ const ActiveOrderScreen = () => {
         pickup: pickupAddress,
         drop: dropAddress,
         distance: activeOrder?.distance || '',
+        serviceType: activeOrder?.serviceType || (isPassenger ? 'PASSENGER' : 'GOODS'),
+        isPassenger,
       };
 
-      // 1. Show immediate visual feedback: Pop Green Checkmark on QR Code
-      setPaymentSuccessAnim(true);
-      setIsPaymentVerifiedByServer(true);
-
-      // 2. Explicit backend call to confirm payment and mark order as DELIVERED in database
+      // 1. Explicit backend call to confirm payment and mark order as DELIVERED in database
       const res = await confirmPaymentAndCompleteOrder(orderId || displayOrderId, meta, completionIdempotencyKey.current);
 
       if (!res || !res.success) {
         setPaymentVerifying(false);
         setPaymentSuccessAnim(false);
+        setIsPaymentVerifiedByServer(false);
 
-        // If HTTP 422: OTP not verified yet -> Return driver to Step 1 (OTP screen)
+        // If HTTP 422: OTP not verified yet -> Return driver to OTP screen (only for cargo goods delivery)
         if (res?.statusCode === 422) {
-          setShowPaymentQrModal(false);
-          setShowOtpModal(true);
-          setDeliveryOtp(['', '', '', '']);
-          Alert.alert(
-            'OTP Required (422)',
-            'Customer OTP is required before confirming payment. Please enter the OTP to continue.',
-            [{ text: 'Enter OTP' }]
-          );
+          if (!isPassenger) {
+            setShowPaymentQrModal(false);
+            setShowOtpModal(true);
+            setDeliveryOtp(['', '', '', '']);
+            Alert.alert(
+              'OTP Required (422)',
+              'Customer OTP is required before confirming payment. Please enter the OTP to continue.',
+              [{ text: 'Enter OTP' }]
+            );
+          } else {
+            Alert.alert(
+              'Settlement Error',
+              res?.message || 'Payment confirmation failed on server. Please try again.',
+              [{ text: 'Retry' }]
+            );
+          }
           return;
         }
 
@@ -513,8 +650,15 @@ const ActiveOrderScreen = () => {
         return;
       }
 
+      // 2. Verified successfully: Pop Green Checkmark
+      setPaymentSuccessAnim(true);
+      setIsPaymentVerifiedByServer(true);
+
       // 3. Clean up active delivery state from storage only after backend confirmation
       const currentKey = String(orderId || displayOrderId || '');
+      dismissOffer(currentKey);
+      if (orderId) dismissOffer(String(orderId));
+      if (displayOrderId) dismissOffer(String(displayOrderId));
       await AsyncStorage.removeItem('@current_active_delivery_id');
       if (currentKey) {
         await AsyncStorage.removeItem(`@active_cargo_step_${currentKey}`);
@@ -531,74 +675,32 @@ const ActiveOrderScreen = () => {
       setCompletionState('success');
       setCompleted(true);
 
-      const gross = res.earnings?.grossFare || paymentDetails?.grossFare || fare;
-      const comm = res.earnings?.platformCommission || paymentDetails?.commission || Math.round(gross * (commRate / 100));
-      const net = res.earnings?.driverNetEarning || paymentDetails?.netEarning || (gross - comm);
+      const gross = res.earnings?.grossFare || (res as any)?.fare?.grossAmount || paymentDetails?.grossFare || fare;
+      const comm = res.earnings?.platformCommission || (res as any)?.fare?.commission || paymentDetails?.commission || Math.round(gross * (commRate / 100));
+      const net = res.earnings?.driverNetEarning || (res as any)?.fare?.driverNet || paymentDetails?.netEarning || (gross - comm);
       const driverPct = Math.max(0, 100 - commRate);
 
-      // Check current persistent running wallet balance
-      let remainingWallet = res.updatedBalance;
-      if (remainingWallet === undefined) {
-        const walRes = await getDriverWallet().catch(() => null);
-        remainingWallet = walRes?.wallet?.availableBalance ?? (typeof (walRes as any)?.availableBalance === 'number' ? (walRes as any).availableBalance : 0);
-      }
-      const finalRemainingWallet = typeof remainingWallet === 'number' ? remainingWallet : 0;
-
-      if (finalRemainingWallet < 10) {
-        // Automatically switch driver OFFLINE when balance falls below ₹10
-        await AsyncStorage.setItem('@driver_is_online', 'false');
-        try {
-          await setDriverOnlineStatus('offline');
-        } catch (e) {}
-
-        Alert.alert(
-          finalRemainingWallet <= 0 ? 'WALLET BALANCE EXHAUSTED' : 'WALLET BALANCE INSUFFICIENT',
-          `Delivery Completed!\n\nRide Fare: ₹${gross}\nAdmin Commission (${commRate}%): -₹${comm}\nYour Net Earnings (${driverPct}%): ₹${net}\n\nRemaining Wallet Balance: ₹${finalRemainingWallet.toFixed(2)}\n\nYour balance is below the minimum required ₹10. Recharge your wallet to continue receiving orders.`,
-          [
-            {
-              text: 'Recharge Wallet',
-              onPress: () => {
-                navigation.dispatch(
-                  CommonActions.reset({
-                    index: 0,
-                    routes: [{ name: 'Wallet' as any }],
-                  })
-                );
-              },
-            },
-            {
-              text: 'Go to Dashboard',
-              style: 'cancel',
-              onPress: () => {
-                navigation.dispatch(
-                  CommonActions.reset({
-                    index: 0,
-                    routes: [{ name: 'DriverTabs' as any }],
-                  })
-                );
-              },
-            },
-          ]
-        );
-      } else {
-        Alert.alert(
-          'Payment Received Successfully 🎉',
-          `Delivery Completed!\n\nTotal Fare: ₹${gross}\nPlatform Fee (${commRate}%): -₹${comm}\nYour Net Earnings (${driverPct}%): ₹${net}\n\nRemaining Wallet Balance: ₹${finalRemainingWallet.toFixed(2)}`,
-          [
-            { 
-              text: 'Return to Dashboard', 
-              onPress: () => {
-                navigation.reset({
+      Alert.alert(
+        isPassenger ? 'Ride Completed 🎉' : 'Delivery Completed 🎉',
+        `Ride Fare: ₹${gross}\nAdmin Commission (${commRate}%): -₹${comm}\nYour Net Earnings (${driverPct}%): ₹${net}`,
+        [
+          { 
+            text: 'Return to Dashboard', 
+            onPress: () => {
+              navigation.dispatch(
+                CommonActions.reset({
                   index: 0,
-                  routes: [{ name: 'DriverTabs' }],
-                });
-              } 
-            }
-          ]
-        );
-      }
+                  routes: [{ name: 'DriverTabs' as any }],
+                })
+              );
+            } 
+          }
+        ]
+      );
     } catch (err: any) {
       setPaymentVerifying(false);
+      setPaymentSuccessAnim(false);
+      setIsPaymentVerifiedByServer(false);
       Alert.alert('Payment Confirmation Failed', err?.message || 'Network error during payment confirmation. Please try again.');
     }
   };
@@ -607,12 +709,14 @@ const ActiveOrderScreen = () => {
     return (
       <View style={[styles.container, styles.completedContainer, { backgroundColor: colors.background }]}>
         <Ionicons name="checkmark-circle" size={84} color={colors.success} style={{ marginBottom: 16 }} />
-        <Text style={[styles.completedTitle, { color: colors.text }]}>✓ Delivery Completed</Text>
+        <Text style={[styles.completedTitle, { color: colors.text }]}>
+          {isPassenger ? '✓ Ride Completed' : '✓ Delivery Completed'}
+        </Text>
         <Text style={[styles.completedSub, { color: colors.textSecondary, marginBottom: 4 }]}>
-          Order {displayOrderId}
+          {isPassenger ? `Ride ${displayOrderId}` : `Order ${displayOrderId}`}
         </Text>
         <Text style={{ fontSize: 14, color: colors.textMuted, marginBottom: 16, textAlign: 'center' }}>
-          Successfully delivered to {customerName}
+          {isPassenger ? `Trip completed with ${customerName}` : `Successfully delivered to ${customerName}`}
         </Text>
         <View style={{ backgroundColor: 'rgba(16,185,129,0.1)', paddingHorizontal: 24, paddingVertical: 14, borderRadius: 16, marginBottom: 28, borderWidth: 1, borderColor: 'rgba(16,185,129,0.2)' }}>
           <Text style={{ fontSize: 24, fontWeight: '800', color: colors.success, textAlign: 'center' }}>
@@ -645,7 +749,7 @@ const ActiveOrderScreen = () => {
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
-          <Text style={[styles.headerSub, { color: colors.primary }]}>Active Delivery</Text>
+          <Text style={[styles.headerSub, { color: colors.primary }]}>{isPassenger ? 'Active Ride' : 'Active Delivery'}</Text>
           <Text style={[styles.headerTitle, { color: colors.text }]}>{displayOrderId}</Text>
         </View>
         <View style={[styles.fareBadge, { 
@@ -745,7 +849,9 @@ const ActiveOrderScreen = () => {
               style={[styles.contactBtn, { backgroundColor: 'rgba(16,185,129,0.15)' }]}
               onPress={() => {
                 if (customerPhone && customerPhone.trim().length > 0) {
-                  Linking.openURL(`tel:${customerPhone}`);
+                  Linking.openURL(`tel:${customerPhone}`).catch(() => {
+                    Alert.alert('Notice', 'Unable to start call on this device.');
+                  });
                 } else {
                   Alert.alert('Notice', 'Customer phone number is not available for this order.');
                 }
@@ -774,7 +880,13 @@ const ActiveOrderScreen = () => {
             </View>
             <TouchableOpacity 
               style={[styles.navBtn, { backgroundColor: theme === 'dark' ? 'rgba(0,82,255,0.2)' : 'rgba(0,82,255,0.08)' }]}
-              onPress={() => Linking.openURL(`google.navigation:q=${encodeURIComponent(pickupAddress)}`)}
+              onPress={() => {
+                const navUrl = `google.navigation:q=${encodeURIComponent(pickupAddress)}`;
+                const webUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(pickupAddress)}`;
+                Linking.openURL(navUrl).catch(() => {
+                  Linking.openURL(webUrl).catch(() => {});
+                });
+              }}
             >
               <Ionicons name="navigate-outline" size={16} color={colors.primary} />
             </TouchableOpacity>
@@ -790,16 +902,24 @@ const ActiveOrderScreen = () => {
             </View>
             <TouchableOpacity 
               style={[styles.navBtn, { backgroundColor: theme === 'dark' ? 'rgba(0,82,255,0.2)' : 'rgba(0,82,255,0.08)' }]}
-              onPress={() => Linking.openURL(`google.navigation:q=${encodeURIComponent(dropAddress)}`)}
+              onPress={() => {
+                const navUrl = `google.navigation:q=${encodeURIComponent(dropAddress)}`;
+                const webUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(dropAddress)}`;
+                Linking.openURL(navUrl).catch(() => {
+                  Linking.openURL(webUrl).catch(() => {});
+                });
+              }}
             >
               <Ionicons name="navigate-outline" size={16} color={colors.primary} />
             </TouchableOpacity>
           </View>
         </View>
 
-        {/* Delivery Progress Steps */}
+        {/* Delivery / Ride Progress Steps */}
         <View style={[styles.stepsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <Text style={[styles.stepsTitle, { color: colors.text }]}>Delivery Progress</Text>
+          <Text style={[styles.stepsTitle, { color: colors.text }]}>
+            {isPassenger ? 'Ride Progress' : 'Delivery Progress'}
+          </Text>
           {STEPS.map((step, index) => (
             <View key={step.key} style={styles.stepRow}>
               <View style={styles.stepLeft}>
@@ -844,25 +964,33 @@ const ActiveOrderScreen = () => {
       {/* Action Button: Swipe to Confirm */}
       <View style={[styles.footer, { backgroundColor: colors.background, borderTopColor: colors.border }]}>
         <SwipeButton 
-          title={STEPS[currentStep]?.label || 'Confirm Step'}
-          iconName={STEPS[currentStep]?.iconName || 'checkmark-circle'}
+          title={STEPS[Math.min(currentStep, Math.max(0, STEPS.length - 1))]?.label || 'Confirm Step'}
+          iconName={STEPS[Math.min(currentStep, Math.max(0, STEPS.length - 1))]?.iconName || 'checkmark-circle'}
           colors={colors}
           isTransitioning={isTransitioning}
           onComplete={handleStepComplete}
         />
       </View>
 
-      {/* Customer Delivery OTP Modal */}
+      {/* Customer Verification OTP Modal (Start PIN for Passenger or Delivery OTP for Goods) */}
       <Modal visible={showOtpModal} transparent animationType="slide" onRequestClose={() => setShowOtpModal(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <View style={[styles.modalIconBadge, { backgroundColor: theme === 'dark' ? 'rgba(0,82,255,0.2)' : 'rgba(0,82,255,0.1)' }]}>
-              <Ionicons name="shield-checkmark" size={28} color={colors.primary} />
+            <View style={[styles.modalIconBadge, { 
+              backgroundColor: isPassenger 
+                ? (theme === 'dark' ? 'rgba(16,185,129,0.2)' : 'rgba(16,185,129,0.1)')
+                : (theme === 'dark' ? 'rgba(0,82,255,0.2)' : 'rgba(0,82,255,0.1)') 
+            }]}>
+              <Ionicons name="shield-checkmark" size={28} color={isPassenger ? colors.success : colors.primary} />
             </View>
 
-            <Text style={[styles.modalTitle, { color: colors.text }]}>Customer Delivery OTP</Text>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              {isPassenger && currentStep === 1 ? 'Enter Passenger Start PIN' : 'Customer Delivery OTP'}
+            </Text>
             <Text style={[styles.modalSub, { color: colors.textSecondary }]}>
-              Ask the customer for their 4-digit verification code to complete delivery.
+              {isPassenger && currentStep === 1
+                ? 'Ask the passenger for their 4-digit start PIN to begin the ride.'
+                : 'Ask the customer for their 4-digit verification code to complete delivery.'}
             </Text>
 
             <View style={styles.modalOtpRow}>
@@ -872,16 +1000,32 @@ const ActiveOrderScreen = () => {
                   ref={otpInputRefs[idx]}
                   style={[
                     styles.modalOtpBox,
-                    { backgroundColor: colors.surface, borderColor: digit ? colors.primary : colors.border, color: colors.text }
+                    { 
+                      backgroundColor: colors.surface, 
+                      borderColor: digit ? (isPassenger ? colors.success : colors.primary) : colors.border, 
+                      color: colors.text 
+                    }
                   ]}
                   keyboardType="number-pad"
-                  maxLength={1}
+                  maxLength={4}
                   value={digit}
                   onChangeText={(val) => {
+                    const clean = val.replace(/\D/g, '');
+                    if (clean.length > 1) {
+                      const digits = clean.slice(0, 4).split('');
+                      const newOtp = [...deliveryOtp];
+                      digits.forEach((d, i) => {
+                        if (idx + i < 4) newOtp[idx + i] = d;
+                      });
+                      setDeliveryOtp(newOtp);
+                      const targetIdx = Math.min(3, idx + digits.length - 1);
+                      otpInputRefs[targetIdx].current?.focus();
+                      return;
+                    }
                     const newOtp = [...deliveryOtp];
-                    newOtp[idx] = val;
+                    newOtp[idx] = clean.slice(-1);
                     setDeliveryOtp(newOtp);
-                    if (val && idx < 3) otpInputRefs[idx + 1].current?.focus();
+                    if (clean && idx < 3) otpInputRefs[idx + 1].current?.focus();
                   }}
                   onKeyPress={(e) => {
                     if (e.nativeEvent.key === 'Backspace' && !deliveryOtp[idx] && idx > 0) {
@@ -893,14 +1037,16 @@ const ActiveOrderScreen = () => {
             </View>
 
             <TouchableOpacity
-              style={[styles.modalVerifyBtn, { backgroundColor: colors.primary }]}
+              style={[styles.modalVerifyBtn, { backgroundColor: isPassenger ? colors.success : colors.primary }]}
               onPress={handleVerifyDeliveryOtp}
               disabled={verifyingOtp}
             >
               {verifyingOtp ? (
                 <ActivityIndicator color="#FFFFFF" size="small" />
               ) : (
-                <Text style={styles.modalVerifyBtnText}>Verify OTP & Complete Delivery</Text>
+                <Text style={styles.modalVerifyBtnText}>
+                  {isPassenger && currentStep === 1 ? 'Verify PIN & Start Ride' : 'Verify OTP & Complete Delivery'}
+                </Text>
               )}
             </TouchableOpacity>
 
@@ -925,7 +1071,9 @@ const ActiveOrderScreen = () => {
                   <Text style={[styles.qrTitle, { color: colors.text }]}>Payment Collection</Text>
                   <View style={styles.otpSuccessBadge}>
                     <Ionicons name="checkmark-circle" size={12} color="#10B981" />
-                    <Text style={styles.otpSuccessBadgeText}>OTP Verified</Text>
+                    <Text style={styles.otpSuccessBadgeText}>
+                      {isPassenger ? 'Trip Completed' : 'OTP Verified'}
+                    </Text>
                   </View>
                 </View>
                 <Text style={[styles.qrSub, { color: colors.textMuted }]}>
@@ -1011,16 +1159,16 @@ const ActiveOrderScreen = () => {
             <View style={[styles.ledgerCard, { backgroundColor: colors.surface, borderColor: colors.border, width: '100%', marginBottom: 16 }]}>
               <View style={styles.ledgerRow}>
                 <Text style={[styles.ledgerLabel, { color: colors.textSecondary }]}>Gross Trip Fare</Text>
-                <Text style={[styles.ledgerVal, { color: colors.text }]}>₹{(paymentDetails?.grossFare || fare).toFixed(2)}</Text>
+                <Text style={[styles.ledgerVal, { color: colors.text }]}>₹{Number(paymentDetails?.grossFare ?? fare ?? 0).toFixed(2)}</Text>
               </View>
               <View style={styles.ledgerRow}>
                 <Text style={[styles.ledgerLabel, { color: colors.textSecondary }]}>Platform Commission ({commRate}%)</Text>
-                <Text style={[styles.ledgerVal, { color: '#EF4444' }]}>-₹{(paymentDetails?.commission || Math.round((paymentDetails?.grossFare || fare) * (commRate / 100))).toFixed(2)}</Text>
+                <Text style={[styles.ledgerVal, { color: '#EF4444' }]}>-₹{Number(paymentDetails?.commission ?? Math.round(Number(paymentDetails?.grossFare ?? fare ?? 0) * (commRate / 100))).toFixed(2)}</Text>
               </View>
               <View style={[styles.ledgerDivider, { backgroundColor: colors.border }]} />
               <View style={styles.ledgerRow}>
                 <Text style={[styles.ledgerNetLabel, { color: colors.text }]}>Your Net Earnings</Text>
-                <Text style={styles.ledgerNetVal}>₹{(paymentDetails?.netEarning || (paymentDetails?.grossFare || fare) - Math.round((paymentDetails?.grossFare || fare) * (commRate / 100))).toFixed(2)}</Text>
+                <Text style={styles.ledgerNetVal}>₹{Number(paymentDetails?.netEarning ?? (Number(paymentDetails?.grossFare ?? fare ?? 0) - Math.round(Number(paymentDetails?.grossFare ?? fare ?? 0) * (commRate / 100)))).toFixed(2)}</Text>
               </View>
             </View>
 

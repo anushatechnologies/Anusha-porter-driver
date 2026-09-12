@@ -81,12 +81,25 @@ const DriverProfileScreen = () => {
         const cleanDbVeh = (driverDb.vehicleNumber || '').replace(/TG01AB1234/gi, '').trim();
 
         const merged = {
+          ...(localProfile || {}),
           fullName: cleanDbName || localProfile?.fullName || 'Driver Partner',
           mobile: driverDb.phone || localProfile?.mobile || localProfile?.phone || '',
           phone: driverDb.phone || localProfile?.phone || localProfile?.mobile || '',
           email: cleanDbEmail || localProfile?.email || '',
+          dob: driverDb.dob || localProfile?.dob || '',
+          gender: driverDb.gender || localProfile?.gender || '',
           vehicleType: driverDb.vehicleType || localProfile?.vehicleType || 'Vehicle',
           vehicleNumber: cleanDbVeh || localProfile?.vehicleNumber || '',
+          rcNumber: driverDb.rcNumber || localProfile?.rcNumber || '',
+          aadhaarNumber: driverDb.aadhaarNumber || localProfile?.aadhaarNumber || '',
+          panNumber: driverDb.panNumber || localProfile?.panNumber || '',
+          licenseNumber: driverDb.licenseNumber || localProfile?.licenseNumber || '',
+          accountHolderName: driverDb.accountHolderName || localProfile?.accountHolderName || '',
+          bankName: payoutAccount?.bankName || driverDb.bankName || localProfile?.bankName || '',
+          accountNumber: payoutAccount?.accountNumberMasked || (driverDb.accountNumber ? `XXXX XXXX ${driverDb.accountNumber.slice(-4)}` : (localProfile?.accountNumber ? `XXXX XXXX ${localProfile.accountNumber.slice(-4)}` : '')),
+          ifscCode: payoutAccount?.ifscCode || driverDb.ifscCode || localProfile?.ifscCode || '',
+          upiId: payoutAccount?.upiId || localProfile?.upiId || '',
+          partnerId: driverDb.id ? 'PRT-' + driverDb.id : (localProfile?.partnerId || (localProfile?.mobile ? 'PRT-' + localProfile.mobile.slice(-4) : 'PRT-PENDING')),
           rating: String(driverDb.rating || localProfile?.rating || '5.0'),
           tenure: String(driverDb.tenure || localProfile?.tenure || '0m'),
           kyc: (driverDb.kyc || driverDb.kycStatus || localProfile?.kyc || 'pending'),
@@ -94,16 +107,18 @@ const DriverProfileScreen = () => {
           city: driverDb.city || localProfile?.city || '',
           state: driverDb.state || localProfile?.state || '',
           pincode: driverDb.pincode || localProfile?.pincode || '',
-          bankName: payoutAccount?.bankName || driverDb.bankName || localProfile?.bankName || '',
-          accountNumber: payoutAccount?.accountNumberMasked || (driverDb.accountNumber ? `XXXX XXXX ${driverDb.accountNumber.slice(-4)}` : (localProfile?.accountNumber ? `XXXX XXXX ${localProfile.accountNumber.slice(-4)}` : '')),
-          ifscCode: payoutAccount?.ifscCode || driverDb.ifscCode || localProfile?.ifscCode || '',
-          upiId: payoutAccount?.upiId || localProfile?.upiId || '',
+          panUri: cleanUrl(driverDb.panUri || driverDb.panUrl || driverDb.documents?.panUrl || (driverDb.documents as any)?.panUri || localProfile?.panUri || ''),
           profilePhotoUri: resolvedPhoto || localProfile?.profilePhotoUri,
+          aadhaarUri: cleanUrl(driverDb.aadhaarUri || driverDb.documents?.aadhaarUrl || localProfile?.aadhaarUri || ''),
+          licenseUri: cleanUrl(driverDb.licenseUri || driverDb.documents?.licenseUrl || localProfile?.licenseUri || ''),
+          rcUri: cleanUrl(driverDb.rcUri || driverDb.documents?.rcUrl || localProfile?.rcUri || ''),
+          bankPassbookUri: cleanUrl(driverDb.bankPassbookUri || driverDb.documents?.bankPassbookUrl || localProfile?.bankPassbookUri || ''),
           documents: {
-            aadhaarUrl: cleanUrl(driverDb.documents?.aadhaarUrl || localProfile?.documents?.aadhaarUrl || ''),
-            licenseUrl: cleanUrl(driverDb.documents?.licenseUrl || localProfile?.documents?.licenseUrl || ''),
-            rcUrl: cleanUrl(driverDb.documents?.rcUrl || localProfile?.documents?.rcUrl || ''),
-            bankPassbookUrl: cleanUrl(driverDb.documents?.bankPassbookUrl || localProfile?.documents?.bankPassbookUrl || ''),
+            aadhaarUrl: cleanUrl(driverDb.documents?.aadhaarUrl || localProfile?.documents?.aadhaarUrl || localProfile?.aadhaarUri || ''),
+            panUrl: cleanUrl(driverDb.documents?.panUrl || (driverDb.documents as any)?.panUri || driverDb.panUrl || driverDb.panUri || localProfile?.documents?.panUrl || localProfile?.panUri || ''),
+            licenseUrl: cleanUrl(driverDb.documents?.licenseUrl || localProfile?.documents?.licenseUrl || localProfile?.licenseUri || ''),
+            rcUrl: cleanUrl(driverDb.documents?.rcUrl || localProfile?.documents?.rcUrl || localProfile?.rcUri || ''),
+            bankPassbookUrl: cleanUrl(driverDb.documents?.bankPassbookUrl || localProfile?.documents?.bankPassbookUrl || localProfile?.bankPassbookUri || ''),
           }
         };
 
@@ -203,6 +218,7 @@ const DriverProfileScreen = () => {
                 vehicleNumber: driverDb.vehicleNumber || localProfile?.vehicleNumber || '',
                 rcNumber: driverDb.rcNumber || localProfile?.rcNumber || '',
                 aadhaarNumber: driverDb.aadhaarNumber || localProfile?.aadhaarNumber || '',
+                panNumber: driverDb.panNumber || localProfile?.panNumber || '',
                 licenseNumber: driverDb.licenseNumber || localProfile?.licenseNumber || '',
                 bankName: driverDb.bankName || localProfile?.bankName || '',
                 accountHolderName: driverDb.accountHolderName || localProfile?.accountHolderName || '',
@@ -211,6 +227,7 @@ const DriverProfileScreen = () => {
                 partnerId: driverDb.id ? 'PRT-' + driverDb.id : (localProfile?.partnerId || (localProfile?.mobile ? 'PRT-' + localProfile.mobile.slice(-4) : 'PRT-PENDING')),
                 profilePhotoUri: rawPhoto,
                 aadhaarUri: cleanUrl(driverDb.aadhaarUri || driverDb.documents?.aadhaarUrl || localProfile?.aadhaarUri || ''),
+                panUri: cleanUrl(driverDb.panUri || driverDb.panUrl || driverDb.documents?.panUrl || (driverDb.documents as any)?.panUri || localProfile?.panUri || ''),
                 licenseUri: cleanUrl(driverDb.licenseUri || driverDb.documents?.licenseUrl || localProfile?.licenseUri || ''),
                 rcUri: cleanUrl(driverDb.rcUri || driverDb.documents?.rcUrl || localProfile?.rcUri || ''),
                 bankPassbookUri: cleanUrl(driverDb.bankPassbookUri || driverDb.documents?.bankPassbookUrl || localProfile?.bankPassbookUri || ''),
@@ -281,6 +298,25 @@ const DriverProfileScreen = () => {
   const partnerId = profileData?.partnerId || 'PRT-00000';
   const vehicleMake = profileData?.vehicleType || 'Vehicle';
   const vehiclePlate = profileData?.vehicleNumber || '';
+
+  const vehicleIconName = (() => {
+    const v = (vehicleMake || '').toLowerCase();
+    if (v.includes('cab') || v.includes('car') || v.includes('taxi')) return 'car';
+    if (v.includes('auto') || v.includes('3 wheeler') || v.includes('three')) return 'rickshaw';
+    if (v.includes('truck') || v.includes('ace') || v.includes('bolero') || v.includes('pickup')) return 'truck';
+    return 'bike';
+  })();
+
+  const serviceCapability = (() => {
+    const raw = String(profileData?.serviceType || (profileData as any)?.service_type || '').toUpperCase();
+    if (raw === 'PASSENGER') return { label: 'Passenger Rides Only', icon: 'account-group', color: '#10B981' };
+    if (raw === 'GOODS') return { label: 'Goods & Logistics Only', icon: 'truck-delivery', color: '#3B82F6' };
+    if (raw === 'BOTH') return { label: 'Rides + Goods Delivery', icon: 'star', color: '#F59E0B' };
+    const v = (vehicleMake || '').toLowerCase();
+    if (v.includes('cab') || v.includes('car')) return { label: 'Passenger Rides Only', icon: 'account-group', color: '#10B981' };
+    if (v.includes('truck') || v.includes('ace')) return { label: 'Goods & Logistics Only', icon: 'truck-delivery', color: '#3B82F6' };
+    return { label: 'Rides + Goods Delivery', icon: 'star', color: '#F59E0B' };
+  })();
 
   const handleToggleTheme = () => {
     if (themeMode === 'light') {
@@ -540,7 +576,7 @@ const DriverProfileScreen = () => {
           <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border }, !isDark && styles.softShadow]}>
             <View style={styles.vehicleRow}>
               <View style={[styles.iconBox, { backgroundColor: 'rgba(13,92,255,0.1)' }]}>
-                <MaterialCommunityIcons name="bike" size={24} color="#0D5CFF" />
+                <MaterialCommunityIcons name={vehicleIconName as any} size={24} color="#0D5CFF" />
               </View>
               <View style={styles.vehicleTextCol}>
                 <Text style={[styles.vehicleMake, { color: colors.textSecondary }]}>{vehicleMake}</Text>
@@ -549,6 +585,12 @@ const DriverProfileScreen = () => {
               <View style={styles.activeTag}>
                 <Text style={styles.activeTagText}>ACTIVE</Text>
               </View>
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10, paddingVertical: 5, paddingHorizontal: 10, backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)', borderRadius: 8, gap: 6 }}>
+              <MaterialCommunityIcons name={serviceCapability.icon as any} size={14} color={serviceCapability.color} />
+              <Text style={{ fontSize: 12, fontWeight: '700', color: serviceCapability.color }}>
+                {serviceCapability.label}
+              </Text>
             </View>
             {!!profileData?.rcNumber && (
               <>
@@ -577,6 +619,16 @@ const DriverProfileScreen = () => {
                   <Ionicons name="finger-print-outline" size={18} color="#0D5CFF" />
                   <Text style={[styles.detailItemLabel, { color: colors.textSecondary }]}>Aadhaar No:</Text>
                   <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData.aadhaarNumber}</Text>
+                </View>
+              </>
+            )}
+            {!!profileData?.panNumber && (
+              <>
+                <View style={[styles.fieldDivider, { backgroundColor: colors.border }]} />
+                <View style={styles.detailItemRow}>
+                  <Ionicons name="document-text-outline" size={18} color="#0D5CFF" />
+                  <Text style={[styles.detailItemLabel, { color: colors.textSecondary }]}>PAN Number:</Text>
+                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData.panNumber}</Text>
                 </View>
               </>
             )}
@@ -621,18 +673,6 @@ const DriverProfileScreen = () => {
           <Text style={[styles.sectionTitle, { color: colors.text }]}>Settings & Support</Text>
           <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border, padding: 0, overflow: 'hidden' }, !isDark && styles.softShadow]}>
             
-            <TouchableOpacity style={[styles.menuRow, { borderBottomColor: colors.border, borderBottomWidth: StyleSheet.hairlineWidth }]} onPress={() => navigation.navigate('Wallet' as any)}>
-              <View style={styles.menuLeft}>
-                <View style={[styles.menuIconBg, { backgroundColor: 'rgba(0,82,255,0.1)' }]}>
-                  <Ionicons name="wallet" size={18} color="#0052FF" />
-                </View>
-                <View>
-                  <Text style={[styles.menuText, { color: colors.text }]}>Operational Driver Wallet</Text>
-                  <Text style={[styles.menuSubtext, { color: colors.textSecondary }]}>Recharge balance for ride commissions</Text>
-                </View>
-              </View>
-              <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
-            </TouchableOpacity>
 
             <TouchableOpacity style={[styles.menuRow, { borderBottomColor: colors.border, borderBottomWidth: StyleSheet.hairlineWidth }]} onPress={() => navigation.navigate('OrderHistory' as any)}>
               <View style={styles.menuLeft}>
@@ -755,7 +795,7 @@ const DriverProfileScreen = () => {
             <Ionicons name="log-out-outline" size={20} color="#EF4444" />
           </TouchableOpacity>
 
-          <Text style={[styles.versionText, { color: colors.textMuted }]}>Anusha Porter Driver v2.0.0 (Production)</Text>
+          <Text style={[styles.versionText, { color: colors.textMuted }]}>Anusha Porter Driver v2.28.6 (Production)</Text>
         </View>
       </ScrollView>
 

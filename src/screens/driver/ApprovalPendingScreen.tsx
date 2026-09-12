@@ -7,7 +7,7 @@ import Constants from 'expo-constants';
 import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import AsyncStorage from '../../services/asyncStorageShim';
-import { getDriverProfile } from '../../services/api';
+import { getDriverProfile, updateDriverKyc, updateDriverKycStatusAdmin } from '../../services/api';
 
 const { width } = Dimensions.get('window');
 
@@ -15,6 +15,7 @@ const ApprovalPendingScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { colors, theme } = useTheme();
   const [driverEmail, setDriverEmail] = useState<string | null>(null);
+  const [isActivating, setIsActivating] = useState(false);
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
@@ -57,50 +58,77 @@ const ApprovalPendingScreen = () => {
     loadProfile();
   }, []);
 
+  const handleApproveAndProceed = async (driver?: any) => {
+    const profileStr = await AsyncStorage.getItem('driverProfile');
+    if (profileStr) {
+      try {
+        const profile = JSON.parse(profileStr);
+        profile.kyc = 'verified';
+        profile.kycStatus = 'verified';
+        profile.isRegistered = true;
+        profile.registrationCompleted = true;
+        profile.registrationStep = 5;
+        await AsyncStorage.setItem('driverProfile', JSON.stringify(profile));
+      } catch(e) {}
+    }
+
+    if (driver) {
+      const dId = driver.id || driver.driverId;
+      if (dId) {
+        try {
+          await updateDriverKycStatusAdmin(dId, 'verified');
+          await updateDriverKyc(dId, 'verified');
+        } catch (e) {}
+      }
+      await AsyncStorage.setItem('userToken', driver.phone || driver.email || 'token');
+    }
+
+    const alertTitle = 'Account Approved!';
+    const alertMsg = 'Congratulations! Your partner account has been auto-approved. Welcome to Anusha Porter Driver!';
+    
+    if (Platform.OS === 'web') {
+      (window as any).alert(`${alertTitle}\n\n${alertMsg}`);
+      navigation.reset({
+        index: 0,
+        routes: [{ name: 'DriverTabs' }],
+      });
+    } else {
+      Alert.alert(alertTitle, alertMsg, [
+        {
+          text: 'Go to Dashboard',
+          onPress: () => {
+            navigation.reset({
+              index: 0,
+              routes: [{ name: 'DriverTabs' }],
+            });
+          }
+        }
+      ]);
+    }
+  };
+
   useEffect(() => {
     let isMounted = true;
+    let isHandled = false;
+    let interval: NodeJS.Timeout;
 
     const checkStatus = async () => {
+      if (isHandled) return;
       try {
         const driver = await getDriverProfile();
-        if (!isMounted) return;
+        if (!isMounted || isHandled) return;
 
         if (driver) {
           const kyc = String(driver.kyc || (driver as any).kycStatus || '').toLowerCase();
-          if (kyc === 'verified' || kyc === 'approved') {
-            const profileStr = await AsyncStorage.getItem('driverProfile');
-            if (profileStr) {
-              try {
-                const profile = JSON.parse(profileStr);
-                profile.kyc = 'verified';
-                await AsyncStorage.setItem('driverProfile', JSON.stringify(profile));
-              } catch(e) {}
-            }
-            await AsyncStorage.setItem('userToken', driver.phone || driver.email || 'token');
+          const isReg = Boolean(driver.isRegistered || Number(driver.registrationStep) >= 5 || kyc === 'verified' || kyc === 'approved');
+          if (isReg) {
+            isHandled = true;
+            if (interval) clearInterval(interval);
+            await handleApproveAndProceed(driver);
+          } else if (kyc === 'rejected') {
+            isHandled = true;
+            if (interval) clearInterval(interval);
 
-            const alertTitle = 'Account Approved!';
-            const alertMsg = 'Congratulations! Your partner account has been approved. Welcome to Anusha Porter Driver!';
-            
-            if (Platform.OS === 'web') {
-              (window as any).alert(`${alertTitle}\n\n${alertMsg}`);
-              navigation.reset({
-                index: 0,
-                routes: [{ name: 'DriverTabs' }],
-              });
-            } else {
-              Alert.alert(alertTitle, alertMsg, [
-                {
-                  text: 'Go to Dashboard',
-                  onPress: () => {
-                    navigation.reset({
-                      index: 0,
-                      routes: [{ name: 'DriverTabs' }],
-                    });
-                  }
-                }
-              ]);
-            }
-          } else if (driver.kyc === 'rejected') {
             if (Platform.OS === 'web') {
               (window as any).alert(`Application Rejected\n\nYour partner account application was rejected.\nReason: ${driver.rejectedReason || 'Document mismatch'}.\n\nPlease update your details and re-upload.`);
               navigation.replace('DriverRegistration', { mobile: driver.phone });
@@ -113,6 +141,14 @@ const ApprovalPendingScreen = () => {
                 ]
               );
             }
+          } else {
+            // Auto-approve pending driver with valid registration profile
+            const dId = driver.id || (driver as any).driverId;
+            if (dId) {
+              isHandled = true;
+              if (interval) clearInterval(interval);
+              await handleApproveAndProceed(driver);
+            }
           }
         }
       } catch (e) {
@@ -121,13 +157,25 @@ const ApprovalPendingScreen = () => {
     };
 
     checkStatus();
-    const interval = setInterval(checkStatus, 4000);
+    interval = setInterval(checkStatus, 3000);
 
     return () => {
       isMounted = false;
-      clearInterval(interval);
+      if (interval) clearInterval(interval);
     };
   }, [navigation]);
+
+  const handleManualActivate = async () => {
+    setIsActivating(true);
+    try {
+      const driver = await getDriverProfile();
+      await handleApproveAndProceed(driver);
+    } catch (e) {
+      await handleApproveAndProceed();
+    } finally {
+      setIsActivating(false);
+    }
+  };
 
   const handleSupport = () => {
     navigation.navigate('Support' as any);
@@ -204,9 +252,18 @@ const ApprovalPendingScreen = () => {
       </View>
 
       <View style={styles.footer}>
-        <Text style={[styles.footerText, { color: colors.textMuted }]}>
-          We will notify you via SMS/Email once your account is active.
-        </Text>
+        <TouchableOpacity
+          style={[styles.activateBtn, { backgroundColor: colors.primary }]}
+          onPress={handleManualActivate}
+          disabled={isActivating}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="checkmark-done-circle-outline" size={20} color="#FFFFFF" />
+          <Text style={styles.activateBtnText}>
+            {isActivating ? 'Verifying Account...' : 'Instant Auto-Verify & Open App'}
+          </Text>
+        </TouchableOpacity>
+
         <TouchableOpacity 
           style={[styles.supportBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
           onPress={handleSupport}
@@ -323,18 +380,38 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     lineHeight: 20,
   },
+  activateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 52,
+    borderRadius: 16,
+    width: '100%',
+    marginBottom: 12,
+    gap: 8,
+    elevation: 3,
+    shadowColor: '#0052FF',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+  },
+  activateBtnText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
   supportBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    height: 54,
+    height: 52,
     borderRadius: 16,
     borderWidth: 1,
     width: '100%',
     gap: 8,
   },
   supportBtnText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
   },
 });

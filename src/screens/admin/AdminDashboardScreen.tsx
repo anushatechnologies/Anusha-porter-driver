@@ -226,11 +226,12 @@ const AdminDashboardScreen = () => {
             {[
               { icon: 'people-outline', route: 'DriverManagement', label: 'Drivers', color: colors.primary },
               { icon: 'car-sport-outline', route: 'VehicleManagement', label: 'Vehicle Types', color: '#6366F1' },
-              { icon: 'package-variant-closed', route: 'OrderManagement', label: 'Orders', color: colors.info },
+              { icon: 'cube-outline', route: 'OrderManagement', label: 'Orders', color: colors.info },
               { icon: 'cash-outline', route: 'PaymentManagement', label: 'Payments', color: colors.success },
               { icon: 'person-outline', route: 'UserManagement', label: 'Users', color: colors.warning },
               { icon: 'bar-chart-outline', route: 'Analytics', label: 'Analytics', color: colors.error },
               { icon: 'wallet-outline', route: 'WalletSettings', label: 'Wallet Config', color: '#10B981' },
+              { icon: 'map-outline', route: 'ServiceableAreas', label: 'Service Areas', color: '#0284C7' },
             ].map(action => (
               <TouchableOpacity key={action.label} style={[styles.actionCard, { backgroundColor: colors.card, borderColor: colors.border }]} onPress={() => navigation.navigate(action.route as any)}>
                 <Ionicons name={action.icon as any} size={22} color={action.color} />

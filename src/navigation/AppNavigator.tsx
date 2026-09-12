@@ -1,10 +1,14 @@
 import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeContext';
-
+import { InAppUpdateModal } from '../components/InAppUpdateModal';
+import { useInAppUpdate } from '../hooks/useInAppUpdate';
+import { setRouteGetter } from '../services/updateSafety';
+import { navigationRef } from './navigationRef';
+export { navigationRef };
 // Auth Screens
 import SplashScreen from '../screens/auth/SplashScreen';
 import LoginScreen from '../screens/auth/LoginScreen';
@@ -32,24 +36,36 @@ import PaymentManagementScreen from '../screens/admin/PaymentManagementScreen';
 import AnalyticsScreen from '../screens/admin/AnalyticsScreen';
 import WalletSettingsScreen from '../screens/admin/WalletSettingsScreen';
 import VehicleManagementScreen from '../screens/admin/VehicleManagementScreen';
+import ServiceableAreasScreen from '../screens/admin/ServiceableAreasScreen';
 
 export type ActiveOrderData = {
-  id: number;
+  id: number | string;
+  offerId?: number | string;
+  bookingId?: string;
+  orderId?: number | string;
+  driverId?: number | string;
   status: string;
-  pickup: string;
-  drop: string;
+  pickup?: string;
+  drop?: string;
   pickupAddress?: string;
   dropAddress?: string;
   amount: number;
+  offeredFare?: number;
   distance?: string;
+  distanceKm?: number;
+  remainingSeconds?: number;
+  expiresAt?: string;
+  serviceName?: string;
+  goodsCategory?: string;
   customerName?: string;
   customerPhone?: string;
+  [key: string]: any;
 };
 
 export type RootStackParamList = {
   Splash: undefined;
   Login: { role?: 'driver' | 'admin'; phone?: string; mobile?: string } | undefined;
-  DriverRegistration: { mobile?: string; firebaseIdToken?: string; fullName?: string } | undefined;
+  DriverRegistration: { mobile?: string; firebaseIdToken?: string; fullName?: string; registrationStep?: number; draftData?: any } | undefined;
   ApprovalPending: undefined;
   DriverTabs: undefined;
   IncomingOrder: { order: ActiveOrderData } | undefined;
@@ -67,6 +83,7 @@ export type RootStackParamList = {
   PaymentManagement: undefined;
   Analytics: undefined;
   WalletSettings: undefined;
+  ServiceableAreas: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -110,8 +127,30 @@ const DriverTabNavigator = () => {
 };
 
 const AppNavigator = () => {
+  const {
+    isModalVisible,
+    modalMode,
+    allowLater,
+    handleUpdateNow,
+    handleLater,
+    runUpdateCheck,
+  } = useInAppUpdate();
+
   return (
-    <NavigationContainer>
+    <NavigationContainer
+      ref={navigationRef}
+      onReady={() => {
+        setRouteGetter(() =>
+          navigationRef.isReady() ? navigationRef.getCurrentRoute()?.name : undefined
+        );
+      }}
+      onStateChange={() => {
+        const currentRoute = navigationRef.getCurrentRoute()?.name;
+        if (currentRoute && currentRoute !== 'Splash') {
+          runUpdateCheck(currentRoute);
+        }
+      }}
+    >
       <Stack.Navigator
         initialRouteName="Splash"
         screenOptions={{ headerShown: false, animation: 'slide_from_right' }}
@@ -131,6 +170,7 @@ const AppNavigator = () => {
         <Stack.Screen name="PaymentManagement" component={PaymentManagementScreen} />
         <Stack.Screen name="Analytics" component={AnalyticsScreen} />
         <Stack.Screen name="WalletSettings" component={WalletSettingsScreen} />
+        <Stack.Screen name="ServiceableAreas" component={ServiceableAreasScreen} />
         
         {/* Modals & Stack Screens */}
         <Stack.Screen
@@ -141,10 +181,19 @@ const AppNavigator = () => {
         <Stack.Screen name="ActiveOrder" component={ActiveOrderScreen} />
         <Stack.Screen name="Notifications" component={NotificationsScreen} />
         <Stack.Screen name="OrderHistory" component={OrderHistoryScreen} />
-        <Stack.Screen name="Wallet" component={DriverWalletScreen} />
+        <Stack.Screen name="Wallet" component={DriverDashboardScreen} />
         <Stack.Screen name="Support" component={SupportScreen} />
         <Stack.Screen name="PrivacyPolicy" component={PrivacyPolicyScreen} />
       </Stack.Navigator>
+
+      {/* Official Google Play in-app update popup */}
+      <InAppUpdateModal
+        visible={isModalVisible}
+        mode={modalMode}
+        allowLater={allowLater}
+        onUpdateNow={handleUpdateNow}
+        onLater={handleLater}
+      />
     </NavigationContainer>
   );
 };

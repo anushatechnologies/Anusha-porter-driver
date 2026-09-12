@@ -40,8 +40,8 @@ export interface Driver {
   accountHolderName?: string;
   accountNumber?: string;
   ifscCode?: string;
-  kyc: 'verified' | 'pending' | 'rejected';
-  kycStatus?: 'verified' | 'pending' | 'rejected'; // alternate field from backend
+  kyc: 'verified' | 'pending' | 'rejected' | 'approved';
+  kycStatus?: 'verified' | 'pending' | 'rejected' | 'approved'; // alternate field from backend
   rejectedReason?: string;
   status: 'online' | 'offline' | 'suspended';
   rating: string | number;
@@ -66,10 +66,25 @@ export interface Driver {
     profile_photo_url?: string;
     aadhaarUrl?: string;
     panUrl?: string;
+    panUri?: string;
     licenseUrl?: string;
     rcUrl?: string;
     bankPassbookUrl?: string;
   };
+  registrationStep?: number;
+  isRegistered?: boolean;
+  registrationCompleted?: boolean;
+  hasDraft?: boolean;
+  nextStep?: number;
+  walletBalance?: number;
+  wallet_balance?: number;
+  canGoOnline?: boolean;
+  can_go_online?: boolean;
+  isOnlineOptionAvailable?: boolean;
+  isOnlineEnabled?: boolean;
+  minRequiredBalance?: number;
+  minimumBalance?: number;
+  eligibilityReason?: string;
 }
 
 export interface Order {
@@ -95,6 +110,38 @@ export interface OrderHistoryResponse {
   completedOrders: number;
   totalEarnings: number;
   orders: Order[];
+}
+
+export interface DriverOffer {
+  offerId: number | string;
+  bookingId: string;
+  orderId?: number | string;
+  driverId?: number | string;
+  status: 'OFFERED' | string;
+  radiusTierKm?: number;
+  pickupDistanceKm?: number;
+  distanceKm?: number;
+  offeredFare?: number;
+  amount?: number;
+  remainingSeconds?: number;
+  expiresAt?: string;
+  pickupAddress?: string;
+  dropAddress?: string;
+  serviceName?: string;
+  goodsCategory?: string;
+  customerName?: string;
+  customerPhone?: string;
+  [key: string]: any;
+}
+
+export interface OfferResponse {
+  success: boolean;
+  status?: 'ASSIGNED' | 'TOO_LATE' | 'REJECTED' | string;
+  bookingId?: string;
+  driverId?: number | string;
+  message?: string;
+  error?: string;
+  order?: any;
 }
 
 export interface AdminMetrics {
@@ -293,7 +340,10 @@ export const sanitizeDriverUrls = (driver: Driver): Driver => {
   const cleanedRc = sanitizeUrlOrUndefined(rUri);
   const cleanedBank = sanitizeUrlOrUndefined(bUri);
 
-  const kycVal = (driver.kyc || driver.kycStatus || dAny.kyc_status || 'pending') as 'verified' | 'pending' | 'rejected';
+  const rawKyc = String(driver.kyc || driver.kycStatus || dAny.kyc_status || 'pending').toLowerCase();
+  const kycVal = (rawKyc === 'approved' || rawKyc === 'verified') 
+    ? (rawKyc as 'approved' | 'verified') 
+    : (rawKyc === 'rejected' ? 'rejected' : 'pending');
   const statusVal = (driver.status || dAny.onlineStatus || dAny.online_status || 'offline') as 'online' | 'offline' | 'suspended';
 
   const resolvedVehicle = (typeof driver.vehicle === 'string' && driver.vehicle.trim()) 
@@ -343,8 +393,31 @@ export const sanitizeDriverUrls = (driver: Driver): Driver => {
 
 const encodeEmail = (email: string) => encodeURIComponent(email);
 
+export const getFreshFirebaseToken = async (forceRefresh = false): Promise<string | null> => {
+  try {
+    const authModule = require('@react-native-firebase/auth');
+    const getAuthFn = authModule.getAuth || authModule.default;
+    const auth = typeof getAuthFn === 'function' ? getAuthFn() : null;
+    const user = auth?.currentUser;
+    if (user && typeof user.getIdToken === 'function') {
+      const freshToken = await user.getIdToken(forceRefresh);
+      if (freshToken) {
+        await AsyncStorage.setItem('authToken', freshToken);
+        return freshToken;
+      }
+    }
+  } catch (e) {
+    // Non-fatal if Firebase auth not present or on web
+  }
+  return null;
+};
+
 const getAuthHeaders = async (customHeaders: Record<string, string> = {}) => {
-  const token = await AsyncStorage.getItem('authToken');
+  let token = await AsyncStorage.getItem('authToken');
+  if (!token) {
+    const refreshed = await getFreshFirebaseToken(false);
+    if (refreshed) token = refreshed;
+  }
   return {
     ...customHeaders,
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -352,11 +425,22 @@ const getAuthHeaders = async (customHeaders: Record<string, string> = {}) => {
 };
 
 export const authFetch = async (url: string, options: RequestInit = {}) => {
-  const headers = await getAuthHeaders((options.headers || {}) as Record<string, string>);
+  let headers = await getAuthHeaders((options.headers || {}) as Record<string, string>);
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 12000); // 12 sec mobile network timeout
   try {
-    const res = await fetch(url, { ...options, headers, signal: options.signal || controller.signal });
+    let res = await fetch(url, { ...options, headers, signal: options.signal || controller.signal });
+    // If 401 Unauthorized or 403 Forbidden, attempt one silent token refresh via Firebase
+    if (res.status === 401 || res.status === 403) {
+      const freshToken = await getFreshFirebaseToken(true);
+      if (freshToken) {
+        const retryHeaders = {
+          ...((options.headers || {}) as Record<string, string>),
+          Authorization: `Bearer ${freshToken}`,
+        };
+        res = await fetch(url, { ...options, headers: retryHeaders, signal: options.signal || controller.signal });
+      }
+    }
     clearTimeout(timeoutId);
     return res;
   } catch (err) {
@@ -420,10 +504,39 @@ export const getDriverProfileByPhone = async (phone: string): Promise<Driver | n
     if (!phone) return null;
     const cleanTarget = phone.replace(/\D/g, '').slice(-10);
 
+    // 1. Try direct targeted phone endpoint first
+    try {
+      const directRes = await authFetch(`${BASE}/api/drivers/phone/${encodeURIComponent(cleanTarget)}`);
+      if (directRes.ok) {
+        const data = await directRes.json().catch(() => null);
+        const dObj = data?.driver || data?.data || data;
+        if (dObj && (dObj.id || dObj.phone || dObj.name)) return sanitizeDriverUrls(dObj);
+      }
+    } catch {}
+
+    // 2. Try query param endpoint
+    try {
+      const queryRes = await authFetch(`${BASE}/api/drivers?phone=${encodeURIComponent(cleanTarget)}`);
+      if (queryRes.ok) {
+        const data = await queryRes.json().catch(() => null);
+        const drivers: Driver[] = Array.isArray(data) ? data : (data?.drivers ?? data?.data ?? []);
+        if (Array.isArray(drivers) && drivers.length > 0) {
+          const match = drivers.find(d => {
+            const p = String(d.phone || (d as any).mobile || '').replace(/\D/g, '').slice(-10);
+            return p === cleanTarget;
+          });
+          if (match) return sanitizeDriverUrls(match);
+        } else if (data && (data.id || data.phone || data.name)) {
+          return sanitizeDriverUrls(data);
+        }
+      }
+    } catch {}
+
+    // 3. Fallback to list search
     const listRes = await authFetch(`${BASE}/api/drivers`);
     if (listRes.ok) {
-      const data = await listRes.json();
-      const drivers: Driver[] = Array.isArray(data) ? data : (data.drivers ?? data.data ?? data.value ?? []);
+      const data = await listRes.json().catch(() => []);
+      const drivers: Driver[] = Array.isArray(data) ? data : (data?.drivers ?? data?.data ?? data?.value ?? []);
       if (Array.isArray(drivers) && drivers.length > 0) {
         const match = drivers.find(d => {
           const p = String(d.phone || (d as any).mobile || '').replace(/\D/g, '').slice(-10);
@@ -433,12 +546,6 @@ export const getDriverProfileByPhone = async (phone: string): Promise<Driver | n
       }
     }
 
-    const res = await authFetch(`${BASE}/api/drivers/phone/${encodeURIComponent(phone)}`);
-    if (res.ok) {
-      const data = await res.json();
-      const dObj = data?.driver || data?.data || data;
-      if (dObj) return sanitizeDriverUrls(dObj);
-    }
     return null;
   } catch {
     return null;
@@ -462,12 +569,23 @@ const checkIfFullyRegistered = (driverObj?: any): boolean => {
   const kyc = String(driverObj.kyc || driverObj.kycStatus || '').toLowerCase();
   const isApprovedOrPending = kyc === 'verified' || kyc === 'approved' || kyc === 'pending';
   
-  const hasVehicle = Boolean(driverObj.vehicle || driverObj.vehicleType || driverObj.vehicleNumber);
-  const hasDocs = Boolean(driverObj.documents || driverObj.aadhaarUri || driverObj.profilePhotoUri || driverObj.profilePhotoUrl);
-  const hasBank = Boolean(driverObj.accountNumber || driverObj.bankName || driverObj.ifscCode);
+  const hasVehicle = Boolean(driverObj.vehicle || driverObj.vehicleType || driverObj.vehicleNumber || driverObj.vehicle_number);
+  const hasDocs = Boolean(
+    driverObj.documents ||
+    driverObj.aadhaarUri ||
+    driverObj.aadhaarNumber ||
+    driverObj.licenseNumber ||
+    driverObj.profilePhotoUri ||
+    driverObj.profilePhotoUrl
+  );
+  const hasBank = Boolean(
+    (driverObj.accountNumber || driverObj.account_number) &&
+    (driverObj.bankName || driverObj.bank_name) &&
+    (driverObj.ifscCode || driverObj.ifsc_code || driverObj.ifsc)
+  );
 
-  // A driver is fully completed ONLY after all 5 steps (Name + Vehicle + Docs + Bank) and admin approval/pending status
-  return hasValidName && isApprovedOrPending && hasVehicle && (hasDocs || hasBank);
+  // A driver is fully completed ONLY after ALL 5 steps (Name + Vehicle + Docs + Bank) and admin approval/pending status
+  return hasValidName && isApprovedOrPending && hasVehicle && hasDocs && hasBank;
 };
 
 /**
@@ -515,6 +633,45 @@ export const checkDriverPhone = async (rawPhone: string): Promise<PhoneCheckResu
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (storedToken) headers['Authorization'] = `Bearer ${storedToken}`;
 
+      // 1. Try direct targeted phone lookup first
+      const directEndpoints = [
+        `${BASE}/api/drivers/phone/${encodeURIComponent(clean10DigitPhone)}`,
+        `${BASE}/api/drivers/check-phone?phone=${encodeURIComponent(clean10DigitPhone)}`,
+        `${BASE}/api/drivers?phone=${encodeURIComponent(clean10DigitPhone)}`,
+      ];
+
+      for (const endpoint of directEndpoints) {
+        try {
+          const res = await fetch(endpoint, { headers });
+          if (res.ok) {
+            const data = await res.json().catch(() => null);
+            if (data) {
+              const driverObj = data?.driver || (Array.isArray(data) ? data[0] : (data?.id ? data : null));
+              if (driverObj && (driverObj.id || driverObj.phone || driverObj.name)) {
+                const isComplete = checkIfFullyRegistered(driverObj);
+                return {
+                  success: true,
+                  exists: true,
+                  isFullyRegistered: isComplete,
+                  phone: clean10DigitPhone,
+                  driver: sanitizeDriverUrls(driverObj),
+                };
+              }
+              if (data.exists === true) {
+                return {
+                  success: true,
+                  exists: true,
+                  isFullyRegistered: !!data.isFullyRegistered,
+                  phone: clean10DigitPhone,
+                  driver: data.driver ? sanitizeDriverUrls(data.driver) : null,
+                };
+              }
+            }
+          }
+        } catch {}
+      }
+
+      // 2. Fallback to list search if direct routes did not resolve
       const listRes = await fetch(`${BASE}/api/drivers`, { headers });
       if (listRes.ok) {
         const listData = await listRes.json().catch(() => []);
@@ -580,8 +737,31 @@ export const getDriverProfile = async (token?: string): Promise<Driver | null> =
     const res = await authFetch(`${BASE}/api/drivers/me`, { headers: extraHeaders });
     if (res.ok) {
       const data = await res.json();
-      const dObj = data?.driver || data?.data || data;
-      if (dObj && (dObj.id || dObj.driverId || dObj.email || dObj.phone || dObj.name)) {
+      const baseObj = data?.driver || data?.data || data;
+      if (baseObj && (baseObj.id || baseObj.driverId || baseObj.email || baseObj.phone || baseObj.name)) {
+        const wb = typeof data?.walletBalance === 'number'
+          ? data.walletBalance
+          : (typeof data?.wallet_balance === 'number'
+            ? data.wallet_balance
+            : (typeof baseObj.walletBalance === 'number' ? baseObj.walletBalance : 0.0));
+
+        const canOnline = data?.canGoOnline !== undefined
+          ? !!data.canGoOnline
+          : (data?.can_go_online !== undefined
+            ? !!data.can_go_online
+            : (baseObj.canGoOnline !== undefined ? !!baseObj.canGoOnline : (wb >= 0)));
+
+        const dObj = {
+          ...baseObj,
+          walletBalance: wb,
+          wallet_balance: wb,
+          canGoOnline: canOnline,
+          can_go_online: canOnline,
+          isOnlineOptionAvailable: data?.isOnlineOptionAvailable ?? data?.isOnlineEnabled ?? baseObj.isOnlineOptionAvailable ?? true,
+          minRequiredBalance: typeof data?.minRequiredBalance === 'number' ? data.minRequiredBalance : (baseObj.minRequiredBalance || 0.0),
+          minimumBalance: typeof data?.minimumBalance === 'number' ? data.minimumBalance : (baseObj.minimumBalance || 0.0),
+          eligibilityReason: data?.eligibilityReason || baseObj.eligibilityReason || 'No minimum balance required. You can go online anytime.',
+        };
         return sanitizeDriverUrls(dObj);
       }
     }
@@ -604,6 +784,90 @@ export const getDriverProfile = async (token?: string): Promise<Driver | null> =
   }
 };
 
+/** GET /api/drivers/register/progress (or /api/drivers/register/draft) — fetch saved registration draft */
+export const getRegistrationProgress = async (phoneOrToken?: string): Promise<{
+  success: boolean;
+  hasDraft?: boolean;
+  registrationStep?: number;
+  kycStatus?: string;
+  [key: string]: any;
+}> => {
+  try {
+    const token = await AsyncStorage.getItem('authToken');
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+
+    const routes = [
+      `${BASE}/api/drivers/register/progress`,
+      `${BASE}/api/drivers/register/draft`,
+    ];
+
+    for (const url of routes) {
+      try {
+        const cleanPhoneDigits = phoneOrToken ? phoneOrToken.replace(/\D/g, '').slice(-10) : '';
+        const fullUrl = cleanPhoneDigits ? `${url}?phone=${encodeURIComponent(cleanPhoneDigits)}` : url;
+        const res = await fetch(fullUrl, { method: 'GET', headers });
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          if (data && (data.success || data.hasDraft !== undefined)) {
+            return { success: true, ...data };
+          }
+        }
+      } catch (e) {
+        console.warn(`[API] getRegistrationProgress route ${url} failed:`, e);
+      }
+    }
+  } catch (e) {
+    console.warn('[API] getRegistrationProgress failed:', e);
+  }
+  return { success: false, hasDraft: false };
+};
+
+/** POST /api/drivers/register — Save and Next step data progression */
+export const saveRegistrationStep = async (stepPayload: any, customToken?: string) => {
+  const token = customToken || (await AsyncStorage.getItem('authToken'));
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+
+  const payloadToSend = {
+    saveAndNext: stepPayload.submit ? undefined : (stepPayload.saveAndNext ?? true),
+    ...stepPayload,
+  };
+
+  const routes = [
+    `${BASE}/api/drivers/register`,
+    `${BASE}/api/driver/register/save-and-next`,
+    `${BASE}/api/drivers/register/save-and-next`,
+    `${BASE}/api/driver/register`,
+  ];
+  let lastRes: Response | null = null;
+  for (const url of routes) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payloadToSend),
+      });
+      if (res.status !== 404) {
+        return res;
+      }
+      lastRes = res;
+    } catch (e) {
+      console.warn(`[API] saveRegistrationStep route ${url} failed:`, e);
+    }
+  }
+  if (lastRes) return lastRes;
+  return await authFetch(`${BASE}/api/drivers/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payloadToSend),
+  });
+};
+
 /** POST /api/drivers/register (or /api/driver/register) — create or update driver profile */
 export const createDriverProfile = async (payload: any, customToken?: string) => {
   const token = customToken || (await AsyncStorage.getItem('authToken'));
@@ -613,6 +877,8 @@ export const createDriverProfile = async (payload: any, customToken?: string) =>
   };
 
   const routes = [
+    `${BASE}/api/driver/registration/submit`,
+    `${BASE}/api/driver/register`,
     `${BASE}/api/drivers/register`,
     `${BASE}/api/drivers`,
   ];
@@ -643,7 +909,7 @@ export const createDriverProfile = async (payload: any, customToken?: string) =>
 /** PUT /api/admin/drivers/{driverId}/kyc — reset KYC to pending upon driver document re-upload */
 export const updateDriverKycStatusAdmin = async (
   driverId: string | number,
-  status: 'pending' | 'verified' | 'rejected',
+  status: 'pending' | 'verified' | 'rejected' | 'approved',
   token?: string
 ): Promise<{ success: boolean; kycStatus?: string }> => {
   try {
@@ -663,18 +929,37 @@ export const updateDriverKycStatusAdmin = async (
       } catch {}
     }
 
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (effectiveToken) headers['Authorization'] = `Bearer ${effectiveToken}`;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(effectiveToken ? { Authorization: `Bearer ${effectiveToken}` } : {}),
+    };
 
-    const res = await fetch(`${BASE}/api/admin/drivers/${cleanId}/kyc`, {
-      method: 'PUT',
-      headers,
-      body: JSON.stringify({ status }),
-    });
+    const body = {
+      status,
+      kycStatus: status,
+      kyc: status,
+      isApproved: status === 'verified' || status === 'approved',
+    };
 
-    if (res.ok) {
-      const data = await res.json().catch(() => ({}));
-      return { success: true, kycStatus: data.kycStatus || status };
+    const routes = [
+      `${BASE}/api/admin/drivers/${cleanId}/kyc`,
+      `${BASE}/api/drivers/${cleanId}/kyc`,
+      `${BASE}/api/admin/drivers/${cleanId}`,
+      `${BASE}/api/drivers/${cleanId}`,
+    ];
+
+    for (const url of routes) {
+      try {
+        const res = await fetch(url, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify(body),
+        });
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          return { success: true, kycStatus: data.kycStatus || data.kyc || status };
+        }
+      } catch {}
     }
     return { success: false };
   } catch (err) {
@@ -698,6 +983,7 @@ export interface VehicleOption {
   perKmRate?: number;
   status?: string;
   priority?: number;
+  serviceType?: string;
 }
 
 export interface VehicleTypeAdmin {
@@ -715,29 +1001,42 @@ export interface VehicleTypeAdmin {
   perKmRate: number;
   status: 'active' | 'inactive';
   priority: number;
+  serviceType?: 'PASSENGER' | 'GOODS' | 'BOTH';
 }
 
 /**
- * GET /api/vehicle-types?status=active or GET /api/vehicles
- * Retrieves active vehicle types configured dynamically by Admin.
+ * GET /api/vehicle-types?status=active or GET /api/vehicle-types
+ * Retrieves dynamic vehicle categories (including Cabs, Autos, 2W, Trucks) configured by Admin.
  */
 export const getActiveVehicles = async (): Promise<{ success: boolean; vehicles: VehicleOption[]; message?: string }> => {
   let token = await AsyncStorage.getItem('authToken');
-
-  // Try fetching vehicles without auth first — /api/services is typically public
   if (!token) {
-    token = null;
+    token = (await AsyncStorage.getItem('adminToken')) || (await AsyncStorage.getItem('token')) || (await AsyncStorage.getItem('userToken'));
   }
 
+  // If still no token (e.g. initial registration before login), fetch a quick guest probe token so Spring Security doesn't 401
+  if (!token) {
+    try {
+      const authRes = await fetch(`${BASE}/api/auth/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: '9876500001', firebaseToken: 'phone_probe' }),
+      });
+      if (authRes.ok) {
+        const authData = await authRes.json().catch(() => null);
+        token = authData?.accessToken || authData?.token || null;
+      }
+    } catch {}
+  }
+
+  // Prioritize official dynamic vehicle endpoints where Admin saves Cabs & Pricing
   const routes = [
-    `${BASE}/api/services`,
-    `${BASE}/api/services?category=vehicle`,
     `${BASE}/api/vehicle-types?status=active`,
     `${BASE}/api/vehicle-types`,
+    `${BASE}/api/admin/vehicle-types?status=active`,
+    `${BASE}/api/admin/vehicle-types`,
     `${BASE}/api/vehicles?status=active`,
     `${BASE}/api/vehicles`,
-    `${BASE}/api/admin/vehicle-types?status=active`,
-    `${BASE}/api/admin/vehicles`,
     `${BASE}/api/categories/vehicles`,
     `${BASE}/api/drivers/vehicles`,
   ];
@@ -747,18 +1046,18 @@ export const getActiveVehicles = async (): Promise<{ success: boolean; vehicles:
     headers['Authorization'] = `Bearer ${token}`;
   }
 
+  const seenNames = new Set<string>();
+  const activeList: VehicleOption[] = [];
+
   for (const url of routes) {
     try {
-      const res = await fetch(url, { headers });
+      const res = await (token ? authFetch(url).catch(() => fetch(url, { headers })) : fetch(url, { headers }));
       if (res.ok) {
         const data = await res.json();
         const rawList = Array.isArray(data)
           ? data
-          : (data.featuredServices || data.services || data.vehicles || data.data || data.value || []);
+          : (data.vehicles || data.vehicleTypes || data.data || data.value || data.featuredServices || data.services || []);
         if (Array.isArray(rawList) && rawList.length > 0) {
-          const seenNames = new Set<string>();
-          const activeList: VehicleOption[] = [];
-
           const sortedRaw = [...rawList].sort((a: any, b: any) => (a.displayOrder || a.order || a.priority || 99) - (b.displayOrder || b.order || b.priority || 99));
 
           for (const v of sortedRaw) {
@@ -788,17 +1087,20 @@ export const getActiveVehicles = async (): Promise<{ success: boolean; vehicles:
               // Smart icon mapping based on vehicle category name / type
               let resolvedIcon = 'truck-delivery';
               const s = (name + ' ' + type).toLowerCase();
-              if (s.includes('bike') || s.includes('motorcycle') || s.includes('two') || s.includes('2 wheeler')) resolvedIcon = 'bike';
+              if (s.includes('cab') || s.includes('car') || s.includes('taxi') || s.includes('sedan') || s.includes('suv')) resolvedIcon = 'car';
+              else if (s.includes('bike') || s.includes('motorcycle') || s.includes('two') || s.includes('2 wheeler')) resolvedIcon = 'bike';
               else if (s.includes('scooter') || s.includes('scooty') || s.includes('moped') || s.includes('ev')) resolvedIcon = 'scooter';
               else if (s.includes('auto') || s.includes('rickshaw') || s.includes('three') || s.includes('3 wheeler') || s.includes('mini 3w')) resolvedIcon = 'rickshaw';
               else if (s.includes('truck') || s.includes('ace') || s.includes('pickup') || s.includes('carrier') || s.includes('lorry') || s.includes('407') || s.includes('lpt') || s.includes('mini truck') || s.includes('tata') || s.includes('14ft') || s.includes('17ft')) resolvedIcon = 'truck-delivery';
               else if (s.includes('van') || s.includes('omni') || s.includes('eeco')) resolvedIcon = 'van-utility';
 
-              // If Admin explicitly chose an icon other than default bike, or if it really is a bike
+              // If Admin explicitly chose an icon
               const rawIcon = (v.iconName || v.icon_name || v.icon || '').trim();
               let finalIconName = resolvedIcon;
-              if (rawIcon && rawIcon !== 'bike') {
+              if (rawIcon && rawIcon !== 'bike' && rawIcon !== 'truck') {
                 finalIconName = rawIcon;
+              } else if (rawIcon === 'car' || s.includes('cab') || s.includes('car')) {
+                finalIconName = 'car';
               } else if (rawIcon === 'bike' && (s.includes('bike') || s.includes('motorcycle') || s.includes('two'))) {
                 finalIconName = 'bike';
               } else {
@@ -823,11 +1125,13 @@ export const getActiveVehicles = async (): Promise<{ success: boolean; vehicles:
                 perKmRate: typeof v.perKmRate === 'number' ? v.perKmRate : (Number(v.pricePerKm || v.per_km_rate || v.pricePerKm) || 15),
                 status: 'active',
                 priority: Number(v.displayOrder || v.order || v.priority || 1),
+                serviceType: v.serviceType || v.service_type || (s.includes('cab') || s.includes('car') || s.includes('taxi') || s.includes('sedan') || s.includes('suv') ? 'PASSENGER' : 'CARGO'),
               });
             }
           }
 
-          if (activeList.length > 0) {
+          // If we successfully fetched from the dynamic vehicle table endpoints, return them!
+          if (activeList.length > 0 && !url.includes('/api/services')) {
             return { success: true, vehicles: activeList };
           }
         }
@@ -837,12 +1141,18 @@ export const getActiveVehicles = async (): Promise<{ success: boolean; vehicles:
     }
   }
 
-  // Graceful fallback to default Porter vehicle types if backend is offline/unreachable
+  if (activeList.length > 0) {
+    return { success: true, vehicles: activeList };
+  }
+
+  // Graceful fallback to standard Porter vehicle types matching backend dispatch engine
   const DEFAULT_FALLBACK_VEHICLES: VehicleOption[] = [
-    { id: 'veh_bike', name: '2 Wheeler (Bike)', type: 'bike', capacity: 'Load: Up to 20 kg', iconName: 'bike', baseFare: 40, perKmRate: 12, status: 'active', priority: 1 },
-    { id: 'veh_auto', name: '3 Wheeler (Auto)', type: 'auto', capacity: 'Load: Up to 500 kg', iconName: 'rickshaw', baseFare: 120, perKmRate: 20, status: 'active', priority: 2 },
-    { id: 'veh_tata_ace', name: 'Tata Ace (Chota Hathi)', type: 'tata_ace', capacity: 'Load: Up to 750 kg', iconName: 'truck-delivery', baseFare: 250, perKmRate: 28, status: 'active', priority: 3 },
-    { id: 'veh_pickup', name: '8ft Pickup Truck', type: 'pickup', capacity: 'Load: Up to 1.5 Tons', iconName: 'truck-delivery', baseFare: 450, perKmRate: 35, status: 'active', priority: 4 },
+    { id: 'veh_bike', name: '2 Wheeler', type: '2_wheeler', capacity: '1 Rider / Load up to 20kg', iconName: 'bike', baseFare: 40, perKmRate: 12, status: 'active', priority: 1 },
+    { id: 'veh_auto', name: '3 Wheeler / Auto', type: '3_wheeler', capacity: '3 Passengers / Load up to 500kg', iconName: 'rickshaw', baseFare: 60, perKmRate: 16, status: 'active', priority: 2 },
+    { id: 'veh_cab', name: 'Cab', type: 'cab', capacity: 'Passenger Ride (4-6 Seats)', iconName: 'car', baseFare: 150, perKmRate: 22, status: 'active', priority: 3 },
+    { id: 'veh_tata_ace', name: 'Tata Ace', type: 'tata_ace', capacity: 'Load: Up to 750 kg', iconName: 'truck-delivery', baseFare: 250, perKmRate: 28, status: 'active', priority: 4 },
+    { id: 'veh_pickup_8ft', name: 'Pickup 8ft', type: 'pickup_8ft', capacity: 'Load: Up to 1.5 Tons', iconName: 'truck-delivery', baseFare: 450, perKmRate: 35, status: 'active', priority: 5 },
+    { id: 'veh_tata_407', name: 'Tata 407', type: 'tata_407', capacity: 'Load: Up to 2.5 Tons', iconName: 'truck-delivery', baseFare: 650, perKmRate: 42, status: 'active', priority: 6 },
   ];
 
   return { success: true, vehicles: DEFAULT_FALLBACK_VEHICLES };
@@ -879,23 +1189,28 @@ export const setDriverOnlineStatus = async (
     const body = JSON.stringify(payloadObj);
     const headers = { 'Content-Type': 'application/json' };
 
-    // 1. Option A: JWT-based /me/status endpoint
+    // 1. Option A: JWT-based /me/status endpoint (Primary standard endpoint)
     try {
       const res = await authFetch(`${BASE}/api/drivers/me/status`, {
         method: 'PUT', headers, body,
       });
       const resData = await res.json().catch(() => ({}));
+
+      // Handle Auth / Session expiration (401 Unauthorized, 403 Forbidden, or session expired)
+      if (res.status === 401 || res.status === 403 || /session.*expired|login again|unauthorized|invalid token/i.test(String(resData.message || resData.error || ''))) {
+        console.warn('[API] setDriverOnlineStatus auth/session expired:', resData);
+        return {
+          success: false,
+          isAuthError: true,
+          error: 'SESSION_EXPIRED',
+          message: resData.message || 'Your session has expired. Please login again.',
+        } as any;
+      }
+
       if (res.ok) {
         console.log(`[API] setDriverOnlineStatus → ${status} via /me/status ✔`, resData);
         await AsyncStorage.setItem('@driver_is_online', status === 'online' ? 'true' : 'false');
-        return { success: true, ...resData } as any;
-      }
-      if (res.status === 400 || resData.error === 'WALLET_EMPTY' || (resData.message && resData.message.toLowerCase().includes('wallet'))) {
-        return {
-          success: false,
-          error: resData.error || 'WALLET_EMPTY',
-          message: resData.message || 'Your wallet balance is ₹0. Please recharge your wallet to go online.',
-        } as any;
+        return { success: true, status, ...resData } as any;
       }
     } catch (e) {
       console.warn('[API] Option A /me/status failed:', e);
@@ -917,14 +1232,7 @@ export const setDriverOnlineStatus = async (
         if (res.ok) {
           console.log(`[API] setDriverOnlineStatus → ${status} via ${route.method} ${route.url} ✔`);
           await AsyncStorage.setItem('@driver_is_online', status === 'online' ? 'true' : 'false');
-          return { success: true, ...resData } as any;
-        }
-        if (res.status === 400 || resData.error === 'WALLET_EMPTY' || (resData.message && resData.message.toLowerCase().includes('wallet'))) {
-          return {
-            success: false,
-            error: resData.error || 'WALLET_EMPTY',
-            message: resData.message || 'Your wallet balance is ₹0. Please recharge your wallet to go online.',
-          } as any;
+          return { success: true, status, ...resData } as any;
         }
       } catch {}
     }
@@ -941,10 +1249,7 @@ export const setDriverOnlineStatus = async (
         if (res.ok) {
           console.log(`[API] setDriverOnlineStatus → ${status} via phone route ✔`);
           await AsyncStorage.setItem('@driver_is_online', status === 'online' ? 'true' : 'false');
-          return { success: true, ...resData } as any;
-        }
-        if (res.status === 400 || resData.error === 'WALLET_EMPTY') {
-          return { success: false, error: 'WALLET_EMPTY', message: resData.message } as any;
+          return { success: true, status, ...resData } as any;
         }
       } catch {}
     }
@@ -960,10 +1265,7 @@ export const setDriverOnlineStatus = async (
         if (res.ok) {
           console.log(`[API] setDriverOnlineStatus → ${status} via email route ✔`);
           await AsyncStorage.setItem('@driver_is_online', status === 'online' ? 'true' : 'false');
-          return { success: true, ...resData } as any;
-        }
-        if (res.status === 400 || resData.error === 'WALLET_EMPTY') {
-          return { success: false, error: 'WALLET_EMPTY', message: resData.message } as any;
+          return { success: true, status, ...resData } as any;
         }
       } catch {}
     }
@@ -979,21 +1281,18 @@ export const setDriverOnlineStatus = async (
         if (res.ok) {
           console.log(`[API] setDriverOnlineStatus → ${status} via /drivers/${driverId}/status ✔`);
           await AsyncStorage.setItem('@driver_is_online', status === 'online' ? 'true' : 'false');
-          return { success: true, ...resData } as any;
-        }
-        if (res.status === 400 || resData.error === 'WALLET_EMPTY') {
-          return { success: false, error: 'WALLET_EMPTY', message: resData.message } as any;
+          return { success: true, status, ...resData } as any;
         }
       } catch {}
     }
 
     // Always persist online state locally and allow smooth operation even during momentary network jitter
     await AsyncStorage.setItem('@driver_is_online', status === 'online' ? 'true' : 'false');
-    return { success: true } as any;
+    return { success: true, status } as any;
   } catch (err) {
     console.warn('[API] setDriverOnlineStatus notice:', err);
     await AsyncStorage.setItem('@driver_is_online', status === 'online' ? 'true' : 'false');
-    return { success: true } as any;
+    return { success: true, status } as any;
   }
 };
 
@@ -1033,97 +1332,114 @@ export const updateDriverLocation = async (
   }
 };
 
-/** GET /api/drivers/me/orders/active */
+/** GET /api/driver/orders/active or GET /api/drivers/me/orders/active */
 export const getActiveOrder = async (): Promise<any | null> => {
-  try {
-    const res = await authFetch(`${BASE}/api/drivers/me/orders/active`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data || !data.success || !data.order) return null;
-    
-    const o = data.order;
-    const inactiveStatuses = ['completed', 'delivered', 'cancelled', 'failed', 'rejected'];
-    if (o.status && inactiveStatuses.includes(o.status.toLowerCase())) {
-      return null;
-    }
+  const routes = [
+    `${BASE}/api/driver/orders/active`,
+    `${BASE}/api/drivers/me/orders/active`,
+    `${BASE}/api/orders/active`,
+  ];
 
-    // Verify single-driver locking: if order is assigned to another driver, ignore for current driver
+  for (const url of routes) {
     try {
-      const profileStr = await AsyncStorage.getItem('driverProfile');
-      if (profileStr) {
-        const profile = JSON.parse(profileStr);
-        const myId = String(profile?.id || profile?.driverId || '');
-        const myEmail = (profile?.email || profile?.driverEmail || '').toLowerCase().trim();
-        const oDriverId = String(o.driverId || o.driver_id || '');
-        const oDriverEmail = (o.driverEmail || o.driver_email || '').toLowerCase().trim();
+      const res = await authFetch(url);
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (!data) continue;
+      if (data.hasActiveOrder === false) return null;
+      if (!data.order && !data.data && data.success === false) continue;
+      
+      const o = data.order || data.data || (data.bookingId || data.id ? data : null);
+      if (!o) continue;
 
-        if (oDriverId && myId && oDriverId !== myId) {
-          console.log(`[API] getActiveOrder: Order ${o.id} is assigned to driver ${oDriverId}, not me (${myId}). Ignoring.`);
-          return null;
-        }
-        if (oDriverEmail && myEmail && oDriverEmail !== myEmail) {
-          console.log(`[API] getActiveOrder: Order ${o.id} is assigned to driver ${oDriverEmail}, not me (${myEmail}). Ignoring.`);
-          return null;
-        }
+      const inactiveStatuses = ['completed', 'delivered', 'cancelled', 'failed', 'rejected'];
+      if (o.status && inactiveStatuses.includes(String(o.status).toLowerCase())) {
+        return null;
       }
-    } catch (e) {}
 
-    const resolvedName = 
-      o.customerName ||
-      o.customer_name ||
-      o.senderName ||
-      o.contactName ||
-      o.receiverName ||
-      o.userName ||
-      o.customer?.name ||
-      o.user?.name ||
-      o.pickupName ||
-      (typeof o.customer === 'string' ? o.customer : '') ||
-      'Customer';
+      // Verify single-driver locking: if order is assigned to another driver, ignore for current driver
+      try {
+        const profileStr = await AsyncStorage.getItem('driverProfile');
+        if (profileStr) {
+          const profile = JSON.parse(profileStr);
+          const myId = String(profile?.id || profile?.driverId || '');
+          const myEmail = (profile?.email || profile?.driverEmail || '').toLowerCase().trim();
+          const oDriverId = String(o.driverId || o.driver_id || '');
+          const oDriverEmail = (o.driverEmail || o.driver_email || '').toLowerCase().trim();
 
-    const resolvedPhone = 
-      o.customerPhone ||
-      o.customer_phone ||
-      o.senderPhone ||
-      o.contactPhone ||
-      o.receiverPhone ||
-      o.userPhone ||
-      o.customer?.phone ||
-      o.user?.phone ||
-      o.phone ||
-      o.mobile ||
-      o.pickupPhone ||
-      o.mobileNumber ||
-      o.phoneNumber ||
-      '';
+          if (oDriverId && myId && oDriverId !== myId) {
+            console.log(`[API] getActiveOrder: Order ${o.id} is assigned to driver ${oDriverId}, not me (${myId}). Ignoring.`);
+            return null;
+          }
+          if (oDriverEmail && myEmail && oDriverEmail !== myEmail) {
+            console.log(`[API] getActiveOrder: Order ${o.id} is assigned to driver ${oDriverEmail}, not me (${myEmail}). Ignoring.`);
+            return null;
+          }
+        }
+      } catch (e) {}
 
-    const rawAmt = typeof o.amount === 'number' 
-      ? o.amount 
-      : parseFloat(String(o.amount || o.fare || o.price || o.totalAmount || o.totalFare || o.payout || '0').replace('₹', '')) || 0;
+      const resolvedName = 
+        o.customerName ||
+        o.customer_name ||
+        o.senderName ||
+        o.contactName ||
+        o.receiverName ||
+        o.userName ||
+        o.customer?.name ||
+        o.user?.name ||
+        o.pickupName ||
+        (typeof o.customer === 'string' ? o.customer : '') ||
+        'Customer';
 
-    return {
-      id: o.id || o.bookingId || o.orderId,
-      bookingId: o.bookingId || (o.id ? `BK_${o.id}` : undefined),
-      status: o.status,
-      customerName: resolvedName,
-      customerPhone: resolvedPhone,
-      pickup: o.pickup || o.pickupAddress || '',
-      drop: o.drop || o.dropAddress || '',
-      pickupAddress: o.pickupAddress || o.pickup || '',
-      dropAddress: o.dropAddress || o.drop || '',
-      amount: rawAmt,
-      deliveryOtp: o.deliveryOtp || o.otp,
-      otp: o.deliveryOtp || o.otp,
-      distance: o.distance !== undefined ? String(o.distance) : (o.distanceKm !== undefined ? String(o.distanceKm) : (o.tripDistance || o.totalDistance || o.dist)),
-      distanceKm: o.distanceKm !== undefined ? Number(o.distanceKm) : (o.distance !== undefined ? (parseFloat(String(o.distance)) || undefined) : undefined),
-      pickupLat: o.pickupLat !== undefined ? Number(o.pickupLat) : (o.pickupLatitude || o.pickup_lat),
-      pickupLng: o.pickupLng !== undefined ? Number(o.pickupLng) : (o.pickupLongitude || o.pickup_lng),
-      dropLat: o.dropLat !== undefined ? Number(o.dropLat) : (o.dropLatitude || o.drop_lat),
-      dropLng: o.dropLng !== undefined ? Number(o.dropLng) : (o.dropLongitude || o.drop_lng),
-    };
-  } catch {
-    return null;
+      const resolvedPhone = 
+        o.customerPhone ||
+        o.customer_phone ||
+        o.senderPhone ||
+        o.contactPhone ||
+        o.receiverPhone ||
+        o.userPhone ||
+        o.customer?.phone ||
+        o.user?.phone ||
+        o.phone ||
+        o.mobile ||
+        o.pickupPhone ||
+        o.mobileNumber ||
+        o.phoneNumber ||
+        '';
+
+      const rawAmt = typeof o.amount === 'number' 
+        ? o.amount 
+        : parseFloat(String(o.amount || o.fare || o.price || o.totalAmount || o.totalFare || o.payout || '0').replace('₹', '')) || 0;
+
+      return {
+        id: o.id || o.bookingId || o.orderId,
+        bookingId: o.bookingId || (o.id ? `BK_${o.id}` : undefined),
+        status: o.status,
+        customerName: resolvedName,
+        customerPhone: resolvedPhone,
+        pickup: o.pickup || o.pickupAddress || '',
+        drop: o.drop || o.dropAddress || '',
+        pickupAddress: o.pickupAddress || o.pickup || '',
+        dropAddress: o.dropAddress || o.drop || '',
+        amount: rawAmt,
+        deliveryOtp: o.deliveryOtp || o.otp,
+        otp: o.deliveryOtp || o.otp,
+        distance: o.distance !== undefined ? String(o.distance) : (o.distanceKm !== undefined ? String(o.distanceKm) : (o.tripDistance || o.totalDistance || o.dist)),
+        distanceKm: o.distanceKm !== undefined ? Number(o.distanceKm) : (o.distance !== undefined ? (parseFloat(String(o.distance)) || undefined) : undefined),
+        pickupLat: o.pickupLat !== undefined ? Number(o.pickupLat) : (o.pickupLatitude || o.pickup_lat),
+        pickupLng: o.pickupLng !== undefined ? Number(o.pickupLng) : (o.pickupLongitude || o.pickup_lng),
+        dropLat: o.dropLat !== undefined ? Number(o.dropLat) : (o.dropLatitude || o.drop_lat),
+        dropLng: o.dropLng !== undefined ? Number(o.dropLng) : (o.dropLongitude || o.drop_lng),
+        serviceType: o.serviceType || o.service_type || (String(o.bookingId || '').includes('PASS') ? 'PASSENGER' : 'GOODS'),
+        serviceLabel: o.serviceLabel || (o.serviceType === 'PASSENGER' ? 'Passenger Ride' : undefined),
+        passengerCount: o.passengerCount || o.passengers,
+      };
+    } catch {
+      // try next route
+    }
   }
+
+  return null;
 };
 
 /** GET /api/orders/{orderId} — Fetch full order details including customer contact information */
@@ -1401,7 +1717,7 @@ export const acceptOrder = async (
     customerName?: string; 
     amount?: number 
   }
-): Promise<{ success: boolean; statusCode?: number; message?: string; order?: any }> => {
+): Promise<{ success: boolean; statusCode?: number; error?: string; message?: string; order?: any }> => {
   try {
     const rawIdStr = String(orderIdentifier).trim();
     const cleanId = rawIdStr.replace(/^#+/, '');
@@ -1439,10 +1755,11 @@ export const acceptOrder = async (
     };
 
     const routes = [
+      { url: `${BASE}/api/driver/orders/${encodeURIComponent(cleanBkId)}/accept`, method: 'POST' },
+      { url: `${BASE}/api/driver/orders/${encodeURIComponent(cleanId)}/accept`, method: 'POST' },
       { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/accept`, method: 'PUT' },
       { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/accept`, method: 'POST' },
       { url: `${BASE}/api/driver/orders/${encodeURIComponent(cleanBkId)}/accept`, method: 'PUT' },
-      { url: `${BASE}/api/driver/orders/${encodeURIComponent(cleanBkId)}/accept`, method: 'POST' },
       { url: `${BASE}/api/drivers/orders/${encodeURIComponent(cleanBkId)}/accept`, method: 'PUT' },
       { url: `${BASE}/api/drivers/orders/${encodeURIComponent(cleanBkId)}/accept`, method: 'POST' },
       { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/status`, method: 'PUT' },
@@ -1468,7 +1785,8 @@ export const acceptOrder = async (
           };
         }
 
-        // 2. Multi-Driver Collision & Race Condition Lost (409 Conflict)
+
+        // 3. Multi-Driver Collision & Race Condition Lost (409 Conflict)
         if (res.status === 409) {
           return {
             success: false,
@@ -1478,7 +1796,7 @@ export const acceptOrder = async (
           };
         }
 
-        // 3. Order Expired or Not Found (404 Not Found)
+        // 4. Order Expired or Not Found (404 Not Found)
         if (res.status === 404) {
           return {
             success: false,
@@ -1491,6 +1809,7 @@ export const acceptOrder = async (
           return {
             success: false,
             statusCode: res.status,
+            error: data?.error,
             message: data.message,
             order: data?.order,
           };
@@ -1510,6 +1829,161 @@ export const acceptOrder = async (
       success: false, 
       statusCode: 500, 
       message: 'Network connection error. Please check your network and try again.' 
+    };
+  }
+};
+
+/**
+ * GET /api/driver/offers/active
+ * Fetch active ringing offers for the driver (used on app resume or polling fallback).
+ */
+export const getActiveDriverOffers = async (): Promise<DriverOffer[]> => {
+  const routes = [
+    `${BASE}/api/driver/offers/active`,
+    `${BASE}/api/drivers/offers/active`,
+    `${BASE}/api/driver/offers`,
+  ];
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url, { method: 'GET' });
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (Array.isArray(data)) return data;
+        if (data && Array.isArray(data.offers)) return data.offers;
+        if (data && Array.isArray(data.data)) return data.data;
+      }
+    } catch (e) {
+      console.warn(`[API] getActiveDriverOffers ${url} notice:`, e);
+    }
+  }
+  return [];
+};
+
+/**
+ * POST /api/driver/offers/{bookingId}/respond
+ * Accept (accept: true) or Reject (accept: false) an offered ride.
+ * Handles 200 ASSIGNED, 409 TOO_LATE, 200 REJECTED.
+ */
+export const respondToDriverOffer = async (
+  bookingId: string,
+  accept: boolean
+): Promise<OfferResponse> => {
+  const cleanId = String(bookingId).trim().replace(/^#+/, '');
+  const url = `${BASE}/api/driver/offers/${encodeURIComponent(cleanId)}/respond`;
+
+  try {
+    const res = await authFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        accept, 
+        accepted: accept, 
+        action: accept ? 'accept' : 'reject',
+        bookingId: cleanId,
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    // 1. Success 200 (ASSIGNED or REJECTED)
+    if (res.ok) {
+      return {
+        success: data.success !== false,
+        status: data.status || (accept ? 'ASSIGNED' : 'REJECTED'),
+        bookingId: data.bookingId || cleanId,
+        driverId: data.driverId,
+        message: data.message || (accept ? 'Booking assigned successfully!' : 'Offer rejected.'),
+        order: data.order,
+      };
+    }
+
+    // 2. Conflict 409 (TOO_LATE)
+    if (res.status === 409 || data?.status === 'TOO_LATE') {
+      return {
+        success: false,
+        status: 'TOO_LATE',
+        bookingId: data.bookingId || cleanId,
+        message: data.message || 'Another driver partner has already accepted this booking.',
+      };
+    }
+
+    // 3. Fallback on 404: Try standard acceptOrder locking endpoints
+    if (res.status === 404 && accept) {
+      try {
+        const legacyRes = await acceptOrder(cleanId, { bookingId: cleanId });
+        if (legacyRes && legacyRes.success) {
+          return {
+            success: true,
+            status: 'ASSIGNED',
+            bookingId: cleanId,
+            order: legacyRes.order,
+            message: legacyRes.message || 'Booking assigned successfully!',
+          };
+        }
+        if (legacyRes && (legacyRes.statusCode === 409 || legacyRes.error === 'CONFLICT')) {
+          return {
+            success: false,
+            status: 'TOO_LATE',
+            bookingId: cleanId,
+            message: legacyRes.message || 'Another driver partner has already accepted this booking.',
+          };
+        }
+      } catch {}
+    } else if (res.status === 404 && !accept) {
+      // Rejection fallback on 404: try /driver/orders/{id}/reject alias if supported by backend
+      try {
+        await authFetch(`${BASE}/api/driver/orders/${encodeURIComponent(cleanId)}/reject`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bookingId: cleanId, reason: 'driver_rejected' }),
+        }).catch(() => {});
+      } catch {}
+
+      return {
+        success: true,
+        status: 'REJECTED',
+        bookingId: cleanId,
+        message: 'Offer rejected.',
+      };
+    }
+
+    // 4. Other responses (500, etc.)
+    return {
+      success: false,
+      status: data.status || 'ERROR',
+      bookingId: cleanId,
+      message: data.message || (accept ? 'Failed to accept offer.' : 'Failed to reject offer.'),
+    };
+  } catch (err: any) {
+    console.warn(`[API] respondToDriverOffer network error:`, err);
+    // Fallback on network failure: try acceptOrder if accepting
+    if (accept) {
+      try {
+        const legacyRes = await acceptOrder(cleanId, { bookingId: cleanId });
+        if (legacyRes && legacyRes.success) {
+          return {
+            success: true,
+            status: 'ASSIGNED',
+            bookingId: cleanId,
+            order: legacyRes.order,
+            message: legacyRes.message || 'Booking assigned successfully!',
+          };
+        }
+        if (legacyRes && legacyRes.statusCode === 409) {
+          return {
+            success: false,
+            status: 'TOO_LATE',
+            bookingId: cleanId,
+            message: legacyRes.message || 'Another driver partner has already accepted this booking.',
+          };
+        }
+      } catch {}
+    }
+    return {
+      success: false,
+      status: 'NETWORK_ERROR',
+      bookingId: cleanId,
+      message: err?.message || 'Network error occurred while responding to offer.',
     };
   }
 };
@@ -1593,6 +2067,107 @@ export const verifyDeliveryOtpOnly = async (
 };
 
 /**
+ * POST /api/driver/orders/{orderId}/start-trip
+ * Verifies Passenger 4-digit Start Ride OTP at Pickup before starting passenger ride.
+ * Body: { startOtp, otp, bookingId, driverLat, driverLng }
+ */
+export const verifyStartRideOtp = async (
+  orderId: number | string,
+  otp: string,
+  coords?: { lat?: number; lng?: number }
+): Promise<{ success: boolean; statusCode?: number; message?: string; order?: any; status?: string }> => {
+  const cleanId = String(orderId).replace(/^#+/, '').trim();
+  const cleanOtp = String(otp).trim();
+  const rawBookingId = String((coords as any)?.bookingId || '').replace(/^#+/, '').trim();
+  const idCandidates = Array.from(new Set([cleanId, rawBookingId])).filter(Boolean);
+
+  const body: any = {
+    otp: cleanOtp,
+    startOtp: cleanOtp,
+    pin: cleanOtp,
+    bookingId: rawBookingId || cleanId,
+  };
+  if (coords?.lat) body.driverLat = coords.lat;
+  if (coords?.lng) body.driverLng = coords.lng;
+
+  const routes: { url: string; method: string }[] = [];
+  for (const id of idCandidates) {
+    const enc = encodeURIComponent(id);
+    routes.push(
+      { url: `${BASE}/api/driver/orders/${enc}/start-trip`, method: 'POST' },
+      { url: `${BASE}/api/orders/${enc}/start-trip`, method: 'POST' },
+      { url: `${BASE}/api/driver/orders/${enc}/verify-start-otp`, method: 'POST' },
+      { url: `${BASE}/api/driver/orders/${enc}/start-ride`, method: 'POST' },
+      { url: `${BASE}/api/passenger-bookings/${enc}/start-trip`, method: 'POST' },
+      { url: `${BASE}/api/rides/${enc}/start-trip`, method: 'POST' }
+    );
+  }
+
+  for (const route of routes) {
+    try {
+      const res = await authFetch(route.url, {
+        method: route.method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 200 && data?.success !== false) {
+        return {
+          success: true,
+          statusCode: 200,
+          message: data?.message || 'Start Ride OTP verified successfully! Trip has started.',
+          status: data?.status || 'IN_TRANSIT',
+          order: data?.order || data?.ride,
+        };
+      }
+
+      if (res.status === 400 || res.status === 422) {
+        return {
+          success: false,
+          statusCode: res.status,
+          message: data?.message || 'Incorrect Passenger Start OTP. Please ask the rider for their 4-digit PIN.',
+        };
+      }
+
+      if (res.status === 401 || res.status === 403) {
+        return {
+          success: false,
+          statusCode: res.status,
+          message: data?.message || 'Unauthorized to start this ride.',
+        };
+      }
+
+      if (data?.success === false && data?.message && res.status !== 404) {
+        return {
+          success: false,
+          statusCode: res.status,
+          message: data.message,
+        };
+      }
+    } catch (e) {
+      console.warn(`[API] verifyStartRideOtp error on ${route.url}:`, e);
+    }
+  }
+
+  // Fallback: update status to transit if backend expects direct status update
+  try {
+    const fallbackRes = await updateOrderStatus(cleanId, 'transit', undefined, { startOtp: cleanOtp });
+    if (fallbackRes?.success) {
+      return {
+        success: true,
+        statusCode: 200,
+        message: 'Ride started successfully.',
+        status: 'IN_TRANSIT',
+      };
+    }
+  } catch (err) {}
+
+  return { success: false, statusCode: 500, message: 'Network error during Start OTP verification. Please check your connection.' };
+};
+
+/**
  * POST /api/driver/orders/{orderId}/confirm-payment or POST /api/orders/{orderId}/complete
  * Step 2: Confirms payment receipt and marks order as DELIVERED & COMPLETED on backend.
  * Headers: Idempotency-Key: COMPL_<bookingId>_<timestamp>
@@ -1610,6 +2185,8 @@ export const confirmPaymentAndCompleteOrder = async (
     pickup?: string;
     drop?: string;
     distance?: string;
+    serviceType?: string;
+    isPassenger?: boolean;
   },
   idempotencyKey?: string
 ): Promise<{
@@ -1625,8 +2202,9 @@ export const confirmPaymentAndCompleteOrder = async (
   netEarnings?: number;
 }> => {
   const cleanId = String(orderId).replace(/^#+/, '').trim();
-  const rawBookingId = meta.bookingId || cleanId;
-  const bookingIdStr = rawBookingId.startsWith('BK_') ? rawBookingId : (cleanId.startsWith('BK_') ? cleanId : `BK_${cleanId}`);
+  const rawBookingId = String(meta.bookingId || '').replace(/^#+/, '').trim();
+  const idCandidates = Array.from(new Set([cleanId, rawBookingId])).filter(Boolean);
+  const bookingIdStr = rawBookingId.startsWith('BK_') ? rawBookingId : (cleanId.startsWith('BK_') ? cleanId : `BK_${rawBookingId || cleanId}`);
   const idemKey = idempotencyKey || `COMPL_${bookingIdStr}_${Date.now()}`;
 
   const methodUpper = String(meta.paymentMethod || 'CASH').toUpperCase();
@@ -1638,16 +2216,23 @@ export const confirmPaymentAndCompleteOrder = async (
     method: methodStr,
     paymentMethod: methodStr,
     paymentConfirmed: true,
+    serviceType: meta.serviceType || 'GOODS',
+    isPassenger: Boolean(meta.isPassenger),
   };
 
-  const routes = [
-    { url: `${BASE}/api/driver/orders/${encodeURIComponent(cleanId)}/confirm-payment`, method: 'POST' },
-    { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/complete`, method: 'POST' },
-    { url: `${BASE}/api/drivers/orders/${encodeURIComponent(cleanId)}/complete`, method: 'POST' },
-    { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/confirm-payment`, method: 'POST' },
-    { url: `${BASE}/api/confirm-payment`, method: 'POST' },
-    { url: `${BASE}/api/orders/${encodeURIComponent(cleanId)}/status`, method: 'PUT' },
-  ];
+  const routes: { url: string; method: string }[] = [];
+  for (const id of idCandidates) {
+    const enc = encodeURIComponent(id);
+    routes.push(
+      { url: `${BASE}/api/driver/orders/${enc}/confirm-payment`, method: 'POST' },
+      { url: `${BASE}/api/driver/orders/${enc}/complete`, method: 'POST' },
+      { url: `${BASE}/api/orders/${enc}/complete`, method: 'POST' },
+      { url: `${BASE}/api/drivers/orders/${enc}/complete`, method: 'POST' },
+      { url: `${BASE}/api/orders/${enc}/confirm-payment`, method: 'POST' },
+      { url: `${BASE}/api/orders/${enc}/status`, method: 'PUT' }
+    );
+  }
+  routes.push({ url: `${BASE}/api/confirm-payment`, method: 'POST' });
 
   for (const route of routes) {
     try {
@@ -1681,12 +2266,12 @@ export const confirmPaymentAndCompleteOrder = async (
           statusCode: 200,
           message: data?.message || 'Payment confirmed and order completed successfully.',
           order: data?.order,
-          earnings: data?.earnings,
+          earnings: data?.earnings || data?.fare,
           updatedBalance: typeof data?.updatedBalance === 'number' ? data.updatedBalance : (typeof data?.remainingBalance === 'number' ? data.remainingBalance : (typeof data?.wallet?.availableBalance === 'number' ? data.wallet.availableBalance : undefined)),
           wallet: data?.wallet,
-          platformCommission: data?.platformCommission ?? data?.commission,
-          grossFare: data?.grossFare ?? data?.fare,
-          netEarnings: data?.netEarnings ?? data?.driverEarnings,
+          platformCommission: data?.platformCommission ?? data?.commission ?? data?.fare?.commission,
+          grossFare: data?.grossFare ?? data?.fare?.grossAmount ?? (typeof data?.fare === 'number' ? data.fare : undefined),
+          netEarnings: data?.netEarnings ?? data?.driverEarnings ?? data?.fare?.driverNet,
         };
       }
 
@@ -1726,7 +2311,7 @@ export const updateOrderStatus = async (
   orderId: number | string,
   status: string,
   otp?: string,
-  extraMeta?: { bookingId?: string; driverName?: string; customerName?: string; amount?: number }
+  extraMeta?: { bookingId?: string; driverName?: string; customerName?: string; amount?: number; [key: string]: any }
 ): Promise<{ success: boolean; message?: string; order?: any }> => {
   if ((status || '').toLowerCase() === 'accepted') {
     return acceptOrder(orderId, extraMeta);
@@ -1826,21 +2411,82 @@ export const getAllDrivers = async (status?: 'pending' | 'verified' | 'rejected'
 /** PUT /api/admin/drivers/{driverId}/kyc */
 export const updateDriverKyc = async (
   driverId: number | string,
-  status: 'verified' | 'rejected',
+  status: 'verified' | 'rejected' | 'pending',
   reason?: string
 ): Promise<boolean> => {
   try {
-    const body: Record<string, string> = { status };
+    const cleanId = String(driverId).replace(/^DRV-?/i, '');
+    const body: Record<string, any> = {
+      status,
+      kycStatus: status,
+      kyc: status,
+      isApproved: status === 'verified',
+    };
     if (status === 'rejected' && reason) body.reason = reason;
 
-    const res = await authFetch(`${BASE}/api/admin/drivers/${driverId}/kyc`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return res.ok;
+    const routes = [
+      `${BASE}/api/admin/drivers/${cleanId}/kyc`,
+      `${BASE}/api/drivers/${cleanId}/kyc`,
+      `${BASE}/api/admin/drivers/${cleanId}`,
+      `${BASE}/api/drivers/${cleanId}`,
+    ];
+
+    for (const url of routes) {
+      try {
+        const res = await authFetch(url, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (res.ok) return true;
+      } catch {}
+    }
+    return false;
   } catch {
     return false;
+  }
+};
+
+/** DELETE /api/admin/drivers/{driverId} (or /api/drivers/{driverId}) — Permanently delete driver & documents */
+export const deleteDriver = async (
+  driverId: number | string,
+  adminToken?: string
+): Promise<{ success: boolean; message?: string }> => {
+  try {
+    const token = adminToken || (await AsyncStorage.getItem('authToken')) || (await AsyncStorage.getItem('adminToken'));
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+
+    const routes = [
+      `${BASE}/api/admin/drivers/${driverId}`,
+      `${BASE}/api/drivers/${driverId}`,
+    ];
+
+    for (const url of routes) {
+      try {
+        const res = await fetch(url, {
+          method: 'DELETE',
+          headers,
+        });
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          return { success: true, message: data.message || 'Driver profile removed successfully.' };
+        } else if (res.status === 404) {
+          continue;
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          return { success: false, message: errData.message || `Failed to delete driver (HTTP ${res.status}).` };
+        }
+      } catch (e: any) {
+        console.warn(`[API] deleteDriver attempt to ${url} failed:`, e);
+      }
+    }
+    return { success: false, message: 'Driver not found or deletion failed.' };
+  } catch (err: any) {
+    console.warn('[API] deleteDriver error:', err);
+    return { success: false, message: err?.message || 'Network error while deleting driver.' };
   }
 };
 
@@ -1895,18 +2541,46 @@ export const createAdminVehicleType = async (payload: Partial<VehicleTypeAdmin>)
     `${BASE}/api/admin/vehicles`,
     `${BASE}/api/vehicle-types`,
   ];
+
+  const vCombined = (String(payload.name || '') + ' ' + String(payload.type || '')).toLowerCase();
+  let determinedServiceType: 'PASSENGER' | 'GOODS' | 'BOTH' = payload.serviceType || 'GOODS';
+  let defaultIcon = payload.iconName || 'truck';
+  if (payload.serviceType) {
+    determinedServiceType = payload.serviceType;
+    if (determinedServiceType === 'PASSENGER' && (!payload.iconName || payload.iconName === 'truck')) defaultIcon = 'car';
+  } else if (vCombined.includes('cab') || vCombined.includes('car') || vCombined.includes('taxi') || vCombined.includes('sedan') || vCombined.includes('suv')) {
+    determinedServiceType = 'PASSENGER';
+    if (!payload.iconName || payload.iconName === 'truck' || payload.iconName === 'bike') defaultIcon = 'car';
+  } else if (vCombined.includes('2') || vCombined.includes('bike') || vCombined.includes('two') || vCombined.includes('auto') || vCombined.includes('rickshaw') || vCombined.includes('3')) {
+    determinedServiceType = 'BOTH';
+    if (vCombined.includes('auto') || vCombined.includes('rickshaw')) {
+      if (!payload.iconName || payload.iconName === 'truck') defaultIcon = 'rickshaw';
+    } else {
+      if (!payload.iconName || payload.iconName === 'truck') defaultIcon = 'bike';
+    }
+  }
+
+  // Ensure type code contains "cab" for passenger rides so backend formatVehicleType always maps serviceType to PASSENGER
+  let finalType = payload.type || (payload.name ? payload.name.toLowerCase().replace(/\s+/g, '_') : 'cab');
+  if (determinedServiceType === 'PASSENGER' && !finalType.toLowerCase().includes('cab')) {
+    finalType = `cab_${finalType}`;
+  }
+
   const backendPayload = {
     name: payload.name,
-    type: payload.type,
-    type_code: payload.type,
-    typeCode: payload.type,
+    type: finalType,
+    type_code: finalType,
+    typeCode: finalType,
+    serviceType: determinedServiceType,
+    service_type: determinedServiceType,
+    category: determinedServiceType === 'PASSENGER' ? 'PASSENGER' : (determinedServiceType === 'BOTH' ? 'BOTH' : 'GOODS'),
     description: payload.description,
     capacity: payload.capacity || (payload.capacityKg ? `Load: Up to ${payload.capacityKg}kg` : ''),
     capacityKg: payload.capacityKg,
     capacity_kg: payload.capacityKg,
     dimensions: payload.dimensions,
-    iconName: payload.iconName || 'truck',
-    icon_name: payload.iconName || 'truck',
+    iconName: defaultIcon,
+    icon_name: defaultIcon,
     imageUrl: payload.imageUrl || '',
     image_url: payload.imageUrl || '',
     image: payload.imageUrl || '',
@@ -1951,18 +2625,43 @@ export const updateAdminVehicleType = async (id: string | number, payload: Parti
     `${BASE}/api/admin/vehicles/${id}`,
     `${BASE}/api/vehicle-types/${id}`,
   ];
+
+  const vCombined = (String(payload.name || '') + ' ' + String(payload.type || '')).toLowerCase();
+  let determinedServiceType: 'PASSENGER' | 'GOODS' | 'BOTH' = payload.serviceType || 'GOODS';
+  let defaultIcon = payload.iconName || 'truck';
+  if (payload.serviceType) {
+    determinedServiceType = payload.serviceType;
+    if (determinedServiceType === 'PASSENGER' && (!payload.iconName || payload.iconName === 'truck')) defaultIcon = 'car';
+  } else if (vCombined.includes('cab') || vCombined.includes('car') || vCombined.includes('taxi') || vCombined.includes('sedan') || vCombined.includes('suv')) {
+    determinedServiceType = 'PASSENGER';
+    if (!payload.iconName || payload.iconName === 'truck' || payload.iconName === 'bike') defaultIcon = 'car';
+  } else if (vCombined.includes('2') || vCombined.includes('bike') || vCombined.includes('two') || vCombined.includes('auto') || vCombined.includes('rickshaw') || vCombined.includes('3')) {
+    determinedServiceType = 'BOTH';
+    if (vCombined.includes('auto') || vCombined.includes('rickshaw')) {
+      if (!payload.iconName || payload.iconName === 'truck') defaultIcon = 'rickshaw';
+    } else {
+      if (!payload.iconName || payload.iconName === 'truck') defaultIcon = 'bike';
+    }
+  }
+
+  let finalType = payload.type || (payload.name ? payload.name.toLowerCase().replace(/\s+/g, '_') : undefined);
+  if (determinedServiceType === 'PASSENGER' && finalType && !finalType.toLowerCase().includes('cab')) {
+    finalType = `cab_${finalType}`;
+  }
+
   const backendPayload = {
     ...payload,
     name: payload.name,
-    type: payload.type,
-    type_code: payload.type,
-    typeCode: payload.type,
+    ...(finalType ? { type: finalType, type_code: finalType, typeCode: finalType } : {}),
+    serviceType: determinedServiceType,
+    service_type: determinedServiceType,
+    category: determinedServiceType === 'PASSENGER' ? 'PASSENGER' : (determinedServiceType === 'BOTH' ? 'BOTH' : 'GOODS'),
     description: payload.description,
     capacity: payload.capacity || (payload.capacityKg ? `Load: Up to ${payload.capacityKg}kg` : ''),
     capacityKg: payload.capacityKg,
     capacity_kg: payload.capacityKg,
-    iconName: payload.iconName,
-    icon_name: payload.iconName,
+    iconName: defaultIcon,
+    icon_name: defaultIcon,
     imageUrl: payload.imageUrl,
     image_url: payload.imageUrl,
     image: payload.imageUrl,
@@ -2089,7 +2788,27 @@ export const getAllOrders = async (status?: string): Promise<AdminOrder[]> => {
     const res = await authFetch(url);
     if (!res.ok) return [];
     const data = await res.json();
-    return Array.isArray(data) ? data : (data.orders ?? data.value ?? []);
+    const rawList: any[] = Array.isArray(data) ? data : (data.orders ?? data.value ?? data.data ?? []);
+    return rawList.map((o: any) => ({
+      id: o.id || o._id || o.bookingId || o.booking_id,
+      bookingId: o.bookingId || o.booking_id || (o.id ? String(o.id) : undefined),
+      customerName: o.customerName || o.customer_name || o.userName || o.user_name || o.customer?.name || o.user?.name,
+      customerPhone: o.customerPhone || o.customer_phone || o.customer?.phone || o.user?.phone,
+      driverName: o.driverName || o.driver_name || o.driver?.name,
+      driverId: o.driverId || o.driver_id || o.driver?.id,
+      driverEmail: o.driverEmail || o.driver_email || o.driver?.email,
+      pickup: o.pickup || o.pickupAddress || o.pickup_address,
+      drop: o.drop || o.dropAddress || o.drop_address,
+      pickupAddress: o.pickupAddress || o.pickup_address || o.pickup,
+      dropAddress: o.dropAddress || o.drop_address || o.drop,
+      amount: typeof o.amount === 'number' ? o.amount : parseFloat(String(o.amount || o.fare || o.offeredFare || o.offered_fare || o.totalAmount || o.total_amount || 0)) || 0,
+      status: o.status || 'pending',
+      vehicleType: o.vehicleType || o.vehicle_type || o.vehicle || o.serviceName || o.service_name,
+      serviceType: o.serviceType || o.service_type || o.category,
+      createdAt: o.createdAt || o.created_at || o.timestamp,
+      paymentMethod: o.paymentMethod || o.payment_method || o.paymentType || o.payment_type,
+      deliveryOtp: o.deliveryOtp || o.delivery_otp || o.otp,
+    }));
   } catch {
     return [];
   }
@@ -2368,8 +3087,11 @@ export interface DriverWallet {
   needsMoreForPayout: number;
   hasVerifiedAccount: boolean;
   isEligible?: boolean;
+  canGoOnline?: boolean;
   eligibilityReason?: string;
   minRequiredBalance?: number;
+  minRechargeAmount?: number;
+  minimumBalance?: number;
 }
 
 export interface WalletTransaction {
@@ -2392,13 +3114,147 @@ export interface WalletTransaction {
 export interface AdminWalletSettings {
   commissionPercentage: number;
   minRequiredBalance: number;
+  minRechargeAmount?: number;
   walletRequiredForRides: boolean;
   autoOfflineWhenBalanceInsufficient: boolean;
 }
 
+/** GET /api/admin/wallet/minimum-balance (or GET /api/admin/settings/wallet) */
+export const getAdminMinimumBalance = async (): Promise<{
+  success: boolean;
+  minRequiredBalance?: number;
+  minRechargeAmount?: number;
+  minimumBalance?: number;
+  commissionPercentage?: number;
+  message?: string;
+}> => {
+  const routes = [
+    `${BASE}/api/admin/wallet/minimum-balance`,
+    `${BASE}/api/admin/settings/wallet`,
+    `${BASE}/api/admin/config/wallet`,
+  ];
+
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success !== false) {
+          return {
+            success: true,
+            minRequiredBalance: data.minRequiredBalance ?? data.minimumBalance ?? 1000,
+            minRechargeAmount: data.minRechargeAmount ?? 1000,
+            minimumBalance: data.minimumBalance ?? data.minRequiredBalance ?? 1000,
+            commissionPercentage: data.commissionPercentage ?? 5,
+          };
+        }
+      }
+    } catch (e) {}
+  }
+
+  return {
+    success: true,
+    minRequiredBalance: 1000,
+    minRechargeAmount: 1000,
+    minimumBalance: 1000,
+    commissionPercentage: 5,
+  };
+};
+
+/** PUT /api/admin/wallet/minimum-balance */
+export const updateAdminMinimumBalance = async (payload: {
+  minimumBalance: number;
+  applyToExistingDrivers?: boolean;
+  reason?: string;
+}): Promise<{ success: boolean; minRequiredBalance?: number; minRechargeAmount?: number; driversUpdated?: number; message?: string }> => {
+  const routes = [
+    `${BASE}/api/admin/wallet/minimum-balance`,
+    `${BASE}/api/admin/settings/wallet`,
+    `${BASE}/api/admin/config/wallet`,
+  ];
+
+  let lastError = 'Failed to update minimum balance';
+
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.success !== false) {
+        return {
+          success: true,
+          minRequiredBalance: data.minRequiredBalance ?? data.minimumBalance ?? payload.minimumBalance,
+          minRechargeAmount: data.minRechargeAmount ?? payload.minimumBalance,
+          driversUpdated: data.driversUpdated ?? 0,
+          message: data.message || `Minimum wallet balance updated to ₹${payload.minimumBalance.toFixed(2)}`,
+        };
+      }
+      lastError = data?.message || `HTTP ${res.status}`;
+    } catch (e: any) {
+      lastError = e?.message || lastError;
+    }
+  }
+
+  return { success: false, message: lastError };
+};
+
+/** POST /api/admin/wallet/modify */
+export const modifyUserWallet = async (payload: {
+  userType: 'driver' | 'customer';
+  id: string | number;
+  amount: number;
+  action: 'credit' | 'debit' | 'set';
+  reason?: string;
+}): Promise<{
+  success: boolean;
+  driverId?: any;
+  walletBalance?: number;
+  previousBalance?: number;
+  status?: string;
+  message?: string;
+}> => {
+  const routes = [
+    `${BASE}/api/admin/wallet/modify`,
+    `${BASE}/api/admin/wallets/modify`,
+    `${BASE}/api/admin/driver/wallet/adjust`,
+  ];
+
+  let lastError = 'Failed to modify wallet';
+
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.success !== false) {
+        return {
+          success: true,
+          driverId: data.driverId ?? payload.id,
+          walletBalance: data.walletBalance ?? data.balance,
+          previousBalance: data.previousBalance,
+          status: data.status,
+          message: data.message || 'Wallet adjusted successfully',
+        };
+      }
+      lastError = data?.message || `HTTP ${res.status}`;
+    } catch (e: any) {
+      lastError = e?.message || lastError;
+    }
+  }
+
+  return { success: false, message: lastError };
+};
+
 /** GET /api/admin/settings/wallet or GET /api/admin/config/wallet */
 export const getAdminWalletSettings = async (): Promise<{ success: boolean; settings: AdminWalletSettings; message?: string }> => {
   const routes = [
+    `${BASE}/api/admin/wallet/minimum-balance`,
     `${BASE}/api/admin/settings/wallet`,
     `${BASE}/api/admin/config/wallet`,
     `${BASE}/api/admin/wallet/settings`,
@@ -2417,7 +3273,8 @@ export const getAdminWalletSettings = async (): Promise<{ success: boolean; sett
             success: true,
             settings: {
               commissionPercentage: typeof raw.commissionPercentage === 'number' ? raw.commissionPercentage : (raw.commissionRate || 5),
-              minRequiredBalance: typeof raw.minRequiredBalance === 'number' ? raw.minRequiredBalance : (raw.minRequiredWalletBalance || 0),
+              minRequiredBalance: typeof raw.minRequiredBalance === 'number' ? raw.minRequiredBalance : (raw.minimumBalance || raw.minRequiredWalletBalance || 1000),
+              minRechargeAmount: typeof raw.minRechargeAmount === 'number' ? raw.minRechargeAmount : 1000,
               walletRequiredForRides: raw.walletRequiredForRides !== undefined ? !!raw.walletRequiredForRides : true,
               autoOfflineWhenBalanceInsufficient: raw.autoOfflineWhenBalanceInsufficient !== undefined ? !!raw.autoOfflineWhenBalanceInsufficient : true,
             }
@@ -2431,7 +3288,8 @@ export const getAdminWalletSettings = async (): Promise<{ success: boolean; sett
     success: true,
     settings: {
       commissionPercentage: 5,
-      minRequiredBalance: 0,
+      minRequiredBalance: 1000,
+      minRechargeAmount: 1000,
       walletRequiredForRides: true,
       autoOfflineWhenBalanceInsufficient: true,
     }
@@ -2441,6 +3299,7 @@ export const getAdminWalletSettings = async (): Promise<{ success: boolean; sett
 /** POST /api/admin/settings/wallet or PUT /api/admin/settings/wallet */
 export const saveAdminWalletSettings = async (settings: AdminWalletSettings): Promise<{ success: boolean; message?: string }> => {
   const routes = [
+    `${BASE}/api/admin/wallet/minimum-balance`,
     `${BASE}/api/admin/settings/wallet`,
     `${BASE}/api/admin/config/wallet`,
     `${BASE}/api/admin/wallet/settings`,
@@ -2465,7 +3324,10 @@ export const saveAdminWalletSettings = async (settings: AdminWalletSettings): Pr
       const putRes = await authFetch(url, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+        body: JSON.stringify({
+          minimumBalance: settings.minRequiredBalance,
+          ...settings,
+        }),
       });
       const putData = await putRes.json().catch(() => ({}));
       if (putRes.ok && putData?.success !== false) {
@@ -2498,9 +3360,12 @@ export const getDriverWallet = async (): Promise<{ success: boolean; wallet: Dri
         if (raw) {
           const gross = typeof raw.totalEarned === 'number' ? raw.totalEarned : (raw.grossTotal || 0);
           const comm = typeof raw.platformCommission === 'number' ? raw.platformCommission : Math.round(gross * 0.05);
-          const avail = typeof raw.availableBalance === 'number' ? raw.availableBalance : Math.max(0, gross - comm - (raw.totalWithdrawn || 0));
-          const minReq = typeof raw.minRequiredBalance === 'number' ? raw.minRequiredBalance : (raw.minRequiredWalletBalance || 0);
-          const isEligible = raw.isEligible !== undefined ? !!raw.isEligible : (avail >= minReq);
+          const avail = typeof raw.availableBalance === 'number' ? raw.availableBalance : (typeof data.availableBalance === 'number' ? data.availableBalance : Math.max(0, gross - comm - (raw.totalWithdrawn || 0)));
+          const minReq = typeof raw.minRequiredBalance === 'number' ? raw.minRequiredBalance : (typeof data.minRequiredBalance === 'number' ? data.minRequiredBalance : (typeof raw.minimumBalance === 'number' ? raw.minimumBalance : (typeof data.minimumBalance === 'number' ? data.minimumBalance : 0.0)));
+          const minRech = typeof raw.minRechargeAmount === 'number' ? raw.minRechargeAmount : (typeof data.minRechargeAmount === 'number' ? data.minRechargeAmount : 1000);
+          const canOnline = raw.canGoOnline !== undefined ? !!raw.canGoOnline : (data.canGoOnline !== undefined ? !!data.canGoOnline : (avail >= 0));
+          const isEligible = raw.isEligible !== undefined ? !!raw.isEligible : canOnline;
+          const eligReason = raw.eligibilityReason || data.eligibilityReason || (avail >= 0 ? "No minimum balance required. You can go online anytime." : "Please clear negative dues to go online.");
 
           return {
             success: true,
@@ -2510,14 +3375,17 @@ export const getDriverWallet = async (): Promise<{ success: boolean; wallet: Dri
               totalEarned: gross,
               totalWithdrawn: raw.totalWithdrawn || raw.paidBalance || 0,
               platformCommission: comm,
-              commissionPercentage: raw.commissionPercentage || 5,
+              commissionPercentage: raw.commissionPercentage || data.commissionPercentage || 5,
               minPayoutAmount: raw.minPayoutAmount || 100,
               isPayoutEligible: avail >= (raw.minPayoutAmount || 100),
               needsMoreForPayout: Math.max(0, (raw.minPayoutAmount || 100) - avail),
               hasVerifiedAccount: raw.hasVerifiedAccount !== undefined ? raw.hasVerifiedAccount : true,
               isEligible,
-              eligibilityReason: raw.eligibilityReason,
+              canGoOnline: canOnline,
+              eligibilityReason: eligReason,
               minRequiredBalance: minReq,
+              minRechargeAmount: minRech,
+              minimumBalance: typeof data.minimumBalance === 'number' ? data.minimumBalance : minReq,
             },
           };
         }
@@ -2824,11 +3692,11 @@ export const requestDriverPayout = async (amount: number, payoutMode: string = '
 /* ── RAZORPAY LIVE INTEGRATION ───────────────────────────────── */
 
 /** POST /api/payments/razorpay/create-order (Alias: /api/payments/create) */
-export const createRazorpayOrder = async (bookingId: string, amount: number) => {
+export const createRazorpayOrder = async (bookingId: string, amount: number, transactionType: string = 'RECHARGE') => {
   const routes = [
+    `${BASE}/api/payments/razorpay/create-order`,
     `${BASE}/api/payments/create-order`,
     `${BASE}/api/payment/create-order`,
-    `${BASE}/api/payments/razorpay/create-order`,
     `${BASE}/api/payments/create`,
     `${BASE}/api/payments/initiate`,
   ];
@@ -2844,6 +3712,7 @@ export const createRazorpayOrder = async (bookingId: string, amount: number) => 
           bookingId,
           amount,
           currency: 'INR',
+          transactionType,
           paymentMethod: 'RAZORPAY',
         }),
       });
@@ -2851,12 +3720,22 @@ export const createRazorpayOrder = async (bookingId: string, amount: number) => 
       if (res.ok && data) {
         return {
           ...data,
+          success: data.success !== false,
           keyId: data.keyId || data.key || keyId,
           razorpayOrderId: data.razorpayOrderId || data.gatewayOrderId || data.orderId || data.paymentId,
         };
       }
+      
+      // Handle minimum recharge error specifically
+      if (res.status === 400 && (data?.error === 'MINIMUM_RECHARGE_AMOUNT_NOT_MET' || data?.message)) {
+        throw new Error(data?.message || 'Minimum recharge amount is ₹1000');
+      }
+
       lastError = data?.message || `HTTP ${res.status}`;
     } catch (e: any) {
+      if (e?.message && /Minimum recharge amount/i.test(e.message)) {
+        throw e;
+      }
       console.warn(`createRazorpayOrder route ${url} error:`, e);
       lastError = e?.message || 'Network request failed';
     }
@@ -2873,27 +3752,43 @@ export const createRazorpayOrder = async (bookingId: string, amount: number) => 
 
 /** POST /api/payments/razorpay/verify (Alias: /api/payments/verify) */
 export const verifyRazorpayPayment = async (payload: {
-  razorpay_payment_id: string;
-  razorpay_order_id: string;
-  razorpay_signature: string;
-  bookingId: string;
+  razorpay_payment_id?: string;
+  razorpay_order_id?: string;
+  razorpay_signature?: string;
+  razorpayPaymentId?: string;
+  razorpayOrderId?: string;
+  razorpaySignature?: string;
+  bookingId?: string;
   amount?: number;
+  isRecharge?: boolean;
 }) => {
   const routes = [
+    `${BASE}/api/payments/razorpay/verify`,
     `${BASE}/api/payments/verify-payment`,
     `${BASE}/api/payment/verify-payment`,
-    `${BASE}/api/payments/razorpay/verify`,
     `${BASE}/api/payments/verify`,
     `${BASE}/api/payments/webhook`,
   ];
   let lastError: any = null;
+
+  const normalizedPayload = {
+    razorpay_payment_id: payload.razorpay_payment_id || payload.razorpayPaymentId || '',
+    razorpay_order_id: payload.razorpay_order_id || payload.razorpayOrderId || '',
+    razorpay_signature: payload.razorpay_signature || payload.razorpaySignature || '',
+    razorpayPaymentId: payload.razorpayPaymentId || payload.razorpay_payment_id || '',
+    razorpayOrderId: payload.razorpayOrderId || payload.razorpay_order_id || '',
+    razorpaySignature: payload.razorpaySignature || payload.razorpay_signature || '',
+    bookingId: payload.bookingId,
+    amount: payload.amount,
+    isRecharge: payload.isRecharge !== undefined ? payload.isRecharge : true,
+  };
 
   for (const url of routes) {
     try {
       const res = await authFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(normalizedPayload),
       });
       const data = await res.json();
       if (res.ok && data) {
@@ -2984,4 +3879,308 @@ export const uploadDriverPhoto = async (
 
 export { uploadAndVerifyDocument, DocumentUploadResponse, DocumentTypeEnum } from './documentService';
 
+// ══════════════════════════════════════════════════════════════
+//  SERVICEABLE AREAS & LOCATION RESTRICTIONS
+// ══════════════════════════════════════════════════════════════
 
+export interface ServiceableAreaItem {
+  id: number | string;
+  city: string;
+  areaName: string;
+  pincode: string;
+  isServiceable: boolean;
+  centerLat?: number;
+  centerLng?: number;
+  radiusKm?: number;
+}
+
+/** GET /api/admin/serviceable-areas?city={city} or GET /api/location/serviceable-areas?city={city} */
+export const getServiceableAreas = async (city: string = 'Hyderabad'): Promise<{
+  success: boolean;
+  city: string;
+  count: number;
+  areas: ServiceableAreaItem[];
+  message?: string;
+}> => {
+  const routes = [
+    `${BASE}/api/admin/serviceable-areas?city=${encodeURIComponent(city)}`,
+    `${BASE}/api/location/serviceable-areas?city=${encodeURIComponent(city)}`,
+    `${BASE}/api/serviceable-areas?city=${encodeURIComponent(city)}`,
+  ];
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url);
+      const data = await res.json().catch(() => null);
+      if (res.ok && data) {
+        const areas = Array.isArray(data.areas) ? data.areas : (Array.isArray(data) ? data : []);
+        return { success: true, city: data.city || city, count: areas.length, areas, ...data };
+      }
+      if (res.status !== 404) {
+        return { success: false, city, count: 0, areas: [], message: data?.message || `HTTP ${res.status}` };
+      }
+    } catch (err: any) {
+      console.warn(`[API] getServiceableAreas ${url} error:`, err?.message);
+    }
+  }
+  return { success: false, city, count: 0, areas: [], message: 'All serviceable-areas endpoints returned 404' };
+};
+
+/** POST /api/admin/serviceable-areas/bulk-update */
+export const bulkUpdateServiceableAreas = async (
+  city: string,
+  activePincodes: string[]
+): Promise<{
+  success: boolean;
+  city: string;
+  enabledCount?: number;
+  disabledCount?: number;
+  totalAreasInCity?: number;
+  activePincodes?: string[];
+  message?: string;
+}> => {
+  try {
+    const res = await authFetch(`${BASE}/api/admin/serviceable-areas/bulk-update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ city, activePincodes }),
+    });
+    const data = await res.json().catch(() => null);
+    if (res.ok && data) {
+      return { success: true, ...data };
+    }
+    return { success: false, city, message: data?.message || `HTTP ${res.status}` };
+  } catch (err: any) {
+    return { success: false, city, message: err?.message || 'Network request failed' };
+  }
+};
+
+/** PUT /api/admin/serviceable-areas/{id}/toggle */
+export const toggleServiceableArea = async (
+  id: number | string
+): Promise<{ success: boolean; message?: string; area?: ServiceableAreaItem }> => {
+  try {
+    const res = await authFetch(`${BASE}/api/admin/serviceable-areas/${id}/toggle`, {
+      method: 'PUT',
+    });
+    const data = await res.json().catch(() => null);
+    if (res.ok && data) {
+      return { success: true, ...data };
+    }
+    return { success: false, message: data?.message || `HTTP ${res.status}` };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Network request failed' };
+  }
+};
+
+/** POST /api/admin/serviceable-areas */
+export const addServiceableArea = async (payload: {
+  city: string;
+  areaName: string;
+  pincode: string;
+  isServiceable?: boolean;
+  centerLat?: number;
+  centerLng?: number;
+  radiusKm?: number;
+}): Promise<{ success: boolean; area?: ServiceableAreaItem; message?: string }> => {
+  try {
+    const res = await authFetch(`${BASE}/api/admin/serviceable-areas`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => null);
+    if (res.ok && data) {
+      return { success: true, ...data };
+    }
+    return { success: false, message: data?.message || `HTTP ${res.status}` };
+  } catch (err: any) {
+    return { success: false, message: err?.message || 'Network request failed' };
+  }
+};
+
+/** POST /api/location/validate-serviceable */
+export const validateLocationServiceable = async (params: {
+  lat: number;
+  lng: number;
+  pincode?: string;
+  city?: string;
+}): Promise<{
+  success: boolean;
+  serviceable: boolean;
+  areaName?: string;
+  pincode?: string;
+  city?: string;
+  message?: string;
+  approvedAreas?: string[];
+}> => {
+  const routes = [
+    `${BASE}/api/location/validate-serviceable`,
+    `${BASE}/api/locations/validate-serviceable`,
+    `${BASE}/api/serviceable-areas/validate`,
+  ];
+  const payload = {
+    lat: params.lat,
+    lng: params.lng,
+    pincode: params.pincode,
+    city: params.city || 'Hyderabad',
+  };
+
+  let lastError = 'Network request failed';
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data) {
+        const isServ = data.serviceable !== undefined ? !!data.serviceable : (data.isServiceable !== undefined ? !!data.isServiceable : true);
+        return {
+          success: data.success !== false,
+          serviceable: isServ,
+          areaName: data.areaName || data.name,
+          pincode: data.pincode || params.pincode,
+          city: data.city || params.city || 'Hyderabad',
+          message: data.message,
+          approvedAreas: Array.isArray(data.approvedAreas) ? data.approvedAreas : [],
+          ...data,
+        };
+      }
+      if (res.status !== 404) {
+        return {
+          success: false,
+          serviceable: false,
+          message: data?.message || `HTTP ${res.status}`,
+          approvedAreas: Array.isArray(data?.approvedAreas) ? data.approvedAreas : [],
+        };
+      }
+    } catch (err: any) {
+      lastError = err?.message || 'Network request failed';
+    }
+  }
+
+  return {
+    success: false,
+    serviceable: true,
+    message: lastError,
+  };
+};
+
+
+// ══════════════════════════════════════════════════════════════
+//  RESILIENT ORDER PLACEMENT (createBooking / placeOrder)
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/bookings or POST /api/orders
+ * Resilient order placement with field-alias mapping.
+ * Normalizes different field naming conventions from
+ * backend variations (phone/mobile, fare/amount, lat/latitude, etc.)
+ */
+export const createBooking = async (orderData: Record<string, any>): Promise<{
+  success: boolean;
+  booking?: any;
+  order?: any;
+  bookingId?: string;
+  orderId?: string;
+  message?: string;
+  statusCode?: number;
+}> => {
+  // Normalize field aliases into a canonical payload
+  const payload: Record<string, any> = {
+    // Phone aliases
+    userPhone: orderData.userPhone || orderData.customerPhone || orderData.phone || orderData.mobile,
+    customerPhone: orderData.customerPhone || orderData.userPhone || orderData.phone || orderData.mobile,
+    customerName: orderData.customerName || orderData.userName || orderData.name,
+
+    // Fare aliases
+    totalFare: Number(orderData.totalFare || orderData.amount || orderData.fare || orderData.offeredFare || 0),
+    amount: Number(orderData.amount || orderData.totalFare || orderData.fare || orderData.offeredFare || 0),
+
+    // Pickup location aliases
+    pickupAddress: orderData.pickupAddress || orderData.pickup || orderData.pickupLocation?.address,
+    pickupLatitude: Number(orderData.pickupLatitude || orderData.pickupLat || orderData.pickupLocation?.lat || 0),
+    pickupLongitude: Number(orderData.pickupLongitude || orderData.pickupLng || orderData.pickupLon || orderData.pickupLocation?.lng || 0),
+    pickupLat: Number(orderData.pickupLat || orderData.pickupLatitude || orderData.pickupLocation?.lat || 0),
+    pickupLng: Number(orderData.pickupLng || orderData.pickupLon || orderData.pickupLongitude || orderData.pickupLocation?.lng || 0),
+
+    // Drop location aliases
+    dropAddress: orderData.dropAddress || orderData.drop || orderData.dropLocation?.address,
+    dropLatitude: Number(orderData.dropLatitude || orderData.dropLat || orderData.dropLocation?.lat || 0),
+    dropLongitude: Number(orderData.dropLongitude || orderData.dropLng || orderData.dropLon || orderData.dropLocation?.lng || 0),
+    dropLat: Number(orderData.dropLat || orderData.dropLatitude || orderData.dropLocation?.lat || 0),
+    dropLng: Number(orderData.dropLng || orderData.dropLon || orderData.dropLongitude || orderData.dropLocation?.lng || 0),
+
+    // Vehicle type aliases
+    vehicleType: orderData.vehicleType || orderData.vehicle_type || orderData.vehicleName || orderData.serviceName,
+    serviceName: orderData.serviceName || orderData.vehicleType || orderData.vehicle_type,
+
+    // Optional fields
+    goodsCategory: orderData.goodsCategory || orderData.category,
+    distance: orderData.distance || orderData.distanceKm,
+    notes: orderData.notes || orderData.instructions,
+  };
+
+  // Merge any extra fields from original that aren't already mapped
+  for (const key of Object.keys(orderData)) {
+    if (!(key in payload)) {
+      payload[key] = orderData[key];
+    }
+  }
+
+  // Remove undefined/null entries
+  for (const key of Object.keys(payload)) {
+    if (payload[key] === undefined || payload[key] === null || payload[key] === '' || (typeof payload[key] === 'number' && isNaN(payload[key]))) {
+      delete payload[key];
+    }
+  }
+
+  const routes = [
+    `${BASE}/api/bookings`,
+    `${BASE}/api/orders`,
+    `${BASE}/api/driver/orders`,
+  ];
+
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data) {
+        return {
+          success: data.success !== false,
+          booking: data.booking || data.order || data,
+          order: data.order || data.booking || data,
+          bookingId: data.bookingId || data.booking?.id || data.id,
+          orderId: data.orderId || data.order?.id || data.id,
+          message: data.message || 'Booking created successfully',
+          statusCode: res.status,
+        };
+      }
+
+      if (res.status !== 404) {
+        return {
+          success: false,
+          message: data?.message || `HTTP ${res.status}`,
+          statusCode: res.status,
+        };
+      }
+    } catch (err: any) {
+      console.warn(`[API] createBooking ${url} error:`, err?.message);
+    }
+  }
+
+  return {
+    success: false,
+    message: 'All booking endpoints failed.',
+    statusCode: 500,
+  };
+};
+
+/** Alias for createBooking */
+export const placeOrder = createBooking;

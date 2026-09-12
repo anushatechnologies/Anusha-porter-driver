@@ -45,7 +45,7 @@ const NotificationsScreen = () => {
           title: item.title || 'Notification',
           body: item.message || item.body || '',
           time: item.createdAt ? new Date(item.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recently',
-          read: item.read !== undefined ? item.read : false,
+          read: item.readStatus !== undefined ? item.readStatus : (item.read !== undefined ? item.read : false),
         }));
         setNotifications(formatted);
       } catch (err) {
