@@ -41,8 +41,9 @@ export const dismissIncomingOrderModal = (bookingId?: string | number): void => 
       if (bookingId) {
         const params = currentRoute.params as { order?: { bookingId?: string; id?: string | number } } | undefined;
         if (params?.order) {
-          const currentId = String(params.order.bookingId || params.order.id || '');
-          if (currentId && currentId !== String(bookingId)) {
+          const currentId = String(params.order.bookingId || params.order.id || '').replace(/^#+/, '');
+          const targetId = String(bookingId).replace(/^#+/, '');
+          if (currentId && targetId && currentId !== targetId) {
             // Dismiss only if matches the target bookingId
             return;
           }

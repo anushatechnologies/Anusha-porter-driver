@@ -56,6 +56,7 @@ export type UpdateEventName =
 // GUARDS
 // ------------------------------------------------------------------
 export function isUpdateSupported(): boolean {
+  if (!UPDATE_CONFIG.enabled) return false;
   if (UPDATE_CONFIG.simulateUpdateForTesting) return true;
   return Platform.OS === 'android';
 }

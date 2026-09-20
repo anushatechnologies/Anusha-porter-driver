@@ -46,3 +46,6 @@ yarn-error.*
 
 # Editor
 .vscode/
+
+# Scratch
+scratch/

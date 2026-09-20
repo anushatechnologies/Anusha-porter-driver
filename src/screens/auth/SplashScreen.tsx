@@ -67,108 +67,117 @@ const SplashScreen = () => {
 
         // Check KYC status & profile completeness if token exists
         let currentKyc = 'pending';
+        let profile: any = null;
         if (profileStr) {
-          const profile = JSON.parse(profileStr);
-          let driverDb: any = null;
           try {
-            driverDb = await getDriverProfile();
-            if (driverDb) {
-              const cleanDbPhone = (driverDb.phone || '').replace(/\D/g, '').slice(-10);
-              const cleanStoredPhone = (profile.mobile || token || '').replace(/\D/g, '').slice(-10);
-              if (cleanDbPhone && cleanStoredPhone && cleanDbPhone !== cleanStoredPhone) {
-                // Identity mismatch — wipe cross-account cache and force clean login
-                await AsyncStorage.clear();
-                navigation.replace('Login', { role: 'driver' });
-                return;
-              }
+            profile = JSON.parse(profileStr);
+          } catch (e) {
+            console.warn('[Splash] Invalid profile JSON in storage, clearing cache:', e);
+            await AsyncStorage.removeItem('driverProfile');
+            profile = null;
+          }
+        }
 
-              currentKyc = driverDb.kyc || profile.kyc || 'verified';
-              const rawPhoto = driverDb.profilePhotoUri ||
-                               driverDb.documents?.profilePhotoUrl ||
-                               (driverDb.documents as any)?.profilePhotoUri ||
-                               (driverDb as any).profilePhotoUrl ||
-                               (driverDb as any).profilePhoto ||
-                               profile.profilePhotoUri ||
-                               profile.profilePhotoUrl ||
-                               '';
-              const updatedProfile = {
-                ...profile,
-                fullName: driverDb.name || profile.fullName,
-                mobile: driverDb.phone || profile.mobile,
-                vehicleType: driverDb.vehicleType || profile.vehicleType,
-                panNumber: driverDb.panNumber || profile.panNumber || '',
-                panUri: cleanUrl(driverDb.panUri || driverDb.panUrl || driverDb.documents?.panUrl || (driverDb.documents as any)?.panUri || profile.panUri || ''),
-                profilePhotoUri: cleanUrl(rawPhoto),
-                aadhaarUri: cleanUrl(driverDb.aadhaarUri || profile.aadhaarUri || ''),
-                licenseUri: cleanUrl(driverDb.licenseUri || profile.licenseUri || ''),
-                rcUri: cleanUrl(driverDb.rcUri || profile.rcUri || ''),
-                bankPassbookUri: cleanUrl(driverDb.bankPassbookUri || profile.bankPassbookUri || ''),
-                kyc: currentKyc,
-                kycStatus: currentKyc,
-                isRegistered: Boolean(
-                  driverDb.isRegistered ||
-                  driverDb.registrationCompleted ||
-                  Number(driverDb.registrationStep) >= 5 ||
-                  profile.isRegistered ||
-                  currentKyc === 'approved' ||
-                  currentKyc === 'verified'
-                ),
-                registrationCompleted: Boolean(
-                  driverDb.isRegistered ||
-                  driverDb.registrationCompleted ||
-                  Number(driverDb.registrationStep) >= 5 ||
-                  profile.registrationCompleted ||
-                  currentKyc === 'approved' ||
-                  currentKyc === 'verified'
-                ),
-                registrationStep: Number(driverDb.registrationStep || profile.registrationStep || 5),
-                rejectedReason: driverDb.rejectedReason || '',
-              };
-              await AsyncStorage.setItem('driverProfile', JSON.stringify(updatedProfile));
+        let driverDb: any = null;
+        try {
+          driverDb = await getDriverProfile();
+          if (driverDb) {
+            const cleanDbPhone = (driverDb.phone || '').replace(/\D/g, '').slice(-10);
+            const cleanStoredPhone = (profile?.mobile || token || '').replace(/\D/g, '').slice(-10);
+            if (cleanDbPhone && cleanStoredPhone && cleanDbPhone !== cleanStoredPhone) {
+              // Identity mismatch — wipe cross-account cache and force clean login
+              await AsyncStorage.clear();
+              navigation.replace('Login', { role: 'driver' });
+              return;
             }
-          } catch (err) {
-            console.warn('Splash status check error:', err);
+
+            currentKyc = driverDb.kyc || profile?.kyc || 'verified';
+            const rawPhoto = driverDb.profilePhotoUri ||
+                             driverDb.documents?.profilePhotoUrl ||
+                             (driverDb.documents as any)?.profilePhotoUri ||
+                             (driverDb as any).profilePhotoUrl ||
+                             (driverDb as any).profilePhoto ||
+                             profile?.profilePhotoUri ||
+                             profile?.profilePhotoUrl ||
+                             '';
+            const updatedProfile = {
+              ...(profile || {}),
+              fullName: driverDb.name || profile?.fullName,
+              mobile: driverDb.phone || profile?.mobile,
+              vehicleType: driverDb.vehicleType || profile?.vehicleType,
+              panNumber: driverDb.panNumber || profile?.panNumber || '',
+              panUri: cleanUrl(driverDb.panUri || driverDb.panUrl || driverDb.documents?.panUrl || (driverDb.documents as any)?.panUri || profile?.panUri || ''),
+              profilePhotoUri: cleanUrl(rawPhoto),
+              aadhaarUri: cleanUrl(driverDb.aadhaarUri || profile?.aadhaarUri || ''),
+              licenseUri: cleanUrl(driverDb.licenseUri || profile?.licenseUri || ''),
+              rcUri: cleanUrl(driverDb.rcUri || profile?.rcUri || ''),
+              bankPassbookUri: cleanUrl(driverDb.bankPassbookUri || profile?.bankPassbookUri || ''),
+              kyc: currentKyc,
+              kycStatus: currentKyc,
+              isRegistered: Boolean(
+                driverDb.isRegistered ||
+                driverDb.registrationCompleted ||
+                Number(driverDb.registrationStep) >= 5 ||
+                profile?.isRegistered ||
+                currentKyc === 'approved' ||
+                currentKyc === 'verified'
+              ),
+              registrationCompleted: Boolean(
+                driverDb.isRegistered ||
+                driverDb.registrationCompleted ||
+                Number(driverDb.registrationStep) >= 5 ||
+                profile?.registrationCompleted ||
+                currentKyc === 'approved' ||
+                currentKyc === 'verified'
+              ),
+              registrationStep: Number(driverDb.registrationStep || profile?.registrationStep || 5),
+              rejectedReason: driverDb.rejectedReason || '',
+            };
+            await AsyncStorage.setItem('driverProfile', JSON.stringify(updatedProfile));
+            profile = updatedProfile;
           }
+        } catch (err) {
+          console.warn('Splash status check error:', err);
+        }
 
-          const isRegistered = Boolean(
-            (driverDb as any)?.isRegistered === true ||
-            (driverDb as any)?.registrationCompleted === true ||
-            ((driverDb as any)?.registrationStep !== undefined && Number((driverDb as any).registrationStep) >= 5) ||
-            profile.isRegistered === true ||
-            profile.registrationCompleted === true ||
-            (profile.registrationStep !== undefined && Number(profile.registrationStep) >= 5) ||
-            currentKyc === 'verified' ||
-            currentKyc === 'approved'
-          );
+        const isRegistered = Boolean(
+          (driverDb as any)?.isRegistered === true ||
+          (driverDb as any)?.registrationCompleted === true ||
+          ((driverDb as any)?.registrationStep !== undefined && Number((driverDb as any).registrationStep) >= 5) ||
+          profile?.isRegistered === true ||
+          profile?.registrationCompleted === true ||
+          (profile?.registrationStep !== undefined && Number(profile.registrationStep) >= 5) ||
+          currentKyc === 'verified' ||
+          currentKyc === 'approved'
+        );
 
-          if (isRegistered) {
-            // Already registered driver -> Go directly to DriverTabs!
-            navigation.replace('DriverTabs');
-            return;
-          }
-
-          if (currentKyc === 'pending') {
-            navigation.replace('ApprovalPending');
-            return;
-          }
-
-          const isComplete = Boolean(
-            (profile.vehicleNumber || profile.vehicleType) &&
-            (profile.aadhaarNumber || profile.licenseNumber) &&
-            (profile.aadhaarUri || profile.licenseUri || profile.profilePhotoUri) &&
-            (profile.accountNumber || (profile as any).account_number) &&
-            (profile.bankName || (profile as any).bank_name)
-          );
-
-          if (!isComplete || currentKyc === 'rejected') {
-            navigation.replace('DriverRegistration', { mobile: profile.mobile, fullName: profile.fullName });
-            return;
-          }
-
-          // Completed driver auto-approved directly to DriverTabs
+        if (isRegistered) {
+          // Already registered driver -> Go directly to DriverTabs!
           navigation.replace('DriverTabs');
           return;
         }
+
+        if (currentKyc === 'pending') {
+          navigation.replace('ApprovalPending');
+          return;
+        }
+
+        const isComplete = Boolean(
+          (profile?.vehicleNumber || profile?.vehicleType) &&
+          (profile?.aadhaarNumber || profile?.licenseNumber) &&
+          (profile?.aadhaarUri || profile?.licenseUri || profile?.profilePhotoUri) &&
+          (profile?.accountNumber || profile?.account_number) &&
+          (profile?.bankName || profile?.bank_name)
+        );
+
+        if (!isComplete || currentKyc === 'rejected') {
+          navigation.replace('DriverRegistration', { mobile: profile?.mobile, fullName: profile?.fullName });
+          return;
+        }
+
+        // Completed driver auto-approved directly to DriverTabs
+        navigation.replace('DriverTabs');
+        return;
       } catch (e) {
         console.log('AsyncStorage error:', e);
       }

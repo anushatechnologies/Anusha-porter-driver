@@ -47,6 +47,35 @@ const { width, height } = Dimensions.get('window');
 const STEPS = ['Personal', 'Address', 'Vehicle', 'Documents', 'Bank', 'Review'];
 const STEP_ICONS = ['person', 'home-outline', 'car-sport', 'cloud-upload', 'cash-outline', 'document-text'];
 
+/**
+ * Provides standard vehicle illustrations for commercial goods vehicles when
+ * the Admin has not yet uploaded a custom photo in the backend.
+ */
+const getFallbackVehicleImage = (name: string, type: string): string => {
+  const s = (name + ' ' + (type || '')).toLowerCase();
+  if (s.includes('tata') || s.includes('ace')) {
+    return 'https://images.unsplash.com/photo-1586191582151-f746323877dd?w=400&auto=format&fit=crop&q=80';
+  }
+  if (s.includes('407') || s.includes('lpt') || s.includes('heavy') || s.includes('truck')) {
+    return 'https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?w=400&auto=format&fit=crop&q=80';
+  }
+  if (s.includes('pickup')) {
+    return 'https://images.unsplash.com/photo-1559416523-140ddc3d238c?w=400&auto=format&fit=crop&q=80';
+  }
+  if (s.includes('scooter') || s.includes('moped')) {
+    return 'https://images.unsplash.com/photo-1558981403-c5f9899a28bc?w=400&auto=format&fit=crop&q=80';
+  }
+  if (s.includes('bike')) {
+    return 'https://poteranusha.s3.amazonaws.com/vehicles/bike.png';
+  }
+  if (s.includes('auto') || s.includes('rickshaw')) {
+    return 'https://poteranusha.s3.amazonaws.com/vehicles/auto.png';
+  }
+  if (s.includes('cab') || s.includes('car')) {
+    return 'https://poteranusha.s3.amazonaws.com/vehicles/cab.png';
+  }
+  return '';
+};
 
 const DriverRegistrationScreen = () => {
   const navigation = useNavigation<NavProp>();
@@ -101,12 +130,15 @@ const DriverRegistrationScreen = () => {
   const [vehicleList, setVehicleList] = useState<VehicleOption[]>([]);
   const [loadingVehicles, setLoadingVehicles] = useState(true);
   const [vehicleError, setVehicleError] = useState<string | null>(null);
+  const [failedVehicleImages, setFailedVehicleImages] = useState<Record<string, boolean>>({});
+  // Service track selection: null = not yet chosen, OUR_SERVICES = goods, PASSENGER = taxi
+  const [serviceTrack, setServiceTrack] = useState<'OUR_SERVICES' | 'PASSENGER' | null>(null);
 
-  const fetchVehicles = async () => {
+  const fetchVehicles = async (track?: 'OUR_SERVICES' | 'PASSENGER') => {
     setLoadingVehicles(true);
     setVehicleError(null);
     try {
-      const res = await getActiveVehicles();
+      const res = await getActiveVehicles(track);
       if (res.success && res.vehicles && res.vehicles.length > 0) {
         setVehicleList(res.vehicles);
       } else {
@@ -131,7 +163,22 @@ const DriverRegistrationScreen = () => {
   }, [initialMobile, initialFullName]);
 
   useEffect(() => {
-    fetchVehicles();
+    // Restore saved service track from draft, then fetch vehicles for that track
+    const restoreServiceTrack = async () => {
+      try {
+        const savedTrack = await AsyncStorage.getItem('driverDraftServiceTrack');
+        if (savedTrack === 'OUR_SERVICES' || savedTrack === 'PASSENGER') {
+          setServiceTrack(savedTrack as 'OUR_SERVICES' | 'PASSENGER');
+          fetchVehicles(savedTrack as 'OUR_SERVICES' | 'PASSENGER');
+        } else {
+          // No saved track: load all vehicles as fallback (unfiltered)
+          fetchVehicles();
+        }
+      } catch {
+        fetchVehicles();
+      }
+    };
+    restoreServiceTrack();
   }, []);
 
   // Pre-populate if driver details exist in backend database or local storage
@@ -851,15 +898,16 @@ const DriverRegistrationScreen = () => {
       const selectedVehicleObj = vehicleList.find(
         v => (form.vehicleId && v.id === form.vehicleId) || v.name === form.vehicleType || v.type === form.vehicleType
       ) || (vehicleList.length > 0 ? vehicleList[0] : null);
-      const vehicleCategoryName = selectedVehicleObj?.name || form.vehicleType || '3 wheeler';
+      const vehicleCategoryName = selectedVehicleObj?.name || form.vehicleType || '';
       const vLower = (vehicleCategoryName + ' ' + (selectedVehicleObj?.type || '')).toLowerCase();
-      let determinedServiceType: 'BOTH' | 'PASSENGER' | 'GOODS' = 'GOODS';
-      if (vLower.includes('cab') || vLower.includes('car') || vLower.includes('taxi') || vLower.includes('sedan') || vLower.includes('suv')) {
-        determinedServiceType = 'PASSENGER';
-      } else if (vLower.includes('2') || vLower.includes('bike') || vLower.includes('two') || vLower.includes('auto') || vLower.includes('rickshaw') || vLower.includes('3')) {
-        determinedServiceType = 'BOTH';
-      } else {
-        determinedServiceType = 'GOODS';
+      // Prefer the explicit serviceTrack chosen by the driver; fall back to vehicle-name heuristic
+      let determinedServiceType: 'PASSENGER' | 'OUR_SERVICES' = serviceTrack || 'OUR_SERVICES';
+      if (!serviceTrack) {
+        if (selectedVehicleObj?.serviceType === 'PASSENGER' || vLower.includes('cab') || vLower.includes('car') || vLower.includes('taxi') || vLower.includes('sedan') || vLower.includes('suv') || vLower.includes('bike taxi') || vLower.includes('auto taxi')) {
+          determinedServiceType = 'PASSENGER';
+        } else {
+          determinedServiceType = 'OUR_SERVICES';
+        }
       }
 
       const stepPayload: any = {
@@ -873,11 +921,15 @@ const DriverRegistrationScreen = () => {
         date_of_birth: formatToIsoDob(form.dob),
         gender: form.gender,
         panNumber: form.panNumber,
+        vehicleId: selectedVehicleObj?.id || form.vehicleId || undefined,
+        vehicle_id: selectedVehicleObj?.id || form.vehicleId || undefined,
         vehicle: vehicleCategoryName,
         vehicleType: vehicleCategoryName,
         serviceType: determinedServiceType,
         service_type: determinedServiceType,
+        serviceCategory: determinedServiceType,
         vehicleNumber: form.vehicleNumber,
+        vehicle_number: form.vehicleNumber,
         rcNumber: form.rcNumber,
         licenseNumber: form.licenseNumber,
         aadhaarNumber: form.aadhaarNumber,
@@ -1280,17 +1332,25 @@ const DriverRegistrationScreen = () => {
             v => (form.vehicleId && v.id === form.vehicleId) || v.name === form.vehicleType || v.type === form.vehicleType
           ) || (vehicleList.length > 0 ? vehicleList[0] : null);
 
-          const vehicleCategoryName = selectedVehicleObj?.name || cleanForm.vehicleType || form.vehicleType || '3 Wheeler';
-          const vehicleTypeCode = selectedVehicleObj?.type || (cleanForm.vehicleType ? cleanForm.vehicleType.toLowerCase().replace(/\s+/g, '_') : '3_wheeler');
+          const vehicleCategoryName = selectedVehicleObj?.name || cleanForm.vehicleType || form.vehicleType || '';
+          const vehicleTypeCode = selectedVehicleObj?.type || (cleanForm.vehicleType ? cleanForm.vehicleType.toLowerCase().replace(/\s+/g, '_') : (form.vehicleType ? form.vehicleType.toLowerCase().replace(/\s+/g, '_') : ''));
 
           const vFinalLower = (vehicleCategoryName + ' ' + vehicleTypeCode).toLowerCase();
-          let finalServiceType: 'BOTH' | 'PASSENGER' | 'GOODS' = 'GOODS';
-          if (vFinalLower.includes('cab') || vFinalLower.includes('car') || vFinalLower.includes('taxi') || vFinalLower.includes('sedan') || vFinalLower.includes('suv')) {
+          let finalServiceType: 'PASSENGER' | 'OUR_SERVICES' = 'OUR_SERVICES';
+          if (
+            serviceTrack === 'PASSENGER' ||
+            selectedVehicleObj?.serviceType === 'PASSENGER' ||
+            vFinalLower.includes('cab') ||
+            vFinalLower.includes('car') ||
+            vFinalLower.includes('taxi') ||
+            vFinalLower.includes('sedan') ||
+            vFinalLower.includes('suv') ||
+            vFinalLower.includes('bike taxi') ||
+            vFinalLower.includes('auto taxi')
+          ) {
             finalServiceType = 'PASSENGER';
-          } else if (vFinalLower.includes('2') || vFinalLower.includes('bike') || vFinalLower.includes('two') || vFinalLower.includes('auto') || vFinalLower.includes('rickshaw') || vFinalLower.includes('3')) {
-            finalServiceType = 'BOTH';
           } else {
-            finalServiceType = 'GOODS';
+            finalServiceType = 'OUR_SERVICES';
           }
 
           let driverRes: Response;
@@ -1319,6 +1379,7 @@ const DriverRegistrationScreen = () => {
               vehicle_type: vehicleTypeCode,
               serviceType: finalServiceType,
               service_type: finalServiceType,
+              serviceCategory: finalServiceType,
               vehicleName: vehicleCategoryName,
               vehicleNumber: cleanForm.vehicleNumber,
               vehicle_number: cleanForm.vehicleNumber,
@@ -1410,6 +1471,7 @@ const DriverRegistrationScreen = () => {
               vehicleType: form.vehicleType,
               serviceType: finalServiceType,
               service_type: finalServiceType,
+              serviceCategory: finalServiceType,
               vehicleNumber: form.vehicleNumber,
               rcNumber: form.rcNumber,
               aadhaarNumber: form.aadhaarNumber,
@@ -1439,6 +1501,7 @@ const DriverRegistrationScreen = () => {
             await AsyncStorage.removeItem('registrationProgress').catch(() => {});
             await AsyncStorage.removeItem('driverDraftStep').catch(() => {});
             await AsyncStorage.removeItem('driverDraftData').catch(() => {});
+            await AsyncStorage.removeItem('driverDraftServiceTrack').catch(() => {});
             await AsyncStorage.setItem('driverProfile', JSON.stringify(profileData));
             await AsyncStorage.setItem('userToken', form.mobile);
             await AsyncStorage.setItem('loggedInEmail', form.email);
@@ -1900,13 +1963,117 @@ const DriverRegistrationScreen = () => {
     <View style={styles.stepPane}>
       <View style={styles.paneHeader}>
         <Text style={[styles.paneTitle, { color: colors.text }]}>Vehicle Information</Text>
-        <Text style={[styles.paneSubtitle, { color: colors.textSecondary }]}>Select vehicle category and enter licensing details</Text>
+        <Text style={[styles.paneSubtitle, { color: colors.textSecondary }]}>Select your service track, then pick your vehicle</Text>
+      </View>
+
+      {/* ── Service Track Selector ─────────────────────────────────── */}
+      <View style={[styles.glassCardForm, { backgroundColor: colors.card, borderColor: colors.border, marginBottom: 14 }]}>
+        <Text style={[styles.inputLabel, { color: colors.textSecondary, marginBottom: 12 }]}>Which service are you registering for?</Text>
+        <View style={{ flexDirection: 'row', gap: 12 }}>
+          {/* Our Services Card */}
+          <TouchableOpacity
+            style={[
+              {
+                flex: 1,
+                borderRadius: 16,
+                borderWidth: 2,
+                padding: 14,
+                alignItems: 'center',
+                gap: 8,
+                borderColor: serviceTrack === 'OUR_SERVICES'
+                  ? colors.primary
+                  : colors.border,
+                backgroundColor: serviceTrack === 'OUR_SERVICES'
+                  ? (theme === 'dark' ? 'rgba(0,82,255,0.12)' : 'rgba(0,82,255,0.06)')
+                  : colors.background,
+              },
+            ]}
+            onPress={() => {
+              setServiceTrack('OUR_SERVICES');
+              AsyncStorage.setItem('driverDraftServiceTrack', 'OUR_SERVICES').catch(() => {});
+              setVehicleList([]);
+              setForm(prev => ({ ...prev, vehicleId: '', vehicleType: '' }));
+              fetchVehicles('OUR_SERVICES');
+            }}
+            activeOpacity={0.8}
+          >
+            <MaterialCommunityIcons
+              name="truck-fast-outline"
+              size={30}
+              color={serviceTrack === 'OUR_SERVICES' ? colors.primary : colors.textSecondary}
+            />
+            <Text style={[
+              { fontSize: 13, fontWeight: '800', textAlign: 'center' },
+              { color: serviceTrack === 'OUR_SERVICES' ? colors.primary : colors.text },
+            ]}>Our Services</Text>
+            <Text style={{ fontSize: 10, color: colors.textSecondary, textAlign: 'center' }}>
+              Goods, Courier,{`\n`}Cargo Delivery
+            </Text>
+            {serviceTrack === 'OUR_SERVICES' && (
+              <View style={[styles.vehicleCheckBadge, { backgroundColor: colors.primary, top: 8, right: 8 }]}>
+                <Ionicons name="checkmark" size={10} color="#FFFFFF" />
+              </View>
+            )}
+          </TouchableOpacity>
+
+          {/* Passenger Taxi Card */}
+          <TouchableOpacity
+            style={[
+              {
+                flex: 1,
+                borderRadius: 16,
+                borderWidth: 2,
+                padding: 14,
+                alignItems: 'center',
+                gap: 8,
+                borderColor: serviceTrack === 'PASSENGER'
+                  ? colors.success
+                  : colors.border,
+                backgroundColor: serviceTrack === 'PASSENGER'
+                  ? (theme === 'dark' ? 'rgba(16,185,129,0.12)' : 'rgba(16,185,129,0.06)')
+                  : colors.background,
+              },
+            ]}
+            onPress={() => {
+              setServiceTrack('PASSENGER');
+              AsyncStorage.setItem('driverDraftServiceTrack', 'PASSENGER').catch(() => {});
+              setVehicleList([]);
+              setForm(prev => ({ ...prev, vehicleId: '', vehicleType: '' }));
+              fetchVehicles('PASSENGER');
+            }}
+            activeOpacity={0.8}
+          >
+            <MaterialCommunityIcons
+              name="motorbike"
+              size={30}
+              color={serviceTrack === 'PASSENGER' ? colors.success : colors.textSecondary}
+            />
+            <Text style={[
+              { fontSize: 13, fontWeight: '800', textAlign: 'center' },
+              { color: serviceTrack === 'PASSENGER' ? colors.success : colors.text },
+            ]}>Passenger Taxi</Text>
+            <Text style={{ fontSize: 10, color: colors.textSecondary, textAlign: 'center' }}>
+              Bike Taxi, Auto,{`\n`}Cab Rides
+            </Text>
+            {serviceTrack === 'PASSENGER' && (
+              <View style={[styles.vehicleCheckBadge, { backgroundColor: colors.success, top: 8, right: 8 }]}>
+                <Ionicons name="checkmark" size={10} color="#FFFFFF" />
+              </View>
+            )}
+          </TouchableOpacity>
+        </View>
+        {!serviceTrack && (
+          <Text style={{ fontSize: 11, color: colors.warning || '#F59E0B', textAlign: 'center', marginTop: 10 }}>
+            ⚠️ Please select a service track to load vehicle options
+          </Text>
+        )}
       </View>
 
       <View style={[styles.glassCardForm, { backgroundColor: colors.card, borderColor: colors.border }]}>
-        <Text style={[styles.inputLabel, { color: colors.textSecondary, marginBottom: 10 }]}>Delivery Transport Category</Text>
+        <Text style={[styles.inputLabel, { color: colors.textSecondary, marginBottom: 10 }]}>
+          {serviceTrack === 'PASSENGER' ? 'Passenger Vehicle Category' : 'Delivery Transport Category'}
+        </Text>
 
-        {/* Dynamic Vehicles Grid list from Admin */}
         {loadingVehicles ? (
           <View style={[styles.vehicleLoadingBox, { borderColor: colors.border }]}>
             <ActivityIndicator size="small" color={colors.primary} />
@@ -1918,7 +2085,7 @@ const DriverRegistrationScreen = () => {
           <View style={[styles.vehicleErrorBox, { borderColor: colors.error }]}>
             <Ionicons name="alert-circle-outline" size={24} color={colors.error} />
             <Text style={[styles.vehicleErrorText, { color: colors.error }]}>{vehicleError}</Text>
-            <TouchableOpacity style={[styles.vehicleRetryBtn, { borderColor: colors.primary }]} onPress={fetchVehicles}>
+            <TouchableOpacity style={[styles.vehicleRetryBtn, { borderColor: colors.primary }]} onPress={() => fetchVehicles(serviceTrack ?? undefined)}>
               <Ionicons name="refresh" size={14} color={colors.primary} />
               <Text style={[styles.vehicleRetryBtnText, { color: colors.primary }]}>Retry</Text>
             </TouchableOpacity>
@@ -1953,25 +2120,34 @@ const DriverRegistrationScreen = () => {
                       <Ionicons name="checkmark" size={10} color="#FFFFFF" />
                     </View>
                   )}
-                  {v.imageUrl && (v.imageUrl.startsWith('http') || v.imageUrl.startsWith('data:image')) ? (
-                    <Image
-                      source={{ uri: cleanUrl(v.imageUrl) }}
-                      style={styles.vehicleSelectImage}
-                      resizeMode="contain"
-                    />
-                  ) : (
-                    <MaterialCommunityIcons
-                      name={
-                        (v.iconName as any) ||
-                        (v.name?.toLowerCase().includes('cab') || v.name?.toLowerCase().includes('car') ? 'car' :
-                         v.name?.toLowerCase().includes('bike') ? 'bike' :
-                         v.name?.toLowerCase().includes('auto') || v.name?.toLowerCase().includes('rickshaw') ? 'rickshaw' :
-                         'truck-delivery')
-                      }
-                      size={32}
-                      color={isSelected ? colors.primary : colors.textSecondary}
-                    />
-                  )}
+                  {(() => {
+                    const fallbackImg = getFallbackVehicleImage(v.name, v.type);
+                    const resolvedImg = cleanUrl(v.imageUrl || fallbackImg);
+                    const isFailed = Boolean(failedVehicleImages[v.id]);
+                    const isValidUrl = !isFailed && Boolean(resolvedImg && (resolvedImg.startsWith('http') || resolvedImg.startsWith('data:') || resolvedImg.startsWith('file:')));
+                    return isValidUrl ? (
+                      <Image
+                        source={{ uri: resolvedImg }}
+                        style={styles.vehicleSelectImage}
+                        resizeMode="contain"
+                        onError={() => {
+                          setFailedVehicleImages(prev => ({ ...prev, [v.id]: true }));
+                        }}
+                      />
+                    ) : (
+                      <MaterialCommunityIcons
+                        name={
+                          (v.iconName as any) ||
+                          (v.name?.toLowerCase().includes('cab') || v.name?.toLowerCase().includes('car') ? 'car' :
+                           v.name?.toLowerCase().includes('bike') ? 'bike' :
+                           v.name?.toLowerCase().includes('auto') || v.name?.toLowerCase().includes('rickshaw') ? 'rickshaw' :
+                           'truck-delivery')
+                        }
+                        size={32}
+                        color={isSelected ? colors.primary : colors.textSecondary}
+                      />
+                    );
+                  })()}
                   <Text style={[styles.vehicleTypeNameText, { color: isSelected ? colors.primary : colors.text }, isSelected && { fontWeight: '800' }]}>
                     {v.name}
                   </Text>
@@ -1979,21 +2155,16 @@ const DriverRegistrationScreen = () => {
                   {/* Service capability pill badge */}
                   {(() => {
                     const s = (v.name + ' ' + (v.type || '')).toLowerCase();
-                    let badgeText = 'Goods Only';
+                    let badgeText = 'Our Services';
                     let badgeBg = theme === 'dark' ? 'rgba(59,130,246,0.15)' : 'rgba(59,130,246,0.1)';
                     let badgeColor = colors.primary;
                     let badgeIcon = 'truck-fast-outline';
 
-                    if (v.serviceType === 'PASSENGER' || s.includes('cab') || s.includes('car') || s.includes('taxi') || s.includes('sedan') || s.includes('suv')) {
-                      badgeText = 'Passenger Only';
+                    if (v.serviceType === 'PASSENGER' || s.includes('cab') || s.includes('car') || s.includes('taxi') || s.includes('sedan') || s.includes('suv') || s.includes('bike taxi') || s.includes('auto taxi')) {
+                      badgeText = 'Passenger';
                       badgeBg = theme === 'dark' ? 'rgba(16,185,129,0.15)' : 'rgba(16,185,129,0.1)';
                       badgeColor = colors.success;
                       badgeIcon = 'car';
-                    } else if (s.includes('2') || s.includes('bike') || s.includes('two') || s.includes('auto') || s.includes('rickshaw') || s.includes('3')) {
-                      badgeText = 'Rides + Goods';
-                      badgeBg = theme === 'dark' ? 'rgba(16,185,129,0.18)' : 'rgba(16,185,129,0.1)';
-                      badgeColor = colors.success;
-                      badgeIcon = 'star-circle-outline';
                     }
 
                     return (
@@ -3319,10 +3490,11 @@ const styles = StyleSheet.create({
     minHeight: 115,
   },
   vehicleSelectImage: {
-    width: 52,
-    height: 40,
-    borderRadius: 6,
-    marginBottom: 4,
+    width: 80,
+    height: 56,
+    borderRadius: 8,
+    marginBottom: 6,
+    alignSelf: 'center',
   },
   vehicleCheckBadge: {
     position: 'absolute',

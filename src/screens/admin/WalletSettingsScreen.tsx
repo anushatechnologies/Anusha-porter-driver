@@ -34,7 +34,7 @@ const WalletSettingsScreen = () => {
     try {
       const res = await getAdminWalletSettings();
       if (res && res.settings) {
-        setCommissionInput(String(res.settings.commissionPercentage ?? 5));
+        setCommissionInput(String(res.settings.commissionPercentage ?? 0));
         setMinBalanceInput(String(res.settings.minRequiredBalance ?? 0));
         setWalletRequired(!!res.settings.walletRequiredForRides);
         setAutoOffline(!!res.settings.autoOfflineWhenBalanceInsufficient);

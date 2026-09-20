@@ -8,6 +8,7 @@ import {
   Dimensions,
   StatusBar,
   Alert,
+  BackHandler,
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -15,14 +16,17 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Speech from 'expo-speech';
 import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
-import { updateOrderStatus, acceptOrder, respondToDriverOffer } from '../../services/api';
+import { updateOrderStatus, acceptOrder, respondToDriverOffer, rejectDriverOffer } from '../../services/api';
 import { startAlarm, stopAlarm, getAlarmSound } from '../../services/alarmSound';
 import { playOrderRingtone, stopOrderRingtone } from '../../services/orderSoundHelper';
 import { stopRingtone } from '../../services/soundManager';
 import { telemetrySocket, dismissOffer } from '../../services/telemetrySocket';
 import { safeOnMessage } from '../../services/fcmService';
 
+import * as Location from 'expo-location';
 import { calculateRouteEstimate, formatDistance, formatDuration } from '../../services/routeService';
+import { formatAddressString } from '../../utils/urlHelpers';
+import { resolveCoordinates, calculateDistanceKm } from '../../utils/navigationHelper';
 
 const { width, height } = Dimensions.get('window');
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
@@ -46,12 +50,44 @@ const IncomingOrderScreen = () => {
   const orderId = rawBookingId
     ? (String(rawBookingId).startsWith('#') ? rawBookingId : `#${rawBookingId}`)
     : (order?.id ? `#BK_${order.id}` : '#New Order');
-  const pickupAddress = order?.pickup || order?.pickupAddress || 'Awaiting pickup details';
-  const dropAddress = order?.drop || order?.dropAddress || 'Awaiting drop details';
+  const pickupAddress = formatAddressString(order?.pickup || order?.pickupAddress, 'Awaiting pickup details');
+  const dropAddress = formatAddressString(order?.drop || order?.dropAddress, 'Awaiting drop details');
   const fare = (order?.offeredFare !== undefined && order?.offeredFare !== null)
     ? `₹${order.offeredFare}`
     : (order?.amount ? `₹${order.amount}` : '₹--');
   const serviceName = order?.serviceName || (order as any)?.vehicleLabel || (order as any)?.service || 'Tata Ace';
+  const [computedPickupDist, setComputedPickupDist] = useState<number | null>(() => {
+    const rawDist = (order as any)?.pickupDistanceKm ?? (order as any)?.pickupDistance;
+    return rawDist !== undefined && rawDist !== null && !isNaN(Number(rawDist))
+      ? Number(Number(rawDist).toFixed(1))
+      : null;
+  });
+
+  const pickupDistanceKm = (order as any)?.pickupDistanceKm ?? (order as any)?.pickupDistance;
+
+  useEffect(() => {
+    if (computedPickupDist !== null) return;
+    (async () => {
+      try {
+        const lastLoc = await Location.getLastKnownPositionAsync().catch(() => null);
+        if (lastLoc?.coords) {
+          const pCoords = resolveCoordinates(
+            (order as any)?.pickupLat ?? (order as any)?.pickupLatitude,
+            (order as any)?.pickupLng ?? (order as any)?.pickupLongitude,
+            pickupAddress
+          );
+          if (pCoords.lat && pCoords.lng) {
+            const dist = calculateDistanceKm(lastLoc.coords.latitude, lastLoc.coords.longitude, pCoords.lat, pCoords.lng);
+            if (dist > 0) {
+              setComputedPickupDist(Number(dist.toFixed(1)));
+            }
+          }
+        }
+      } catch {}
+    })();
+  }, [(order as any)?.id, computedPickupDist, pickupAddress]);
+
+  const effectivePickupDist = computedPickupDist ?? pickupDistanceKm;
   const goodsCategory = order?.goodsCategory || (order as any)?.category || '';
   const serviceType = String(order?.serviceType || (order as any)?.service_type || (order as any)?.type || '').toUpperCase();
   const serviceLabel = (order as any)?.serviceLabel || (order as any)?.label || '';
@@ -204,12 +240,15 @@ const IncomingOrderScreen = () => {
 
     const interval = setInterval(() => {
       setCountdown(prev => {
-        if (prev <= 1) {
+        const next = prev - 1;
+        if (next <= 0) {
           clearInterval(interval);
-          handleReject();
+          // BUG-14 fix: handleReject is async — schedule it outside the setState
+          // callback using setTimeout to avoid the async-in-setState anti-pattern.
+          setTimeout(() => { handleReject(); }, 0);
           return 0;
         }
-        return prev - 1;
+        return next;
       });
     }, 1000);
 
@@ -237,10 +276,13 @@ const IncomingOrderScreen = () => {
 
     // 2. FCM push dismiss listener (STOP_RINGTONE, OFFER_TOO_LATE, OFFER_DISMISSED, etc.)
     const unsubscribeFcm = safeOnMessage(async (remoteMessage: any) => {
-      const action = remoteMessage.data?.action || remoteMessage.data?.type;
+      const action = remoteMessage.data?.action || remoteMessage.data?.type || remoteMessage.data?.notificationType;
       const isStopPush =
         remoteMessage.data?.stopSound === 'true' ||
         remoteMessage.data?.stopSound === true ||
+        remoteMessage.data?.stopAudio === 'true' ||
+        remoteMessage.data?.stopAudio === true ||
+        remoteMessage.data?.stop_ringtone === 'true' ||
         action === 'STOP_RINGTONE' ||
         action === 'OFFER_TOO_LATE' ||
         action === 'OFFER_DISMISSED' ||
@@ -248,7 +290,10 @@ const IncomingOrderScreen = () => {
         action === 'ORDER_ACCEPTED_STOP_RING' ||
         action === 'ORDER_REJECTED_DISMISS' ||
         action === 'ORDER_OFFER_CANCELLED' ||
-        remoteMessage.data?.status === 'TOO_LATE';
+        remoteMessage.data?.notificationType === 'STOP_DRIVER_OFFER' ||
+        remoteMessage.data?.status === 'TOO_LATE' ||
+        remoteMessage.data?.status === 'ACCEPTED_BY_ANOTHER' ||
+        remoteMessage.data?.status === 'STOPPED';
 
       if (isStopPush) {
         const cleanIncomingBk = String(remoteMessage.data?.bookingId || remoteMessage.data?.orderId || '').replace(/^#+/, '');
@@ -261,17 +306,24 @@ const IncomingOrderScreen = () => {
       }
     });
 
+    // 3. Android hardware back press listener — déclines offer cleanly instead of silently popping screen
+    const backSubscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      handleReject();
+      return true;
+    });
+
     return () => {
       clearInterval(interval);
       pulse.stop();
       stopRingtone().catch(() => {});
       unsubscribeWs();
       if (unsubscribeFcm) unsubscribeFcm();
+      backSubscription.remove();
     };
   }, [rawBookingId, order, navigation]);
 
   const handleReject = async () => {
-    // 1. Immediately stop ringtone locally
+    // 1. Immediately stop ringtone locally — stop sound BEFORE any network call
     await stopRingtone();
 
     const allIds = [
@@ -288,7 +340,12 @@ const IncomingOrderScreen = () => {
 
     const cleanBk = allIds[0] || '';
     if (cleanBk) {
-      respondToDriverOffer(cleanBk, false).catch(() => {});
+      // 2. Call dedicated /reject endpoint first — backend broadcasts STOP_RINGTONE
+      //    to all competing drivers who have the same offer open.
+      rejectDriverOffer(cleanBk, 'Driver declined').catch(() => {
+        // Fallback: use generic respond=false if /reject endpoint is unavailable
+        respondToDriverOffer(cleanBk, false).catch(() => {});
+      });
     }
     if (navigation.canGoBack()) {
       navigation.goBack();
@@ -318,8 +375,8 @@ const IncomingOrderScreen = () => {
     try {
       const res = await respondToDriverOffer(cleanBk, true);
 
-      // Case A: Driver WON the ride (200 OK / ASSIGNED)
-      if (res && (res.status === 'ASSIGNED' || res.success)) {
+      // Case A: Driver WON the ride (200 OK / ASSIGNED / accepted)
+      if (res && (res.status === 'ASSIGNED' || (res.status && String(res.status).toLowerCase() === 'accepted') || res.success)) {
         setAccepting(false);
         await stopRingtone();
         const finalOrder = res.order ? { ...order, ...res.order } : order;
@@ -456,7 +513,14 @@ const IncomingOrderScreen = () => {
               <Ionicons name="location" size={14} color="#FFFFFF" />
             </View>
             <View style={styles.routeInfo}>
-              <Text style={[styles.routeTypeLabel, { color: colors.textSecondary }]}>PICKUP</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Text style={[styles.routeTypeLabel, { color: colors.textSecondary }]}>PICKUP</Text>
+                {effectivePickupDist !== undefined && effectivePickupDist !== null && (
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: colors.primary }}>
+                    {`📍 Pickup is ${Number(effectivePickupDist).toFixed(1)} km away`}
+                  </Text>
+                )}
+              </View>
               <Text style={[styles.routeAddress, { color: colors.text }]} numberOfLines={2}>{pickupAddress}</Text>
             </View>
           </View>
@@ -476,7 +540,7 @@ const IncomingOrderScreen = () => {
         <View style={[styles.metaRow, { backgroundColor: colors.surface }]}>
           <View style={styles.metaItem}>
             <Ionicons name="map-outline" size={16} color={colors.textSecondary} />
-            <Text style={[styles.metaLabel, { color: colors.textSecondary }]}>Distance</Text>
+            <Text style={[styles.metaLabel, { color: colors.textSecondary }]}>Trip Distance</Text>
             <Text style={[styles.metaValue, { color: colors.text }]}>{displayDistance}</Text>
           </View>
           <View style={[styles.metaDivider, { backgroundColor: colors.border }]} />

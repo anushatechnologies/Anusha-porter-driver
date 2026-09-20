@@ -187,16 +187,46 @@ class TelemetrySocketService {
   private handleIncomingMessage(msg: any): void {
     if (!msg) return;
 
-    const eventName = msg.event || msg.action || msg.type;
+    const rawEventName = msg.event || msg.action || msg.type || msg.data?.action || msg.data?.type || msg.data?.event;
+    const eventName = typeof rawEventName === 'string' ? rawEventName.trim() : '';
 
-    // 1. New Order Offer (driver:offer:new or ORDER_OFFER)
-    if (eventName === 'driver:offer:new' || eventName === 'ORDER_OFFER') {
+    // 1. New Order Offer (supports driver:offer:new, ORDER_OFFER, NEW_ORDER, NEW_BOOKING, BOOKING_OFFER, etc.)
+    const isNewOffer =
+      eventName === 'driver:offer:new' ||
+      eventName === 'ORDER_OFFER' ||
+      eventName === 'NEW_ORDER' ||
+      eventName === 'NEW_BOOKING' ||
+      eventName === 'BOOKING_OFFER' ||
+      eventName === 'RIDE_OFFER' ||
+      eventName === 'RIDE_REQUEST' ||
+      eventName === 'driver:order:new' ||
+      eventName === 'order:new' ||
+      eventName === 'ORDER_BROADCAST' ||
+      Boolean(msg.order && (msg.order.id || msg.order.bookingId)) ||
+      Boolean(msg.data?.order && (msg.data.order.id || msg.data.order.bookingId));
+
+    if (isNewOffer) {
+      const rawBookingId =
+        msg.bookingId ||
+        msg.data?.bookingId ||
+        msg.orderId ||
+        msg.data?.orderId ||
+        msg.id ||
+        msg.data?.id ||
+        msg.order?.id ||
+        msg.order?.bookingId ||
+        msg.data?.order?.id ||
+        msg.data?.order?.bookingId ||
+        '';
+      const cleanBookingId = String(rawBookingId).replace(/^#+/, '').trim();
+
+      const orderData = msg.data?.order || msg.order || msg.data || msg;
       const payload: DriverOfferNewEvent = {
         event: 'driver:offer:new',
-        bookingId: msg.bookingId || msg.data?.bookingId || msg.id || '',
-        data: msg.data || msg,
+        bookingId: cleanBookingId,
+        data: orderData,
       };
-      console.log(`[TelemetryWS] 🚨 New offer received for ${payload.bookingId}`);
+      console.log(`[TelemetryWS] 🚨 New offer received for bookingId: ${payload.bookingId}`, orderData);
       this.offerNewListeners.forEach((listener) => {
         try {
           listener(payload);
@@ -216,14 +246,59 @@ class TelemetrySocketService {
       eventName === 'STOP_RINGTONE' ||
       eventName === 'OFFER_TOO_LATE' ||
       eventName === 'OFFER_DISMISSED' ||
+      eventName === 'TRIP_CANCELLED' ||
+      eventName === 'ORDER_CANCELLED' ||
+      eventName === 'BOOKING_CANCELLED' ||
+      eventName === 'RIDE_CANCELLED' ||
+      eventName === 'trip:cancelled' ||
+      eventName === 'order:cancelled' ||
+      eventName === 'booking:cancelled' ||
+      eventName === 'ride:cancelled' ||
+      eventName === 'driver:order:cancelled' ||
+      eventName === 'CANCELLED' ||
+      eventName === 'cancelled' ||
       msg.status === 'TOO_LATE' ||
       msg.status === 'OFFER_TOO_LATE' ||
+      msg.status === 'ACCEPTED_BY_ANOTHER' ||
+      msg.status === 'STOPPED' ||
+      msg.status === 'cancelled' ||
+      msg.status === 'CANCELLED' ||
       msg.stopSound === 'true' ||
       msg.stopSound === true ||
+      msg.stopAudio === 'true' ||
+      msg.stopAudio === true ||
+      msg.stop_ringtone === 'true' ||
       msg.data?.stopSound === 'true' ||
-      msg.data?.stopSound === true
+      msg.data?.stopSound === true ||
+      msg.data?.stopAudio === 'true' ||
+      msg.data?.stopAudio === true ||
+      msg.data?.stop_ringtone === 'true' ||
+      msg.data?.status === 'STOPPED' ||
+      msg.data?.status === 'TOO_LATE' ||
+      msg.data?.status === 'ACCEPTED_BY_ANOTHER' ||
+      msg.data?.status === 'cancelled' ||
+      msg.data?.status === 'CANCELLED' ||
+      msg.data?.action === 'STOP_RINGTONE' ||
+      msg.data?.action === 'STOP_DRIVER_OFFER' ||
+      msg.data?.action === 'TRIP_CANCELLED' ||
+      msg.data?.action === 'ORDER_CANCELLED' ||
+      msg.data?.notificationType === 'STOP_DRIVER_OFFER' ||
+      msg.data?.notificationType === 'TRIP_CANCELLED' ||
+      msg.data?.notificationType === 'ORDER_CANCELLED' ||
+      msg.notificationType === 'STOP_DRIVER_OFFER' ||
+      msg.notificationType === 'TRIP_CANCELLED' ||
+      msg.notificationType === 'ORDER_CANCELLED'
     ) {
-      const targetBookingId = msg.bookingId || msg.data?.bookingId || msg.orderId || msg.id || '';
+      const targetBookingId =
+        msg.bookingId ||
+        msg.data?.bookingId ||
+        msg.orderId ||
+        msg.data?.orderId ||
+        msg.id ||
+        msg.data?.id ||
+        msg.order?.id ||
+        msg.order?.bookingId ||
+        '';
       
       // Immediately stop ringtone audio and dismiss modal
       stopRingtone();
@@ -342,6 +417,17 @@ export const telemetrySocket = new TelemetrySocketService();
  * Prevents re-alerting or re-navigating to the same offer for 10 minutes.
  */
 const dismissedOffersMap = new Map<string, number>();
+
+// Periodic cleanup of stale dismissed-offer entries every 5 minutes
+// Prevents the map from growing unboundedly during long driver sessions.
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, expiry] of dismissedOffersMap) {
+    if (now > expiry) {
+      dismissedOffersMap.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
 
 export const dismissOffer = (bookingId: string): void => {
   const clean = String(bookingId || '').trim().replace(/^#+/, '');

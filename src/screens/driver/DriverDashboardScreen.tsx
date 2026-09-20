@@ -25,7 +25,7 @@ import Svg, { Circle, Path, Rect, G, Defs, LinearGradient, Stop } from 'react-na
 import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import AsyncStorage from '../../services/asyncStorageShim';
-import { cleanUrl } from '../../utils/urlHelpers';
+import { cleanUrl, formatAddressString } from '../../utils/urlHelpers';
 import { 
   getDriverProfile, 
   getOrderHistory, 
@@ -44,6 +44,9 @@ import { stopRingtone, dismissIncomingOrderModal } from '../../services/soundMan
 import { telemetrySocket, dismissOffer, isOfferDismissed } from '../../services/telemetrySocket';
 import * as Location from 'expo-location';
 import LocationDisclosureModal from '../../components/LocationDisclosureModal';
+import { AvailableOrdersFeed } from '../../components/AvailableOrdersFeed';
+import { useOrderDispatch, MAX_PICKUP_RADIUS_KM } from '../../context/OrderDispatchContext';
+import { resolveCoordinates, calculateDistanceKm } from '../../utils/navigationHelper';
 import {
   safeRequestPermission,
   safeGetToken,
@@ -79,23 +82,72 @@ const DriverLogoSVG = ({ color }: { color: string }) => {
   );
 };
 
+/**
+ * Calculates today's earnings and completed trips by filtering orders with today's calendar date.
+ */
+const calculateTodaySummary = (orders: any[]) => {
+  const now = new Date();
+  const todayStr = now.toDateString();
+  let todayEarnings = 0;
+  let todayCompleted = 0;
+
+  for (const o of orders || []) {
+    const s = String(o.status || '').toLowerCase().trim();
+    const isCompleted = ['completed', 'delivered', 'done', 'finished', 'closed', 'success'].includes(s);
+    if (!isCompleted) continue;
+
+    const rawDate = o.createdAt || o.created_at || o.completedAt || o.completed_at || o.date;
+    if (!rawDate) continue;
+
+    let d = new Date(rawDate);
+    if (isNaN(d.getTime()) && typeof rawDate === 'string' && rawDate.includes(' ')) {
+      d = new Date(rawDate.replace(' ', 'T'));
+    }
+    if (isNaN(d.getTime())) continue;
+
+    if (d.toDateString() === todayStr) {
+      todayCompleted++;
+      const amt = typeof o.amount === 'number'
+        ? o.amount
+        : parseFloat(String(o.amount || o.fare || o.price || o.totalAmount || '0').replace(/[^0-9.]/g, '')) || 0;
+      todayEarnings += amt;
+    }
+  }
+
+  return { todayEarnings, todayCompleted };
+};
+
 const DriverDashboardScreen = () => {
   const navigation = useNavigation<NavProp>();
   const { colors, theme } = useTheme();
 
 
-  // App States
-  const [isOnline, setIsOnline] = useState(false);
+  // Global Dispatch Context (cross-screen order offering, sound control, and Rapido feed)
+  const {
+    availableOrders,
+    isOnline: globalIsOnline,
+    setIsOnline: setGlobalIsOnline,
+    setLocation: setGlobalLocation,
+    acceptOrder: handleAcceptAvailableOrder,
+    rejectOrder: handleRejectAvailableOrder,
+    refreshOrders: refreshDispatchOrders,
+  } = useOrderDispatch();
+
+  // App States — isOnline IS globalIsOnline (single source of truth via context)
+  const isOnline = globalIsOnline;
+  const setIsOnline = setGlobalIsOnline;
   const [showLocationDisclosure, setShowLocationDisclosure] = useState(false);
   const [driverName, setDriverName] = useState('Partner');
   const [driverEmail, setDriverEmail] = useState('');
   const [activeOrderData, setActiveOrderData] = useState<any>(null);
   const [driverRating, setDriverRating] = useState('5.0');
   const [driverTenure, setDriverTenure] = useState('0m');
+  // BUG-12 fix: track real vehicle type from backend instead of hardcoding
+  const [driverVehicle, setDriverVehicle] = useState('');
   const [historyOrders, setHistoryOrders] = useState<any[]>([]);
   const [driverProfilePhoto, setDriverProfilePhoto] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const locationWatcherRef = useRef<Location.LocationSubscription | null>(null);
+  const currentCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
   const dismissedOfferIdsRef = useRef<Set<string>>(new Set());
 
   const handleRefresh = async () => {
@@ -120,15 +172,20 @@ const DriverDashboardScreen = () => {
           dAny.profilePhoto
         );
         if (photo) setDriverProfilePhoto(photo);
+        // BUG-12 fix: update real vehicle from backend
+        const vehicle = driverDb.vehicleType || dAny.vehicle || dAny.vehicleName || dAny.vehicle_type || '';
+        if (vehicle) setDriverVehicle(vehicle);
       }
 
       // 2. Refresh orders & earnings stats
       const historyRes = await getOrderHistory();
       if (historyRes && historyRes.orders) {
         setHistoryOrders(historyRes.orders);
-        setEarnings(historyRes.totalEarnings);
-        setCompletedTrips(historyRes.totalOrders);
+        const { todayEarnings, todayCompleted } = calculateTodaySummary(historyRes.orders);
+        setEarnings(todayEarnings);
+        setCompletedTrips(todayCompleted);
       }
+      await refreshDispatchOrders().catch(() => {});
     } catch (err) {
       if (Platform.OS === 'web') {
         (window as any).alert('Unable to refresh. Please check your internet connection and try again.');
@@ -142,8 +199,7 @@ const DriverDashboardScreen = () => {
 
   // Centralized handler for online status update errors
   const handleOnlineStatusError = (statusRes: any) => {
-    setIsOnline(false);
-    AsyncStorage.setItem('@driver_is_online', 'false').catch(() => {});
+    setIsOnline(false); // now calls setGlobalIsOnline via alias
 
     const rawMsg = String(statusRes?.message || '');
     const isAuth =
@@ -214,6 +270,7 @@ const DriverDashboardScreen = () => {
           console.warn('Background sync notice for online status:', e);
         }
         setIsOnline(true);
+        setGlobalIsOnline(true);
         await AsyncStorage.setItem('@driver_is_online', 'true');
       } else {
         // Permission not yet granted: MUST show Prominent Disclosure Modal BEFORE system permission dialog!
@@ -222,6 +279,7 @@ const DriverDashboardScreen = () => {
     } else {
       // Driver wants to go OFFLINE explicitly
       setIsOnline(false);
+      setGlobalIsOnline(false);
       await AsyncStorage.setItem('@driver_is_online', 'false');
       try {
         await setDriverOnlineStatus('offline');
@@ -243,6 +301,7 @@ const DriverDashboardScreen = () => {
           'Location access is required to receive delivery orders and go online.'
         );
         setIsOnline(false);
+        setGlobalIsOnline(false);
         return;
       }
 
@@ -257,10 +316,12 @@ const DriverDashboardScreen = () => {
         console.warn('Background sync notice for online status:', e);
       }
       setIsOnline(true);
+      setGlobalIsOnline(true);
       await AsyncStorage.setItem('@driver_is_online', 'true');
     } catch (e) {
       console.error('Error requesting permissions after disclosure:', e);
       setIsOnline(false);
+      setGlobalIsOnline(false);
     }
   };
 
@@ -268,23 +329,15 @@ const DriverDashboardScreen = () => {
   const handleNotNowDisclosure = () => {
     setShowLocationDisclosure(false);
     setIsOnline(false);
+    setGlobalIsOnline(false);
     AsyncStorage.setItem('@driver_is_online', 'false').catch(() => {});
   };
 
   useEffect(() => {
     const loadProfile = async () => {
       try {
-        // Restore saved online availability status
-        const savedOnlineState = await AsyncStorage.getItem('@driver_is_online');
-        if (savedOnlineState === 'true') {
-          setIsOnline(true);
-        } else if (savedOnlineState === 'false') {
-          setIsOnline(false);
-        } else {
-          // Default to OFFLINE until driver explicitly toggles on
-          setIsOnline(false);
-          await AsyncStorage.setItem('@driver_is_online', 'false');
-        }
+        // Context already reads @driver_is_online on mount, so we only need
+        // the DB-based status below to override if available.
 
         const profileStr = await AsyncStorage.getItem('driverProfile');
         if (profileStr) {
@@ -304,6 +357,9 @@ const DriverDashboardScreen = () => {
               profile.profilePhoto
             );
             if (photo) setDriverProfilePhoto(photo);
+            // BUG-12 fix: load cached vehicle name
+            const cachedVehicle = profile.vehicleType || profile.vehicle || profile.vehicleName || profile.vehicle_type || '';
+            if (cachedVehicle) setDriverVehicle(cachedVehicle);
           } catch (parseErr) {
             console.warn('[Dashboard] Could not parse cached driverProfile:', parseErr);
           }
@@ -312,17 +368,36 @@ const DriverDashboardScreen = () => {
         try {
           const driverDb = await getDriverProfile();
           if (driverDb) {
-            const kycStatus = String(driverDb.kyc || (driverDb as any).kycStatus || '').toLowerCase();
-            if (kycStatus === 'rejected') {
+          // Normalize kyc: api.ts sanitizeDriverUrls maps "approved"→"verified" but old cached
+          // AsyncStorage profiles may still have "approved". Always canonicalize here.
+          const rawKyc = String(driverDb.kyc || (driverDb as any).kycStatus || '').toLowerCase();
+          const kycStatus = (rawKyc === 'approved' || rawKyc === 'verified') ? 'verified' : rawKyc;
+
+          if (kycStatus === 'rejected') {
               navigation.reset({ index: 0, routes: [{ name: 'DriverRegistration', params: { mobile: driverDb.phone } }] });
               return;
-            } else if (kycStatus !== 'verified' && kycStatus !== 'approved') {
+            } else if (kycStatus !== 'verified') {
+              // Auto-approve: any driver who reaches the dashboard gets verified immediately
               const dId = driverDb.id || (driverDb as any).driverId;
               if (dId) {
                 updateDriverKyc(dId, 'verified').catch(() => {});
                 updateDriverKycStatusAdmin(dId, 'verified').catch(() => {});
               }
             }
+
+            // Update local cache with canonical "verified" to prevent future "approved" loops
+            try {
+              const cachedStr = await AsyncStorage.getItem('driverProfile');
+              if (cachedStr) {
+                const cached = JSON.parse(cachedStr);
+                if (cached.kyc !== 'verified' || cached.kycStatus !== 'verified') {
+                  cached.kyc = kycStatus === 'rejected' ? 'rejected' : 'verified';
+                  cached.kycStatus = cached.kyc;
+                  await AsyncStorage.setItem('driverProfile', JSON.stringify(cached));
+                }
+              }
+            } catch {}
+
 
             if (typeof driverDb.name === 'string' && driverDb.name.trim().length > 0) {
               setDriverName(driverDb.name.trim().split(' ')[0]);
@@ -331,11 +406,9 @@ const DriverDashboardScreen = () => {
             if (driverDb.rating) setDriverRating(String(driverDb.rating));
             if (driverDb.tenure) setDriverTenure(String(driverDb.tenure));
             if (driverDb.status === 'online') {
-              setIsOnline(true);
-              await AsyncStorage.setItem('@driver_is_online', 'true');
+              setIsOnline(true); // propagates to context via alias
             } else {
               setIsOnline(false);
-              await AsyncStorage.setItem('@driver_is_online', 'false');
             }
             const dbPhoto = cleanUrl(
               driverDb.profilePhotoUri ||
@@ -345,6 +418,9 @@ const DriverDashboardScreen = () => {
               (driverDb as any).profilePhoto
             );
             if (dbPhoto) setDriverProfilePhoto(dbPhoto);
+            // BUG-12 fix: persist real vehicle name from DB
+            const dbVehicle = driverDb.vehicleType || (driverDb as any).vehicle || (driverDb as any).vehicleName || '';
+            if (dbVehicle) setDriverVehicle(dbVehicle);
           }
         } catch (dbErr) {
           console.warn('Backend profile sync notice:', dbErr);
@@ -397,11 +473,14 @@ const DriverDashboardScreen = () => {
         console.log('[FCM] Foreground notification received:', remoteMessage);
 
         const data = remoteMessage.data || {};
-        const action = data.action || data.type;
-        const msgType = data.type || data.action;
+        const action = data.action || data.type || data.notificationType;
+        const msgType = data.type || data.action || data.notificationType;
         const isSilentStop =
           data.stopSound === 'true' ||
           data.stopSound === true ||
+          data.stopAudio === 'true' ||
+          data.stopAudio === true ||
+          data.stop_ringtone === 'true' ||
           action === 'STOP_RINGTONE' ||
           action === 'OFFER_TOO_LATE' ||
           action === 'OFFER_DISMISSED' ||
@@ -410,12 +489,16 @@ const DriverDashboardScreen = () => {
           action === 'ORDER_REJECTED_DISMISS' ||
           action === 'ORDER_OFFER_CANCELLED' ||
           msgType === 'STOP_RINGTONE' ||
+          msgType === 'STOP_DRIVER_OFFER' ||
           msgType === 'OFFER_TOO_LATE' ||
           msgType === 'OFFER_DISMISSED' ||
           msgType === 'ORDER_ACCEPTED_STOP_RING' ||
           msgType === 'ORDER_REJECTED_DISMISS' ||
           msgType === 'ORDER_OFFER_CANCELLED' ||
-          data.status === 'TOO_LATE';
+          data.notificationType === 'STOP_DRIVER_OFFER' ||
+          data.status === 'TOO_LATE' ||
+          data.status === 'ACCEPTED_BY_ANOTHER' ||
+          data.status === 'STOPPED';
 
         // 1. Silent stop pushes: silence ringtone and dismiss offer modal without alerts
         if (isSilentStop) {
@@ -432,19 +515,31 @@ const DriverDashboardScreen = () => {
           return;
         }
 
-        // 2. Handle ORDER_OFFER or NEW_ORDER type directly into IncomingOrder screen
-        if (
+        // 2. Handle ORDER_OFFER or NEW_ORDER or any new booking type directly into IncomingOrder screen
+        const isOrderOfferAction =
           msgType === 'ORDER_OFFER' ||
           action === 'ORDER_OFFER' ||
           msgType === 'NEW_ORDER' ||
-          action === 'NEW_ORDER'
-        ) {
+          action === 'NEW_ORDER' ||
+          msgType === 'NEW_BOOKING' ||
+          action === 'NEW_BOOKING' ||
+          msgType === 'BOOKING_OFFER' ||
+          action === 'BOOKING_OFFER' ||
+          msgType === 'RIDE_OFFER' ||
+          action === 'RIDE_OFFER' ||
+          msgType === 'RIDE_REQUEST' ||
+          action === 'RIDE_REQUEST' ||
+          msgType === 'driver:offer:new' ||
+          action === 'driver:offer:new' ||
+          Boolean((data.bookingId || data.orderId) && !isSilentStop);
+
+        if (isOrderOfferAction) {
           const cleanBk = String(data.bookingId || data.orderId || data.id || '').replace(/^#+/, '');
           if (cleanBk && (dismissedOfferIdsRef.current.has(cleanBk) || isOfferDismissed(cleanBk))) {
             console.log(`[FCM] Ignored offer ${cleanBk} because it is already dismissed`);
             return;
           }
-          console.log('[FCM] 🚨 Incoming ORDER_OFFER received via Push:', data);
+          console.log('[FCM] 🚨 Incoming order push notification received:', data);
           let parsedOrder: any = null;
           if (data.order) {
             try {
@@ -453,20 +548,38 @@ const DriverDashboardScreen = () => {
                 : data.order;
             } catch {}
           }
-          const orderPayload = parsedOrder || {
+          let pDist = Number(data.pickupDistanceKm || parsedOrder?.pickupDistanceKm);
+          if (isNaN(pDist) && currentCoordsRef.current) {
+            const pCoords = resolveCoordinates(
+              data.pickupLat ?? parsedOrder?.pickupLat ?? parsedOrder?.pickupLatitude,
+              data.pickupLng ?? parsedOrder?.pickupLng ?? parsedOrder?.pickupLongitude,
+              data.pickupAddress || data.pickup || parsedOrder?.pickupAddress || parsedOrder?.pickup
+            );
+            if (pCoords.lat && pCoords.lng) {
+              pDist = Number(calculateDistanceKm(currentCoordsRef.current.lat, currentCoordsRef.current.lng, pCoords.lat, pCoords.lng).toFixed(1));
+            }
+          }
+          if (!isNaN(pDist) && pDist > MAX_PICKUP_RADIUS_KM) {
+            console.log(`[Dashboard] 🚫 Dropping FCM order ${cleanBk} — pickup is ${pDist}km away (> ${MAX_PICKUP_RADIUS_KM}km limit)`);
+            return;
+          }
+
+          const orderPayload = {
+            ...(parsedOrder || {}),
             id: cleanBk,
             bookingId: cleanBk,
-            serviceName: data.serviceName || '2 Wheeler',
-            pickup: data.pickupAddress || data.pickup || 'Pickup Location',
-            pickupAddress: data.pickupAddress || data.pickup || 'Pickup Location',
-            drop: data.dropAddress || data.drop || 'Drop Location',
-            dropAddress: data.dropAddress || data.drop || 'Drop Location',
-            amount: Number(data.amount || data.offeredFare || data.fare) || 0,
-            offeredFare: Number(data.amount || data.offeredFare || data.fare) || 0,
-            remainingSeconds: Number(data.remainingSeconds) || 60,
+            serviceName: data.serviceName || parsedOrder?.serviceName || 'Vehicle',
+            pickup: formatAddressString(data.pickupAddress || data.pickup || parsedOrder?.pickupAddress || parsedOrder?.pickup, 'Pickup Location'),
+            pickupAddress: formatAddressString(data.pickupAddress || data.pickup || parsedOrder?.pickupAddress || parsedOrder?.pickup, 'Pickup Location'),
+            drop: formatAddressString(data.dropAddress || data.drop || parsedOrder?.dropAddress || parsedOrder?.drop, 'Drop Location'),
+            dropAddress: formatAddressString(data.dropAddress || data.drop || parsedOrder?.dropAddress || parsedOrder?.drop, 'Drop Location'),
+            amount: Number(data.amount || data.offeredFare || data.fare || parsedOrder?.amount || parsedOrder?.fare) || 0,
+            offeredFare: Number(data.amount || data.offeredFare || data.fare || parsedOrder?.amount || parsedOrder?.fare) || 0,
+            pickupDistanceKm: !isNaN(pDist) ? pDist : (data.pickupDistanceKm || parsedOrder?.pickupDistanceKm),
+            remainingSeconds: Number(data.remainingSeconds || parsedOrder?.remainingSeconds) || 60,
             status: 'OFFERED',
           };
-          playOrderRingtone().catch(() => {});
+          // Alarm sound is started by IncomingOrderScreen on mount — no duplicate trigger here
           navigation.navigate('IncomingOrder', { order: orderPayload });
           return;
         }
@@ -488,10 +601,14 @@ const DriverDashboardScreen = () => {
         if (
           data.stopSound === 'true' ||
           data.stopSound === true ||
+          data.stopAudio === 'true' ||
+          data.stopAudio === true ||
+          data.stop_ringtone === 'true' ||
           action === 'STOP_RINGTONE' ||
           action === 'OFFER_TOO_LATE' ||
           action === 'OFFER_DISMISSED' ||
-          data.status === 'TOO_LATE'
+          data.status === 'TOO_LATE' ||
+          data.status === 'STOPPED'
         ) {
           return;
         }
@@ -509,7 +626,18 @@ const DriverDashboardScreen = () => {
           orderData = data;
         }
         if (orderData) {
-          navigation.navigate('IncomingOrder', { order: orderData });
+          const cleanBk = String(orderData.bookingId || orderData.orderId || orderData.id || '').replace(/^#+/, '');
+          navigation.navigate('IncomingOrder', {
+            order: {
+              ...orderData,
+              id: cleanBk,
+              bookingId: cleanBk,
+              pickup: formatAddressString(orderData.pickupAddress || orderData.pickup, 'Pickup Location'),
+              pickupAddress: formatAddressString(orderData.pickupAddress || orderData.pickup, 'Pickup Location'),
+              drop: formatAddressString(orderData.dropAddress || orderData.drop, 'Drop Location'),
+              dropAddress: formatAddressString(orderData.dropAddress || orderData.drop, 'Drop Location'),
+            },
+          });
         }
       });
 
@@ -524,130 +652,35 @@ const DriverDashboardScreen = () => {
     };
   }, [navigation]);
 
-  // Live location updates while online
+  // Check location permission when going online; continuous GPS tracking,
+  // telemetry socket connection, and live offer dispatch are handled globally by OrderDispatchContext.
   useEffect(() => {
-    const startLocationTracking = async () => {
+    const checkLocationPermission = async () => {
       try {
         const { status } = await Location.getForegroundPermissionsAsync();
         if (status !== 'granted') {
-          // If permission is not granted, trigger disclosure modal instead of calling request directly
           setShowLocationDisclosure(true);
           setIsOnline(false);
           return;
         }
-
-        // Send current position immediately
-        const initialLoc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        const initialLoc = await Location.getLastKnownPositionAsync().catch(() => null)
+          || await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).catch(() => null);
         if (initialLoc?.coords) {
-          updateDriverLocation(
-            initialLoc.coords.latitude,
-            initialLoc.coords.longitude,
-            initialLoc.coords.heading ?? undefined
-          ).catch(() => {});
-          telemetrySocket.sendLocation(
-            initialLoc.coords.latitude,
-            initialLoc.coords.longitude,
-            initialLoc.coords.heading ?? undefined
-          );
+          currentCoordsRef.current = {
+            lat: initialLoc.coords.latitude,
+            lng: initialLoc.coords.longitude,
+          };
+          setGlobalLocation(currentCoordsRef.current);
         }
-
-        // Start watching location changes
-        locationWatcherRef.current = await Location.watchPositionAsync(
-          {
-            accuracy: Location.Accuracy.High,
-            timeInterval: 10000, // Every 10 seconds
-            distanceInterval: 10, // Every 10 meters
-          },
-          async (loc) => {
-            if (loc?.coords) {
-              updateDriverLocation(
-                loc.coords.latitude,
-                loc.coords.longitude,
-                loc.coords.heading ?? undefined
-              ).catch(() => {});
-              telemetrySocket.sendLocation(
-                loc.coords.latitude,
-                loc.coords.longitude,
-                loc.coords.heading ?? undefined
-              );
-            }
-          }
-        );
       } catch (e) {
-        console.error('Failed to configure location tracking', e);
+        console.warn('[Dashboard] Location permission check error:', e);
       }
     };
 
     if (isOnline) {
-      startLocationTracking();
-    } else {
-      if (locationWatcherRef.current) {
-        locationWatcherRef.current.remove();
-        locationWatcherRef.current = null;
-      }
+      checkLocationPermission();
     }
-
-    return () => {
-      if (locationWatcherRef.current) {
-        locationWatcherRef.current.remove();
-        locationWatcherRef.current = null;
-      }
-    };
-  }, [isOnline]);
-
-  // Connect WebSocket telemetry and listen for live dispatch offers while online
-  useEffect(() => {
-    if (isOnline) {
-      telemetrySocket.connectTelemetry();
-
-      const unsubscribeOfferNew = telemetrySocket.onOfferNew((event) => {
-        const cleanBk = String(event.bookingId || '').replace(/^#+/, '');
-        if (cleanBk && (dismissedOfferIdsRef.current.has(cleanBk) || isOfferDismissed(cleanBk))) {
-          return;
-        }
-        console.log('[Dashboard] 🚨 Incoming offer received via WS:', event);
-        startAlarm().catch(() => {});
-        navigation.navigate('IncomingOrder', {
-          order: {
-            id: event.bookingId,
-            bookingId: event.bookingId,
-            pickup: event.data?.pickupAddress || 'Pickup Location',
-            pickupAddress: event.data?.pickupAddress,
-            drop: event.data?.dropAddress || 'Drop Location',
-            dropAddress: event.data?.dropAddress,
-            amount: event.data?.amount || event.data?.offeredFare || 0,
-            offeredFare: event.data?.offeredFare || event.data?.amount,
-            distanceKm: event.data?.distanceKm,
-            serviceName: event.data?.serviceName || 'Tata Ace',
-            goodsCategory: event.data?.goodsCategory,
-            remainingSeconds: event.data?.remainingSeconds || 60,
-            status: 'OFFERED',
-          } as any,
-        });
-      });
-
-      const unsubscribeOfferStop = telemetrySocket.onOfferStop((event) => {
-        console.log('[Dashboard] 🛑 Offer stopped via WS:', event);
-        stopRingtone().catch(() => {});
-        const cleanBk = event.bookingId ? String(event.bookingId).replace(/^#+/, '') : '';
-        if (cleanBk) {
-          dismissedOfferIdsRef.current.add(cleanBk);
-          dismissOffer(cleanBk);
-          dismissIncomingOrderModal(cleanBk);
-        } else {
-          dismissIncomingOrderModal();
-        }
-      });
-
-      return () => {
-        unsubscribeOfferNew();
-        unsubscribeOfferStop();
-      };
-    } else {
-      telemetrySocket.disconnectTelemetry();
-      stopAlarm().catch(() => {});
-    }
-  }, [isOnline, navigation]);
+  }, [isOnline, setIsOnline, setGlobalLocation]);
 
   const [earnings, setEarnings] = useState(0);
   const [completedTrips, setCompletedTrips] = useState(0);
@@ -703,11 +736,18 @@ const DriverDashboardScreen = () => {
               useNativeDriver: true,
             }),
           ]),
-          Animated.timing(rotateAnim, {
-            toValue: 1,
-            duration: 4000,
-            useNativeDriver: true,
-          }),
+          Animated.sequence([
+            Animated.timing(rotateAnim, {
+              toValue: 1,
+              duration: 4000,
+              useNativeDriver: true,
+            }),
+            Animated.timing(rotateAnim, {
+              toValue: 0,
+              duration: 0,
+              useNativeDriver: true,
+            }),
+          ]),
         ])
       ).start();
     } else {
@@ -744,8 +784,9 @@ const DriverDashboardScreen = () => {
         const historyRes = await getOrderHistory();
         if (historyRes && historyRes.orders) {
           setHistoryOrders(historyRes.orders);
-          setEarnings(historyRes.totalEarnings);
-          setCompletedTrips(historyRes.totalOrders);
+          const { todayEarnings, todayCompleted } = calculateTodaySummary(historyRes.orders);
+          setEarnings(todayEarnings);
+          setCompletedTrips(todayCompleted);
         }
       } catch (err) {
         console.warn('Dashboard history fetch error', err);
@@ -793,46 +834,101 @@ const DriverDashboardScreen = () => {
               );
 
               if (!isAlreadyDismissed) {
-                navigation.navigate('IncomingOrder', { order: activeOrder });
+                navigation.navigate('IncomingOrder', {
+                  order: {
+                    ...activeOrder,
+                    pickup: formatAddressString(activeOrder.pickupAddress || activeOrder.pickup, 'Pickup Location'),
+                    pickupAddress: formatAddressString(activeOrder.pickupAddress || activeOrder.pickup, 'Pickup Location'),
+                    drop: formatAddressString(activeOrder.dropAddress || activeOrder.drop, 'Drop Location'),
+                    dropAddress: formatAddressString(activeOrder.dropAddress || activeOrder.drop, 'Drop Location'),
+                  },
+                });
                 return;
               }
             }
           }
 
-          // 3. Fallback: Query live active ringing offers (GET /api/driver/offers/active)
+          // 3. Fallback: Query live available orders with GPS proximity (GET /api/driver/orders/available?lat=...&lng=...&radiusKm=10)
           const activeOnline = await AsyncStorage.getItem('@driver_is_online');
-          if (activeOnline === 'true') {
-            const activeOffers = await getActiveDriverOffers().catch(() => []);
+          if (isOnline || activeOnline === 'true') {
+            let coords = currentCoordsRef.current;
+            if (!coords) {
+              const lastLoc = await Location.getLastKnownPositionAsync().catch(() => null);
+              if (lastLoc?.coords) {
+                coords = { lat: lastLoc.coords.latitude, lng: lastLoc.coords.longitude };
+                currentCoordsRef.current = coords;
+              }
+            }
+            const activeOffers = await getActiveDriverOffers(coords || undefined).catch(() => []);
             if (Array.isArray(activeOffers) && activeOffers.length > 0) {
-              const freshOffers = activeOffers.filter((o) => {
+              const freshOffers = activeOffers.map((o: any) => {
+                let pDist = o.pickupDistanceKm !== undefined ? Number(o.pickupDistanceKm) : undefined;
+                if ((pDist === undefined || isNaN(pDist)) && coords) {
+                  const pCoords = resolveCoordinates(
+                    o.pickupLat ?? o.pickupLatitude,
+                    o.pickupLng ?? o.pickupLongitude,
+                    o.pickupAddress || o.pickup
+                  );
+                  if (pCoords.lat && pCoords.lng) {
+                    pDist = Number(calculateDistanceKm(coords.lat, coords.lng, pCoords.lat, pCoords.lng).toFixed(1));
+                  }
+                }
+                return { ...o, pickupDistanceKm: pDist };
+              }).filter((o) => {
                 const candidateIds = [
                   String(o.bookingId || '').replace(/^#+/, ''),
                   String(o.orderId || '').replace(/^#+/, ''),
                   String(o.offerId || '').replace(/^#+/, ''),
                   String(o.id || '').replace(/^#+/, ''),
                 ].filter(Boolean);
-                return !candidateIds.some(
+                const isDismissed = candidateIds.some(
                   (id) => dismissedOfferIdsRef.current.has(id) || isOfferDismissed(id)
                 );
+                if (isDismissed) return false;
+                if (o.pickupDistanceKm !== undefined && o.pickupDistanceKm > MAX_PICKUP_RADIUS_KM) {
+                  return false;
+                }
+                return true;
               });
               if (freshOffers.length > 0) {
-                const offer = freshOffers[0];
+                // Proximity first: closest pickup distance first, then latest created
+                const sortedOffers = [...freshOffers].sort((a: any, b: any) => {
+                  const distA = a.pickupDistanceKm !== undefined ? Number(a.pickupDistanceKm) : undefined;
+                  const distB = b.pickupDistanceKm !== undefined ? Number(b.pickupDistanceKm) : undefined;
+                  if (distA !== undefined && distB !== undefined && distA !== distB) {
+                    return distA - distB;
+                  }
+                  const timeA = new Date(a.createdAt || a.created_at || 0).getTime();
+                  const timeB = new Date(b.createdAt || b.created_at || 0).getTime();
+                  if (timeB !== timeA) return timeB - timeA;
+                  return Number(b.id || 0) - Number(a.id || 0);
+                });
+                const offer = sortedOffers[0];
+                const cleanId = String(offer.bookingId || offer.orderId || offer.offerId || offer.id || '').replace(/^#+/, '');
+
                 // Sound will be played cleanly once by IncomingOrderScreen when mounted
                 navigation.navigate('IncomingOrder', {
                   order: {
-                    id: offer.bookingId || offer.orderId || offer.offerId,
+                    ...(offer || {}),
+                    id: cleanId,
+                    bookingId: offer.bookingId || (offer.id ? `BK_${offer.id}` : cleanId),
+                    orderId: offer.orderId || offer.id,
                     offerId: offer.offerId,
-                    bookingId: offer.bookingId,
-                    orderId: offer.orderId,
-                    pickup: offer.pickupAddress || 'Pickup Location',
-                    pickupAddress: offer.pickupAddress,
-                    drop: offer.dropAddress || 'Drop Location',
-                    dropAddress: offer.dropAddress,
-                    amount: offer.offeredFare || offer.amount || 0,
-                    offeredFare: offer.offeredFare || offer.amount,
+                    pickup: formatAddressString(offer.pickupAddress || offer.pickup, 'Pickup Location'),
+                    pickupAddress: formatAddressString(offer.pickupAddress || offer.pickup, 'Pickup Location'),
+                    drop: formatAddressString(offer.dropAddress || offer.drop, 'Drop Location'),
+                    dropAddress: formatAddressString(offer.dropAddress || offer.drop, 'Drop Location'),
+                    pickupLat: offer.pickupLat ?? offer.pickupLatitude,
+                    pickupLng: offer.pickupLng ?? offer.pickupLongitude,
+                    dropLat: offer.dropLat ?? offer.dropLatitude,
+                    dropLng: offer.dropLng ?? offer.dropLongitude,
+                    amount: Number(offer.offeredFare || offer.amount || offer.fare) || 0,
+                    offeredFare: Number(offer.offeredFare || offer.amount || offer.fare) || 0,
                     distanceKm: offer.distanceKm,
+                    pickupDistanceKm: offer.pickupDistanceKm,
                     remainingSeconds: offer.remainingSeconds || 60,
-                    serviceName: offer.serviceName || 'Tata Ace',
+                    serviceName: offer.serviceName || offer.vehicleType || 'Vehicle',
+                    serviceType: offer.serviceType,
                     goodsCategory: offer.goodsCategory,
                     status: 'OFFERED',
                   } as any,
@@ -847,12 +943,7 @@ const DriverDashboardScreen = () => {
       };
 
       checkAndRestoreActiveOrder();
-      interval = setInterval(checkAndRestoreActiveOrder, 4000);
-
-      return () => {
-        if (interval) clearInterval(interval);
-      };
-    }, [navigation])
+    }, [navigation, isOnline])
   );
 
   
@@ -934,7 +1025,7 @@ const DriverDashboardScreen = () => {
                   <Text style={[styles.dutyInfoSeparator, { color: colors.border }]}>|</Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                     <MaterialCommunityIcons name="bike" size={12} color={colors.primary} />
-                    <Text style={[styles.dutyInfoText, { color: colors.textSecondary }]}>Honda Activa</Text>
+                    <Text style={[styles.dutyInfoText, { color: colors.textSecondary }]}>{driverVehicle || 'Vehicle'}</Text>
                   </View>
                 </View>
               )}
@@ -1004,7 +1095,7 @@ const DriverDashboardScreen = () => {
               <View style={styles.performanceRight}>
                 <Text style={[styles.performanceTitle, { color: colors.text }]}>Daily Goal</Text>
                 <Text style={[styles.performanceTargetText, { color: colors.textSecondary }]}>
-                  Earn <Text style={{ color: colors.primary, fontWeight: '700' }}>₹{dailyTarget}</Text> today. Keep delivering!
+                  Complete <Text style={{ color: colors.primary, fontWeight: '700' }}>{dailyTarget} trips</Text> today. Keep delivering!
                 </Text>
                 
                 <View style={styles.miniStatsRow}>
@@ -1013,7 +1104,7 @@ const DriverDashboardScreen = () => {
                     <Text style={[styles.miniStatLabel, { color: colors.textMuted }]}>Trips</Text>
                   </View>
                   <View style={styles.miniStatItem}>
-                    <Text style={[styles.miniStatValue, { color: colors.text }]}>5.8h</Text>
+                    <Text style={[styles.miniStatValue, { color: colors.text }]}>—</Text>
                     <Text style={[styles.miniStatLabel, { color: colors.textMuted }]}>Hours</Text>
                   </View>
                   <View style={styles.miniStatItem}>
@@ -1029,7 +1120,16 @@ const DriverDashboardScreen = () => {
 
             {/* Radar Simulated Scanner (When Online & Idle) / Offline State Screen */}
             {isOnline ? (
-              <View style={[styles.radarWrapperCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <View>
+                {availableOrders.length > 0 && (
+                  <AvailableOrdersFeed
+                    orders={availableOrders}
+                    onAccept={handleAcceptAvailableOrder}
+                    onReject={handleRejectAvailableOrder}
+                  />
+                )}
+
+                <View style={[styles.radarWrapperCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                 <View style={styles.radarHeader}>
                   <View style={styles.radarStatusContainer}>
                     <View style={[styles.pulseStatusIndicator, { backgroundColor: colors.primary }]} />
@@ -1086,6 +1186,7 @@ const DriverDashboardScreen = () => {
                 <Text style={[styles.radarScanSubtext, { color: colors.textSecondary }]}>Keep the app open and stay online to maximize your chance of match</Text>
 
 
+              </View>
               </View>
             ) : (
               <View style={[styles.offlineWrapperCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -1155,8 +1256,8 @@ const DriverDashboardScreen = () => {
                       }
                     } catch (e) {}
 
-                    const pickupShort = (item.pickup && typeof item.pickup === 'string') ? item.pickup.split(',')[0] : ((item.pickupAddress && typeof item.pickupAddress === 'string') ? item.pickupAddress.split(',')[0] : 'Pickup');
-                    const dropShort = (item.drop && typeof item.drop === 'string') ? item.drop.split(',')[0] : ((item.dropAddress && typeof item.dropAddress === 'string') ? item.dropAddress.split(',')[0] : 'Dropoff');
+                    const pickupShort = formatAddressString(item.pickup || item.pickupAddress, 'Pickup').split(',')[0];
+                    const dropShort = formatAddressString(item.drop || item.dropAddress, 'Dropoff').split(',')[0];
 
                     return (
                       <View key={item.id} style={[styles.previewTaskRow, !isLast && { borderBottomColor: colors.border }]}>

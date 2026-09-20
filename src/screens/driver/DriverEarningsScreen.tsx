@@ -16,6 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import Svg, { Path, Defs, LinearGradient, Stop, Circle } from 'react-native-svg';
 import { useTheme } from '../../theme/ThemeContext';
+import { formatAddressString } from '../../utils/urlHelpers';
 import { 
   getOrderHistory, 
   getDriverEarningsSummary, 
@@ -70,7 +71,7 @@ const DriverEarningsScreen = () => {
   const [balance, setBalance] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [walletBalance, setWalletBalance] = useState(0);
-  const [commissionRate, setCommissionRate] = useState(5);
+  const [commissionRate, setCommissionRate] = useState(0);
   const [totalCommissionPaid, setTotalCommissionPaid] = useState(0);
 
   const fetchEarningsData = async (showLoadingSpinner = true) => {
@@ -82,7 +83,7 @@ const DriverEarningsScreen = () => {
         const walRes = await getDriverWallet();
         if (walRes && walRes.success && walRes.wallet) {
           setWalletBalance(walRes.wallet.availableBalance || 0);
-          setCommissionRate(walRes.wallet.commissionPercentage || 5);
+          setCommissionRate(walRes.wallet.commissionPercentage || 0);
           setTotalCommissionPaid(walRes.wallet.platformCommission || 0);
         }
       } catch (balErr) {
@@ -137,10 +138,7 @@ const DriverEarningsScreen = () => {
           (oAny.status || '').toLowerCase()
         );
 
-        const isToday = (
-          dateObj.toDateString() === now.toDateString() ||
-          Math.abs(now.getTime() - timeMillis) <= 24 * 60 * 60 * 1000
-        );
+        const isToday = dateObj.toDateString() === now.toDateString();
         const isWeekly = (
           Math.abs(now.getTime() - timeMillis) <= 7 * 24 * 60 * 60 * 1000 ||
           timeMillis >= startOfWeek
@@ -176,22 +174,17 @@ const DriverEarningsScreen = () => {
           id: oAny.bookingId || `BK_${oAny.id || Math.floor(Math.random() * 10000)}`,
           date: isToday ? 'Today' : dateObj.toLocaleDateString([], { month: 'short', day: 'numeric' }),
           amount: `₹${rawAmt.toFixed(2)}`,
-          platformFee: `₹${(rawAmt * 0.05).toFixed(2)}`,
+          platformFee: `₹0.00`,
           status: isCompleted ? 'completed' : 'cancelled',
           distance: distStr,
-          pickup: oAny.pickup || oAny.pickupAddress || 'Pickup Location',
-          drop: oAny.drop || oAny.dropAddress || 'Drop Location',
+          pickup: formatAddressString(oAny.pickup || oAny.pickupAddress, 'Pickup Location'),
+          drop: formatAddressString(oAny.drop || oAny.dropAddress, 'Drop Location'),
         });
       }
 
       // If backend totalEarnings is higher than local sum, sync to backend totalEarnings
       if (typeof historyRes?.totalEarnings === 'number' && historyRes.totalEarnings > totalAmount) {
         totalAmount = historyRes.totalEarnings;
-      }
-      if (todayAmount === 0 && totalAmount > 0 && ordersList.length > 0) {
-        todayAmount = totalAmount;
-        todayTrips = Math.max(1, totalTrips);
-        todayKm = Math.max(4.2, totalKm);
       }
 
       setBalance(totalAmount);
@@ -450,11 +443,7 @@ const DriverEarningsScreen = () => {
                       ]}>
                         {trip.amount} <Text style={{ fontSize: 10, color: colors.textSecondary, fontWeight: '500' }}>Cash</Text>
                       </Text>
-                      {isCompleted && (
-                        <Text style={{ fontSize: 10, color: '#EF4444', fontWeight: '600', marginTop: 1 }}>
-                          Wallet Cut: -{trip.platformFee}
-                        </Text>
-                      )}
+
                       <View style={[styles.tripMetaRow, { marginTop: 2 }]}>
                         <Ionicons name="navigate-outline" size={10} color={colors.textMuted} />
                         <Text style={[styles.tripDistanceText, { color: colors.textMuted }]}>{trip.distance}</Text>

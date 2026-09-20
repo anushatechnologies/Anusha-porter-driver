@@ -6,6 +6,7 @@ import {
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '../../theme/ThemeContext';
 import { getAllOrders, AdminOrder } from '../../services/api';
+import { formatAddressString } from '../../utils/urlHelpers';
 
 type FilterStatus = 'all' | 'active' | 'completed' | 'pending' | 'cancelled';
 
@@ -118,14 +119,14 @@ const OrderManagementScreen = () => {
         <View style={styles.routeRow}>
           <View style={[styles.routeDot, { backgroundColor: colors.success }]} />
           <Text style={[styles.routeText, { color: colors.text }]} numberOfLines={1}>
-            {item.pickupAddress || item.pickup || '—'}
+            {formatAddressString(item.pickupAddress || item.pickup, '—')}
           </Text>
         </View>
         <View style={[styles.routeConnector, { marginLeft: 6, backgroundColor: colors.border }]} />
         <View style={styles.routeRow}>
           <View style={[styles.routeDot, { backgroundColor: colors.error }]} />
           <Text style={[styles.routeText, { color: colors.text }]} numberOfLines={1}>
-            {item.dropAddress || item.drop || '—'}
+            {formatAddressString(item.dropAddress || item.drop, '—')}
           </Text>
         </View>
       </View>

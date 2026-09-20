@@ -219,8 +219,8 @@ const LoginScreen = () => {
       if (selectedRole === 'driver') {
         const phoneCheck = await checkDriverPhone(cleanPhone);
 
-        if (phoneCheck && phoneCheck.success) {
-          // If on Login tab and account does NOT exist in DB -> Show "Account Not Found"
+        if (phoneCheck && phoneCheck.success && phoneCheck.exists !== undefined) {
+          // If on Login tab and account does NOT exist in DB -> Show "Account Not Found" (conclusively confirmed)
           if (!isRegisterMode && phoneCheck.exists === false) {
             setLoading(false);
             setCheckedPhoneDisplay(cleanPhone);
@@ -424,9 +424,11 @@ const LoginScreen = () => {
 
       // Helper to serialize and save driver profile in local storage
       const saveDriverProfileLocal = async (driverDb: any, forceVerified = false) => {
+        // Normalize "approved" (backend auto-approve value) to canonical "verified"
+        const rawKyc = String(driverDb.kyc || driverDb.kycStatus || 'pending').toLowerCase();
         const kycStatus = forceVerified
           ? 'verified'
-          : ((driverDb.kyc || driverDb.kycStatus || 'pending') as 'verified' | 'pending' | 'rejected');
+          : (rawKyc === 'approved' || rawKyc === 'verified' ? 'verified' : rawKyc === 'rejected' ? 'rejected' : 'pending');
         const profileData = {
           fullName: String(driverDb.name || fullName || 'Driver'),
           mobile: String(driverDb.phone || cleanPhone || phone),

@@ -2,6 +2,7 @@ import React from 'react';
 import {
   View,
   Text,
+  TextInput,
   TouchableOpacity,
   StyleSheet,
   ScrollView,
@@ -12,6 +13,7 @@ import {
   Image,
   Modal,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -21,8 +23,17 @@ import { useTheme } from '../../theme/ThemeContext';
 import AsyncStorage from '../../services/asyncStorageShim';
 import * as ImagePicker from 'expo-image-picker';
 import Svg, { Defs, LinearGradient, Stop, Path } from 'react-native-svg';
-import { getDriverProfile, getOrderHistory, getDriverPayoutAccount, setDriverOnlineStatus, uploadDriverPhoto } from '../../services/api';
-import { cleanUrl } from '../../utils/urlHelpers';
+import {
+  getDriverProfile,
+  getOrderHistory,
+  getDriverPayoutAccount,
+  setDriverOnlineStatus,
+  uploadDriverPhoto,
+  updateDriverProfile,
+  getActiveVehicles,
+  VehicleOption,
+} from '../../services/api';
+import { cleanUrl, formatAddressString } from '../../utils/urlHelpers';
 import { getAuth, signOut } from '@react-native-firebase/auth';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
@@ -35,6 +46,26 @@ const DriverProfileScreen = () => {
   const [selectedDocImage, setSelectedDocImage] = React.useState<string | null>(null);
   const [imageError, setImageError] = React.useState(false);
   const [refreshing, setRefreshing] = React.useState(false);
+  // Edit Profile modal
+  const [editModalVisible, setEditModalVisible] = React.useState(false);
+  const [editSaving, setEditSaving] = React.useState(false);
+  const [availableVehicles, setAvailableVehicles] = React.useState<VehicleOption[]>([]);
+  const [loadingVehicles, setLoadingVehicles] = React.useState(false);
+  const [vehicleDropdownOpen, setVehicleDropdownOpen] = React.useState(false);
+  const [editForm, setEditForm] = React.useState({
+    name: '',
+    phone: '',
+    vehicle: '',
+    vehicleType: '',
+    vehicleNumber: '',
+    address: '',
+    city: '',
+    pincode: '',
+    bankAccountNumber: '',
+    bankIfscCode: '',
+    bankAccountName: '',
+    upiId: '',
+  });
 
   const fetchProfileFreshData = async () => {
     try {
@@ -94,11 +125,13 @@ const DriverProfileScreen = () => {
           aadhaarNumber: driverDb.aadhaarNumber || localProfile?.aadhaarNumber || '',
           panNumber: driverDb.panNumber || localProfile?.panNumber || '',
           licenseNumber: driverDb.licenseNumber || localProfile?.licenseNumber || '',
-          accountHolderName: driverDb.accountHolderName || localProfile?.accountHolderName || '',
+          accountHolderName: driverDb.accountHolderName || (driverDb as any).bankAccountName || localProfile?.accountHolderName || '',
           bankName: payoutAccount?.bankName || driverDb.bankName || localProfile?.bankName || '',
           accountNumber: payoutAccount?.accountNumberMasked || (driverDb.accountNumber ? `XXXX XXXX ${driverDb.accountNumber.slice(-4)}` : (localProfile?.accountNumber ? `XXXX XXXX ${localProfile.accountNumber.slice(-4)}` : '')),
-          ifscCode: payoutAccount?.ifscCode || driverDb.ifscCode || localProfile?.ifscCode || '',
-          upiId: payoutAccount?.upiId || localProfile?.upiId || '',
+          rawAccountNumber: payoutAccount?.accountNumber || (driverDb as any).bankAccountNumber || driverDb.accountNumber || localProfile?.bankAccountNumber || localProfile?.accountNumber || '',
+          bankAccountNumber: payoutAccount?.accountNumber || (driverDb as any).bankAccountNumber || driverDb.accountNumber || localProfile?.bankAccountNumber || localProfile?.accountNumber || '',
+          ifscCode: payoutAccount?.ifscCode || (driverDb as any).bankIfscCode || driverDb.ifscCode || localProfile?.ifscCode || '',
+          upiId: payoutAccount?.upiId || (driverDb as any).upiId || localProfile?.upiId || '',
           partnerId: driverDb.id ? 'PRT-' + driverDb.id : (localProfile?.partnerId || (localProfile?.mobile ? 'PRT-' + localProfile.mobile.slice(-4) : 'PRT-PENDING')),
           rating: String(driverDb.rating || localProfile?.rating || '5.0'),
           tenure: String(driverDb.tenure || localProfile?.tenure || '0m'),
@@ -308,14 +341,40 @@ const DriverProfileScreen = () => {
   })();
 
   const serviceCapability = (() => {
-    const raw = String(profileData?.serviceType || (profileData as any)?.service_type || '').toUpperCase();
-    if (raw === 'PASSENGER') return { label: 'Passenger Rides Only', icon: 'account-group', color: '#10B981' };
-    if (raw === 'GOODS') return { label: 'Goods & Logistics Only', icon: 'truck-delivery', color: '#3B82F6' };
-    if (raw === 'BOTH') return { label: 'Rides + Goods Delivery', icon: 'star', color: '#F59E0B' };
+    const raw = String(
+      profileData?.serviceType ||
+      (profileData as any)?.service_type ||
+      profileData?.serviceCategory ||
+      (profileData as any)?.service_category ||
+      ''
+    ).toUpperCase();
+
+    // 1. Explicit Passenger signals
+    if (raw === 'PASSENGER' || raw === 'CAB' || raw === 'RIDE' || raw.includes('PASSENGER')) {
+      return { label: 'Passenger Rides', icon: 'account-group', color: '#10B981' };
+    }
+
+    // 2. Explicit Goods / Logistics / Our Services signals
+    if (
+      raw === 'GOODS' ||
+      raw === 'OUR_SERVICES' ||
+      raw.includes('GOODS') ||
+      raw.includes('OUR_SERVICES') ||
+      raw.includes('LOGISTICS') ||
+      raw.includes('COURIER') ||
+      raw.includes('CARGO')
+    ) {
+      return { label: 'Goods & Logistics Delivery', icon: 'truck-delivery', color: '#3B82F6' };
+    }
+
+    // 3. Vehicle-based heuristic
     const v = (vehicleMake || '').toLowerCase();
-    if (v.includes('cab') || v.includes('car')) return { label: 'Passenger Rides Only', icon: 'account-group', color: '#10B981' };
-    if (v.includes('truck') || v.includes('ace')) return { label: 'Goods & Logistics Only', icon: 'truck-delivery', color: '#3B82F6' };
-    return { label: 'Rides + Goods Delivery', icon: 'star', color: '#F59E0B' };
+    if (v.includes('cab') || v.includes('taxi') || v.includes('sedan') || v.includes('suv') || v.includes('bike taxi')) {
+      return { label: 'Passenger Rides', icon: 'account-group', color: '#10B981' };
+    }
+
+    // Default: Goods & Logistics Delivery (for 3 wheeler, Tata Ace, Pickup, Trucks, etc.)
+    return { label: 'Goods & Logistics Delivery', icon: 'truck-delivery', color: '#3B82F6' };
   })();
 
   const handleToggleTheme = () => {
@@ -424,6 +483,86 @@ const DriverProfileScreen = () => {
     );
   };
 
+  const loadVehicles = async () => {
+    setLoadingVehicles(true);
+    try {
+      const rawSType = profileData?.serviceType || (profileData as any)?.service_type || profileData?.serviceCategory;
+      const sType = String(rawSType || '').toUpperCase().includes('PASS') ? 'PASSENGER' : 'OUR_SERVICES';
+      const res = await getActiveVehicles(sType);
+      if (res && Array.isArray(res.vehicles) && res.vehicles.length > 0) {
+        setAvailableVehicles(res.vehicles);
+      }
+    } catch (e) {
+      console.warn('[DriverProfileScreen] Failed to fetch admin vehicles:', e);
+    } finally {
+      setLoadingVehicles(false);
+    }
+  };
+
+  const openEditModal = () => {
+    setEditForm({
+      name: profileData?.fullName || profileData?.name || '',
+      phone: profileData?.mobile || profileData?.phone || '',
+      vehicle: profileData?.vehicleType || '',
+      vehicleType: profileData?.vehicleType || '',
+      vehicleNumber: profileData?.vehicleNumber || '',
+      address: profileData?.addressLine1 || '',
+      city: profileData?.city || '',
+      pincode: profileData?.pincode || '',
+      bankAccountNumber: profileData?.rawAccountNumber || profileData?.bankAccountNumber || (profileData?.accountNumber && !profileData.accountNumber.includes('X') ? profileData.accountNumber : ''),
+      bankIfscCode: profileData?.bankIfscCode || profileData?.ifscCode || '',
+      bankAccountName: profileData?.bankAccountName || profileData?.accountHolderName || '',
+      upiId: profileData?.upiId || '',
+    });
+    setEditModalVisible(true);
+    loadVehicles();
+  };
+
+  const handleSaveProfile = async () => {
+    if (editSaving) return;
+    setEditSaving(true);
+    try {
+      const payload: any = {};
+      if (editForm.name.trim()) payload.name = editForm.name.trim();
+      // NOTE: phone is intentionally excluded — it is the login identity and cannot be changed via profile edit
+      if (editForm.vehicle.trim()) { payload.vehicle = editForm.vehicle.trim(); payload.vehicleType = editForm.vehicle.trim(); }
+      if (editForm.vehicleNumber.trim()) payload.vehicleNumber = editForm.vehicleNumber.trim().toUpperCase();
+      if (editForm.address.trim()) payload.address = editForm.address.trim();
+      if (editForm.city.trim()) payload.city = editForm.city.trim();
+      if (editForm.pincode.trim()) payload.pincode = editForm.pincode.trim();
+      if (editForm.bankAccountNumber.trim()) payload.bankAccountNumber = editForm.bankAccountNumber.trim();
+      if (editForm.bankIfscCode.trim()) payload.bankIfscCode = editForm.bankIfscCode.trim().toUpperCase();
+      if (editForm.bankAccountName.trim()) payload.bankAccountName = editForm.bankAccountName.trim();
+      if (editForm.upiId.trim()) payload.upiId = editForm.upiId.trim();
+
+      const res = await updateDriverProfile(payload);
+      if (res.success) {
+        // Merge updates into local profile state
+        setProfileData((prev: any) => ({
+          ...prev,
+          fullName: editForm.name || prev?.fullName,
+          vehicleType: editForm.vehicle || prev?.vehicleType,
+          vehicleNumber: editForm.vehicleNumber || prev?.vehicleNumber,
+          addressLine1: editForm.address || prev?.addressLine1,
+          city: editForm.city || prev?.city,
+          pincode: editForm.pincode || prev?.pincode,
+          accountNumber: editForm.bankAccountNumber || prev?.accountNumber,
+          ifscCode: editForm.bankIfscCode || prev?.ifscCode,
+          accountHolderName: editForm.bankAccountName || prev?.accountHolderName,
+          upiId: editForm.upiId || prev?.upiId,
+        }));
+        setEditModalVisible(false);
+        Alert.alert('Profile Updated', res.message || 'Your profile has been updated successfully.');
+      } else {
+        Alert.alert('Update Failed', res.message || 'Could not update profile. Please try again.');
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'An error occurred while saving.');
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   const isDark = theme === 'dark';
   const themeIcon = themeMode === 'light' ? 'sunny' : themeMode === 'dark' ? 'moon' : 'phone-portrait';
 
@@ -461,9 +600,14 @@ const DriverProfileScreen = () => {
 
           <View style={styles.topNav}>
             <Text style={styles.navTitle}>Profile</Text>
-            <TouchableOpacity style={styles.themeToggleBtn} onPress={handleToggleTheme}>
-              <Ionicons name={themeIcon as any} size={20} color="#FFFFFF" />
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity style={styles.themeToggleBtn} onPress={openEditModal}>
+                <Ionicons name="create-outline" size={20} color="#FFFFFF" />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.themeToggleBtn} onPress={handleToggleTheme}>
+                <Ionicons name={themeIcon as any} size={20} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
 
@@ -557,7 +701,7 @@ const DriverProfileScreen = () => {
                 <View style={styles.detailItemRow}>
                   <Ionicons name="location-outline" size={18} color="#10B981" />
                   <Text style={[styles.detailItemLabel, { color: colors.textSecondary }]}>Address:</Text>
-                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData?.addressLine1 || 'N/A'}</Text>
+                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{formatAddressString(profileData?.addressLine1, 'N/A')}</Text>
                 </View>
                 <View style={[styles.fieldDivider, { backgroundColor: colors.border }]} />
                 <View style={styles.detailItemRow}>
@@ -798,6 +942,295 @@ const DriverProfileScreen = () => {
           <Text style={[styles.versionText, { color: colors.textMuted }]}>Anusha Porter Driver v2.28.6 (Production)</Text>
         </View>
       </ScrollView>
+
+      {/* ── Edit Profile Modal ──────────────────────────────────────────── */}
+      <Modal
+        visible={editModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setEditModalVisible(false)}
+      >
+        <View style={styles.editModalOverlay}>
+          <View style={[styles.editModalSheet, { backgroundColor: colors.card }]}>
+            {/* Modal Header */}
+            <View style={[styles.editModalHeader, { borderBottomColor: colors.border }]}>
+              <TouchableOpacity onPress={() => setEditModalVisible(false)} style={styles.editModalCloseBtn}>
+                <Ionicons name="close" size={22} color={colors.text} />
+              </TouchableOpacity>
+              <Text style={[styles.editModalTitle, { color: colors.text }]}>Edit Profile</Text>
+              <TouchableOpacity
+                style={[styles.editModalSaveBtn, { backgroundColor: colors.primary }, editSaving && { opacity: 0.6 }]}
+                onPress={handleSaveProfile}
+                disabled={editSaving}
+              >
+                {editSaving
+                  ? <Ionicons name="hourglass-outline" size={16} color="#FFF" />
+                  : <Text style={styles.editModalSaveBtnText}>Save</Text>
+                }
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.editModalScroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              {/* Personal */}
+              <Text style={[styles.editSectionLabel, { color: colors.textSecondary }]}>PERSONAL</Text>
+              <View style={[styles.editFieldRow, { borderColor: colors.border, backgroundColor: colors.background }]}>
+                <Ionicons name="person-outline" size={17} color={colors.primary} />
+                <TextInput
+                  style={[styles.editFieldInput, { color: colors.text }]}
+                  placeholder="Full Name"
+                  placeholderTextColor={colors.textSecondary}
+                  value={editForm.name}
+                  onChangeText={t => setEditForm(p => ({ ...p, name: t.replace(/[^a-zA-Z\s]/g, '') }))}
+                />
+              </View>
+              {/* Phone — read-only: it is the login identity and cannot be changed */}
+              <View style={[styles.editFieldRow, { borderColor: colors.border, backgroundColor: colors.background, marginTop: 8, opacity: 0.6 }]}>
+                <Ionicons name="lock-closed-outline" size={17} color={colors.textSecondary} />
+                <Text style={[styles.editFieldInput, { color: colors.textSecondary }]}>
+                  {editForm.phone || 'Phone number'}
+                </Text>
+                <View style={{ backgroundColor: colors.border, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 }}>
+                  <Text style={{ fontSize: 10, color: colors.textSecondary, fontWeight: '700' }}>LOCKED</Text>
+                </View>
+              </View>
+
+              {/* Vehicle */}
+              <Text style={[styles.editSectionLabel, { color: colors.textSecondary }]}>VEHICLE</Text>
+              <TouchableOpacity
+                style={[styles.editFieldRow, { borderColor: colors.border, backgroundColor: colors.background, justifyContent: 'space-between' }]}
+                onPress={() => setVehicleDropdownOpen(true)}
+                activeOpacity={0.7}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                  <MaterialCommunityIcons name="car-outline" size={18} color={colors.primary} />
+                  <Text
+                    style={[
+                      styles.editFieldInput,
+                      { color: editForm.vehicle ? colors.text : colors.textSecondary, marginLeft: 8 },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {editForm.vehicle || 'Select Vehicle Type'}
+                  </Text>
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  {loadingVehicles ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <Ionicons name="chevron-down" size={18} color={colors.textSecondary} />
+                  )}
+                </View>
+              </TouchableOpacity>
+              <View style={[styles.editFieldRow, { borderColor: colors.border, backgroundColor: colors.background, marginTop: 8 }]}>
+                <MaterialCommunityIcons name="numeric" size={17} color={colors.primary} />
+                <TextInput
+                  style={[styles.editFieldInput, { color: colors.text }]}
+                  placeholder="Vehicle Number (e.g. AP09AB1234)"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="characters"
+                  value={editForm.vehicleNumber}
+                  onChangeText={t => setEditForm(p => ({ ...p, vehicleNumber: t.replace(/[^a-zA-Z0-9]/g, '').toUpperCase() }))}
+                />
+              </View>
+
+              {/* Address */}
+              <Text style={[styles.editSectionLabel, { color: colors.textSecondary }]}>ADDRESS</Text>
+              <View style={[styles.editFieldRow, { borderColor: colors.border, backgroundColor: colors.background }]}>
+                <Ionicons name="location-outline" size={17} color="#10B981" />
+                <TextInput
+                  style={[styles.editFieldInput, { color: colors.text }]}
+                  placeholder="Street / Area / Locality"
+                  placeholderTextColor={colors.textSecondary}
+                  value={editForm.address}
+                  onChangeText={t => setEditForm(p => ({ ...p, address: t }))}
+                />
+              </View>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                <View style={[styles.editFieldRow, { flex: 1, borderColor: colors.border, backgroundColor: colors.background }]}>
+                  <Ionicons name="map-outline" size={17} color="#10B981" />
+                  <TextInput
+                    style={[styles.editFieldInput, { color: colors.text }]}
+                    placeholder="City"
+                    placeholderTextColor={colors.textSecondary}
+                    value={editForm.city}
+                    onChangeText={t => setEditForm(p => ({ ...p, city: t.replace(/[^a-zA-Z\s]/g, '') }))}
+                  />
+                </View>
+                <View style={[styles.editFieldRow, { flex: 1, borderColor: colors.border, backgroundColor: colors.background }]}>
+                  <Ionicons name="pin-outline" size={17} color="#10B981" />
+                  <TextInput
+                    style={[styles.editFieldInput, { color: colors.text }]}
+                    placeholder="Pincode"
+                    placeholderTextColor={colors.textSecondary}
+                    keyboardType="numeric"
+                    maxLength={6}
+                    value={editForm.pincode}
+                    onChangeText={t => setEditForm(p => ({ ...p, pincode: t.replace(/\D/g, '') }))}
+                  />
+                </View>
+              </View>
+
+              {/* Bank & UPI */}
+              <Text style={[styles.editSectionLabel, { color: colors.textSecondary }]}>BANK & PAYOUT</Text>
+              <View style={[styles.editFieldRow, { borderColor: colors.border, backgroundColor: colors.background }]}>
+                <Ionicons name="person-circle-outline" size={17} color="#F59E0B" />
+                <TextInput
+                  style={[styles.editFieldInput, { color: colors.text }]}
+                  placeholder="Account Holder Name"
+                  placeholderTextColor={colors.textSecondary}
+                  value={editForm.bankAccountName}
+                  onChangeText={t => setEditForm(p => ({ ...p, bankAccountName: t.replace(/[^a-zA-Z\s]/g, '') }))}
+                />
+              </View>
+              <View style={[styles.editFieldRow, { borderColor: colors.border, backgroundColor: colors.background, marginTop: 8 }]}>
+                <Ionicons name="wallet-outline" size={17} color="#F59E0B" />
+                <TextInput
+                  style={[styles.editFieldInput, { color: colors.text }]}
+                  placeholder="Bank Account Number"
+                  placeholderTextColor={colors.textSecondary}
+                  keyboardType="numeric"
+                  value={editForm.bankAccountNumber}
+                  onChangeText={t => setEditForm(p => ({ ...p, bankAccountNumber: t.replace(/\D/g, '') }))}
+                />
+              </View>
+              <View style={[styles.editFieldRow, { borderColor: colors.border, backgroundColor: colors.background, marginTop: 8 }]}>
+                <Ionicons name="barcode-outline" size={17} color="#F59E0B" />
+                <TextInput
+                  style={[styles.editFieldInput, { color: colors.text }]}
+                  placeholder="IFSC Code (e.g. HDFC0001234)"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="characters"
+                  maxLength={11}
+                  value={editForm.bankIfscCode}
+                  onChangeText={t => setEditForm(p => ({ ...p, bankIfscCode: t.replace(/[^a-zA-Z0-9]/g, '').toUpperCase() }))}
+                />
+              </View>
+              <View style={[styles.editFieldRow, { borderColor: colors.border, backgroundColor: colors.background, marginTop: 8, marginBottom: 32 }]}>
+                <MaterialCommunityIcons name="contactless-payment" size={17} color="#F59E0B" />
+                <TextInput
+                  style={[styles.editFieldInput, { color: colors.text }]}
+                  placeholder="UPI ID (e.g. name@oksbi)"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                  value={editForm.upiId}
+                  onChangeText={t => setEditForm(p => ({ ...p, upiId: t }))}
+                />
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Vehicle Selection Modal (Admin Panel Dynamic Vehicles) */}
+      <Modal
+        visible={vehicleDropdownOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setVehicleDropdownOpen(false)}
+      >
+        <View style={styles.editModalOverlay}>
+          <View style={[styles.vehicleDropdownSheet, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <View style={[styles.vehicleDropdownHeader, { borderBottomColor: colors.border }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.vehicleDropdownTitle, { color: colors.text }]}>Select Vehicle Model</Text>
+                <Text style={[styles.vehicleDropdownSubtitle, { color: colors.textSecondary }]}>
+                  {availableVehicles.length > 0
+                    ? `${availableVehicles.length} vehicles available from Admin`
+                    : 'Loading vehicles from Admin...'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setVehicleDropdownOpen(false)}
+                style={[styles.dropdownCloseBtn, { backgroundColor: colors.surface }]}
+              >
+                <Ionicons name="close" size={20} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            {loadingVehicles ? (
+              <View style={{ paddingVertical: 40, alignItems: 'center' }}>
+                <ActivityIndicator size="large" color={colors.primary} />
+                <Text style={{ marginTop: 12, color: colors.textSecondary, fontSize: 13, fontWeight: '500' }}>
+                  Fetching live vehicles from Admin...
+                </Text>
+              </View>
+            ) : availableVehicles.length === 0 ? (
+              <View style={{ paddingVertical: 36, alignItems: 'center' }}>
+                <MaterialCommunityIcons name="car-off" size={40} color={colors.textSecondary} />
+                <Text style={{ marginTop: 12, color: colors.text, fontWeight: '700', fontSize: 15 }}>
+                  No Vehicles Available
+                </Text>
+                <Text style={{ marginTop: 4, color: colors.textSecondary, fontSize: 12, textAlign: 'center', paddingHorizontal: 20 }}>
+                  Could not load vehicles from Admin panel. Please check your connection.
+                </Text>
+                <TouchableOpacity
+                  onPress={loadVehicles}
+                  style={{ marginTop: 16, paddingHorizontal: 20, paddingVertical: 10, backgroundColor: colors.primary, borderRadius: 12 }}
+                >
+                  <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>Retry Loading</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
+                {availableVehicles.map((v) => {
+                  const isSelected =
+                    (editForm.vehicle || '').toLowerCase() === v.name.toLowerCase() ||
+                    (editForm.vehicleType || '').toLowerCase() === v.name.toLowerCase();
+                  return (
+                    <TouchableOpacity
+                      key={v.id || v.name}
+                      style={[
+                        styles.vehicleDropdownItem,
+                        {
+                          backgroundColor: isSelected ? `${colors.primary}15` : colors.background,
+                          borderColor: isSelected ? colors.primary : colors.border,
+                        },
+                      ]}
+                      onPress={() => {
+                        setEditForm((p) => ({ ...p, vehicle: v.name, vehicleType: v.name }));
+                        setVehicleDropdownOpen(false);
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <View style={[styles.vehicleItemIconBox, { backgroundColor: isSelected ? colors.primary : `${colors.primary}18`, overflow: 'hidden' }]}>
+                        {v.imageUrl && (v.imageUrl.startsWith('http') || v.imageUrl.startsWith('data:') || v.imageUrl.startsWith('file:')) ? (
+                          <Image
+                            source={{ uri: v.imageUrl }}
+                            style={{ width: 52, height: 38 }}
+                            resizeMode="contain"
+                          />
+                        ) : (
+                          <MaterialCommunityIcons
+                            name={(v.iconName as any) || ((v as any).icon as any) || 'truck-delivery'}
+                            size={22}
+                            color={isSelected ? '#FFFFFF' : colors.primary}
+                          />
+                        )}
+                      </View>
+                      <View style={{ flex: 1, marginLeft: 12 }}>
+                        <Text style={[styles.vehicleItemName, { color: colors.text, fontWeight: isSelected ? '800' : '600' }]}>
+                          {v.name}
+                        </Text>
+                        <Text style={[styles.vehicleItemCapacity, { color: colors.textSecondary }]}>
+                          {v.capacity || 'Standard Load'}
+                        </Text>
+                      </View>
+                      {isSelected ? (
+                        <View style={[styles.vehicleCheckmark, { backgroundColor: colors.primary }]}>
+                          <Ionicons name="checkmark" size={14} color="#FFFFFF" />
+                        </View>
+                      ) : (
+                        <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
 
       {/* Full Screen Document Viewer Modal */}
       <Modal visible={!!selectedDocImage} transparent animationType="fade" onRequestClose={() => setSelectedDocImage(null)}>
@@ -1138,6 +1571,149 @@ const styles = StyleSheet.create({
   fullScreenImage: {
     width: '100%',
     height: '80%',
+  },
+  // ── Edit Profile Modal ────────────────────────────────────
+  editModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  editModalSheet: {
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    maxHeight: '92%',
+    paddingBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 20,
+  },
+  editModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+  },
+  editModalCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(128,128,128,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editModalTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  editModalSaveBtn: {
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 64,
+  },
+  editModalSaveBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  editModalScroll: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+  },
+  editSectionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    marginTop: 20,
+    marginBottom: 8,
+    marginLeft: 2,
+  },
+  editFieldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  editFieldInput: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  // ── Vehicle Dropdown Styles ──────────────────────────────────
+  vehicleDropdownSheet: {
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    maxHeight: '80%',
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 32,
+    borderWidth: 1,
+  },
+  vehicleDropdownHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 16,
+    marginBottom: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  vehicleDropdownTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  vehicleDropdownSubtitle: {
+    fontSize: 12,
+    marginTop: 3,
+    fontWeight: '500',
+  },
+  dropdownCloseBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  vehicleDropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    borderRadius: 16,
+    marginBottom: 10,
+    borderWidth: 1.5,
+  },
+  vehicleItemIconBox: {
+    width: 56,
+    height: 46,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 2,
+  },
+  vehicleItemName: {
+    fontSize: 15,
+    letterSpacing: 0.2,
+  },
+  vehicleItemCapacity: {
+    fontSize: 12,
+    marginTop: 2,
+    fontWeight: '500',
+  },
+  vehicleCheckmark: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
 

@@ -7,6 +7,7 @@ import Svg, { Defs, LinearGradient, Stop, Path, Rect, Circle, G } from 'react-na
 import Animated, { FadeInDown, FadeInRight, Layout } from 'react-native-reanimated';
 import AsyncStorage from '../../services/asyncStorageShim';
 import { getOrderHistory } from '../../services/api';
+import { formatAddressString } from '../../utils/urlHelpers';
 import Constants from 'expo-constants';
 
 interface OrderHistoryItem {
@@ -126,19 +127,20 @@ const OrderHistoryScreen = () => {
           id: safeId,
           orderNumber: safeBookingId,
           date: formattedDate,
-          pickup: o.pickup || o.pickupAddress || 'Pickup Location',
-          drop: o.drop || o.dropAddress || 'Dropoff Location',
+          pickup: formatAddressString(o.pickup || o.pickupAddress, 'Pickup Location'),
+          drop: formatAddressString(o.drop || o.dropAddress, 'Dropoff Location'),
           amount: `₹${rawAmt}`,
-          distance: o.distance || '4.5 km',
+          distance: o.distance || '—',
           status: uiStatus,
           rawStatus: o.status || 'completed',
-          timeTaken: '22 mins',
-          rating: 4.8,
+          // BUG-07 fix: use real values from order data instead of hardcoded defaults
+          timeTaken: o.timeTaken || o.time_taken || o.duration || o.tripDuration || '—',
+          rating: (o.rating !== undefined && o.rating !== null) ? Number(o.rating) : undefined,
           vehicleType: o.vehicleType || '',
-          tip: 0,
+          tip: o.tip || 0,
           customerName: o.customerName || o.customer_name || 'Customer',
           customerPhone: o.customerPhone || o.customer_phone || '',
-          paymentMethod: 'Online UPI',
+          paymentMethod: o.paymentMethod || o.payment_method || o.method || 'Online',
           rawOrder: o,
         };
       });
@@ -146,7 +148,8 @@ const OrderHistoryScreen = () => {
       setOrders(mapped);
     } catch (err) {
       console.warn('Failed to load order history:', err);
-      throw err;
+      // BUG-08 fix: do NOT re-throw here — it leaves the screen stuck with a
+      // permanent loading spinner and no error message visible to the driver.
     } finally {
       setLoading(false);
     }
@@ -195,14 +198,15 @@ const OrderHistoryScreen = () => {
     : `₹${totalEarnings}`;
 
   if (sortBy === 'highest_payout') {
-    filteredOrders = filteredOrders.sort((a, b) => {
+    // BUG-18 fix: use a spread copy so the original orders array is never mutated
+    filteredOrders = [...filteredOrders].sort((a, b) => {
       const aVal = parseInt(a.amount.replace(/[^0-9]/g, ''));
       const bVal = parseInt(b.amount.replace(/[^0-9]/g, ''));
       return bVal - aVal;
     });
   } else {
     // Default: Sort by date descending (Newest first)
-    filteredOrders = filteredOrders.sort((a, b) => {
+    filteredOrders = [...filteredOrders].sort((a, b) => {
       const dateA = a.rawOrder?.createdAt ? new Date(a.rawOrder.createdAt).getTime() : 0;
       const dateB = b.rawOrder?.createdAt ? new Date(b.rawOrder.createdAt).getTime() : 0;
       return dateB - dateA;
@@ -295,11 +299,11 @@ const OrderHistoryScreen = () => {
             <View style={styles.locationsCol}>
               <View style={styles.locationBlock}>
                 <Text style={[styles.locationLabel, { color: colors.textMuted }]}>PICKUP</Text>
-                <Text style={[styles.locationText, { color: colors.text }]} numberOfLines={1}>{item.pickup}</Text>
+                <Text style={[styles.locationText, { color: colors.text }]} numberOfLines={1}>{formatAddressString(item.pickup)}</Text>
               </View>
               <View style={styles.locationBlockBottom}>
                 <Text style={[styles.locationLabel, { color: colors.textMuted }]}>DROPOFF</Text>
-                <Text style={[styles.locationText, { color: colors.text }]} numberOfLines={1}>{item.drop}</Text>
+                <Text style={[styles.locationText, { color: colors.text }]} numberOfLines={1}>{formatAddressString(item.drop)}</Text>
               </View>
             </View>
             
@@ -571,7 +575,7 @@ const OrderHistoryScreen = () => {
                 </View>
                 <View style={{ flex: 1, marginLeft: 8 }}>
                   <Text style={{ fontSize: 11, color: colors.textMuted, fontWeight: '600' }}>PICKUP ADDRESS</Text>
-                  <Text style={{ fontSize: 13, color: colors.text, fontWeight: '500', marginTop: 2 }}>{selectedOrder.pickup}</Text>
+                  <Text style={{ fontSize: 13, color: colors.text, fontWeight: '500', marginTop: 2 }}>{formatAddressString(selectedOrder.pickup)}</Text>
                 </View>
               </View>
 
@@ -582,7 +586,7 @@ const OrderHistoryScreen = () => {
                 </View>
                 <View style={{ flex: 1, marginLeft: 8 }}>
                   <Text style={{ fontSize: 11, color: colors.textMuted, fontWeight: '600' }}>DROPOFF ADDRESS</Text>
-                  <Text style={{ fontSize: 13, color: colors.text, fontWeight: '500', marginTop: 2 }}>{selectedOrder.drop}</Text>
+                  <Text style={{ fontSize: 13, color: colors.text, fontWeight: '500', marginTop: 2 }}>{formatAddressString(selectedOrder.drop)}</Text>
                 </View>
               </View>
             </View>

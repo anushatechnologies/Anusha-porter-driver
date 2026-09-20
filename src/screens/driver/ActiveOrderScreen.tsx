@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -24,8 +24,12 @@ import { useTheme } from '../../theme/ThemeContext';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import Svg, { Path, Rect, Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
 import { updateOrderStatus, getActiveOrder, getOrderDetails, sendDeliveryNotification, createPaymentOrder, getPaymentStatus, verifyDeliveryOtpOnly, verifyStartRideOtp, confirmPaymentAndCompleteOrder, getDriverWallet, setDriverOnlineStatus } from '../../services/api';
-import { dismissOffer } from '../../services/telemetrySocket';
+import { telemetrySocket, dismissOffer } from '../../services/telemetrySocket';
+import { stopRingtone } from '../../services/soundManager';
+import { safeOnMessage } from '../../services/fcmService';
 import AsyncStorage from '../../services/asyncStorageShim';
+import { formatAddressString } from '../../utils/urlHelpers';
+import { resolveCoordinates, launchTurnByTurnNavigation } from '../../utils/navigationHelper';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 type ActiveRouteProp = RouteProp<RootStackParamList, 'ActiveOrder'>;
@@ -69,6 +73,10 @@ const ActiveOrderScreen = () => {
   useEffect(() => {
     (async () => {
       try {
+        // Safety net: kill any lingering alarm from IncomingOrderScreen
+        await stopRingtone();
+      } catch {}
+      try {
         const profileStr = await AsyncStorage.getItem('driverProfile');
         if (profileStr) {
           const p = JSON.parse(profileStr);
@@ -80,16 +88,186 @@ const ActiveOrderScreen = () => {
 
   // Real live order data from params or live backend sync
   const [activeOrder, setActiveOrder] = useState<any>(route.params?.order || null);
+  const isCancelledHandledRef = useRef(false);
 
-  const isPassenger = Boolean(
-    String(activeOrder?.serviceType || (activeOrder as any)?.service_type || '').toUpperCase() === 'PASSENGER' || 
-    String(activeOrder?.serviceLabel || '').toLowerCase().includes('passenger') ||
-    String(activeOrder?.bookingId || activeOrder?.id || '').toUpperCase().includes('PASS') ||
-    String((activeOrder as any)?.category || '').toLowerCase().includes('passenger') ||
-    String(activeOrder?.vehicleType || activeOrder?.vehicle || '').toLowerCase().includes('cab') ||
-    String(activeOrder?.serviceName || activeOrder?.vehicleName || '').toLowerCase().includes('bike taxi') ||
-    String(activeOrder?.serviceName || activeOrder?.vehicleName || '').toLowerCase().includes('passenger')
-  );
+  // BUG-03 fix: reset handled flag whenever a NEW order arrives on this screen
+  useEffect(() => {
+    isCancelledHandledRef.current = false;
+  }, [route.params?.order?.id]);
+
+  // Listen for customer cancellation push notifications while on active trip
+  useEffect(() => {
+    const currentBk = String(
+      activeOrder?.bookingId ||
+      activeOrder?.id ||
+      route.params?.order?.bookingId ||
+      route.params?.order?.id ||
+      ''
+    ).replace(/^#+/, '');
+
+    const handleCancelledNotification = async (messageText?: string) => {
+      if (!completed && !isCancelledHandledRef.current) {
+        isCancelledHandledRef.current = true;
+        await stopRingtone().catch(() => {});
+        Alert.alert(
+          'Trip Cancelled',
+          messageText || 'The customer has cancelled this ride.',
+          [
+            {
+              text: 'OK',
+              onPress: () => {
+                navigation.reset({
+                  index: 0,
+                  routes: [{ name: 'DriverTabs' }],
+                });
+              },
+            },
+          ],
+          { cancelable: false }
+        );
+      }
+    };
+
+    const unsubscribeFcm = safeOnMessage(async (remoteMessage: any) => {
+      const data = remoteMessage?.data || {};
+      const notifType = String(data.notificationType || data.type || data.action || '').toUpperCase();
+      const isCancellation =
+        notifType === 'CANCELLED' ||
+        notifType === 'TRIP_CANCELLED' ||
+        notifType === 'ORDER_CANCELLED' ||
+        notifType === 'BOOKING_CANCELLED' ||
+        notifType === 'RIDE_CANCELLED' ||
+        notifType === 'STOP_DRIVER_OFFER' ||
+        String(data.status || '').toLowerCase() === 'cancelled' ||
+        String(remoteMessage?.notification?.title || '').toLowerCase().includes('cancelled') ||
+        String(remoteMessage?.notification?.body || '').toLowerCase().includes('cancelled');
+
+      if (isCancellation) {
+        await handleCancelledNotification(data.message || remoteMessage?.notification?.body);
+      }
+    });
+
+    const unsubscribeWs = telemetrySocket.onOfferStop((event) => {
+      const eventBk = String(event.bookingId || '').replace(/^#+/, '');
+      if (!eventBk || !currentBk || eventBk === currentBk || eventBk.includes(currentBk) || currentBk.includes(eventBk)) {
+        handleCancelledNotification();
+      }
+    });
+
+    // Active trip status polling to catch cancellations from backend
+    const pollInterval = setInterval(async () => {
+      if (completed || isCancelledHandledRef.current || !currentBk) return;
+      try {
+        const details = await getOrderDetails(currentBk);
+        if (details) {
+          const status = String(details.status || '').toLowerCase();
+          if (status === 'cancelled' || status === 'trip_cancelled' || status === 'order_cancelled') {
+            await handleCancelledNotification('The customer has cancelled this booking.');
+          }
+        }
+      } catch {}
+    }, 6000);
+
+    return () => {
+      if (unsubscribeFcm) unsubscribeFcm();
+      unsubscribeWs();
+      clearInterval(pollInterval);
+    };
+  }, [completed, navigation, route.params?.order, activeOrder?.id, activeOrder?.bookingId]);
+
+  /**
+   * Standalone, pure helper to reliably determine if an order is for Passenger Ride or Goods Delivery.
+   * Solves BUG-03 (stale closure re-evaluation) and BUG-04 (Passenger Auto vehicle in Goods delivery).
+   */
+  const checkIsPassengerOrder = (order: any): boolean => {
+    if (!order) return false;
+
+    // 1. Check all possible service type / category fields
+    const svcType = String(
+      order?.serviceType ||
+      order?.service_type ||
+      order?.serviceCategory ||
+      order?.service_category ||
+      order?.service ||
+      order?.category ||
+      ''
+    ).toUpperCase().trim();
+
+    // Explicit Goods / Logistics / Cargo / Courier signals -> STRICTLY GOODS (never passenger)
+    if (
+      svcType.includes('OUR_SERVICES') ||
+      svcType.includes('GOODS') ||
+      svcType.includes('LOGISTICS') ||
+      svcType.includes('CARGO') ||
+      svcType.includes('COURIER') ||
+      svcType.includes('TRUCK') ||
+      svcType.includes('PARCEL')
+    ) {
+      return false;
+    }
+
+    // Explicit goods/package metadata -> STRICTLY GOODS
+    if (
+      order?.goodsType ||
+      order?.goods_type ||
+      order?.packageType ||
+      order?.package_type ||
+      order?.goodsCategory ||
+      order?.packageWeight ||
+      order?.receiverName ||
+      order?.receiverPhone ||
+      order?.receiver_name ||
+      order?.receiver_phone
+    ) {
+      return false;
+    }
+
+    // Explicit passenger signals in serviceType/Category
+    if (
+      svcType.includes('PASSENGER') ||
+      svcType.includes('RIDE') ||
+      svcType.includes('CAB') ||
+      svcType.includes('TAXI')
+    ) {
+      return true;
+    }
+
+    // Check booking ID prefix
+    const bookingIdStr = String(order?.bookingId || order?.id || '').toUpperCase();
+    if (
+      bookingIdStr.includes('PASS') ||
+      bookingIdStr.includes('RIDE') ||
+      bookingIdStr.includes('CAB') ||
+      bookingIdStr.includes('TAXI')
+    ) {
+      return true;
+    }
+
+    // Check service name or label (Strictly service, NOT vehicle name, so "Passenger Auto" vehicle carrying goods is never misled)
+    const serviceLabel = String(order?.serviceLabel || order?.serviceName || '').toLowerCase();
+    if (
+      serviceLabel.includes('bike taxi') ||
+      serviceLabel.includes('cab') ||
+      serviceLabel.includes('passenger') ||
+      serviceLabel.includes('taxi') ||
+      serviceLabel.includes('ride')
+    ) {
+      return true;
+    }
+
+    // Dedicated passenger vehicle types (cab, bike taxi, taxi, sedan, suv)
+    const vType = String(order?.vehicleType || order?.vehicle_type || '').toLowerCase();
+    if (vType === 'cab' || vType === 'bike taxi' || vType === 'taxi' || vType === 'sedan' || vType === 'suv') {
+      return true;
+    }
+
+    return false;
+  };
+
+  // isPassenger is derived via useMemo so it recomputes whenever activeOrder changes
+  const isPassenger = useMemo(() => {
+    return checkIsPassengerOrder(activeOrder);
+  }, [activeOrder]);
 
   const STEPS = isPassenger ? PASSENGER_STEPS : GOODS_STEPS;
 
@@ -97,7 +275,76 @@ const ActiveOrderScreen = () => {
     let isMounted = true;
     const syncLiveOrder = async () => {
       try {
-        const live = await getActiveOrder();
+        // BUG-05 fix: catch network errors separately so a transient failure
+        // does NOT misfire as a customer cancellation
+        let live: any;
+        try {
+          live = await getActiveOrder();
+        } catch (networkErr) {
+          console.warn('[ActiveOrderScreen] getActiveOrder network error, skipping sync cycle:', networkErr);
+          return;
+        }
+        if (!isMounted) return;
+
+        // Fallback: If getActiveOrder() returned null (backend unassigned/cleared the active trip upon cancellation),
+        // query getOrderDetails using the current order ID to confirm whether it was cancelled!
+        const effectiveId =
+          activeOrder?.id ||
+          activeOrder?.bookingId ||
+          route.params?.order?.id ||
+          route.params?.order?.bookingId;
+
+        if (!live && effectiveId) {
+          try {
+            const details = await getOrderDetails(effectiveId);
+            if (
+              details &&
+              ['cancelled', 'driver_cancelled', 'customer_cancelled', 'failed'].includes(
+                String(details.status || '').toLowerCase()
+              )
+            ) {
+              live = details;
+            }
+          } catch (detailsErr) {
+            // Ignore if details fetch fails
+          }
+        }
+
+        const isCancelled =
+          live !== null &&
+          live !== undefined &&
+          live.status &&
+          ['cancelled', 'driver_cancelled', 'customer_cancelled', 'failed'].includes(
+            String(live.status).toLowerCase()
+          );
+
+        // If API returned nothing at all (404 / empty), skip silently — network issue
+        if (live === null || live === undefined) return;
+
+        if (isCancelled) {
+          if (!completed && !isCancelledHandledRef.current) {
+            isCancelledHandledRef.current = true;
+            await stopRingtone().catch(() => {});
+            Alert.alert(
+              'Trip Cancelled',
+              'The customer has cancelled this ride.',
+              [
+                {
+                  text: 'OK',
+                  onPress: () => {
+                    navigation.reset({
+                      index: 0,
+                      routes: [{ name: 'DriverTabs' }],
+                    });
+                  },
+                },
+              ],
+              { cancelable: false }
+            );
+          }
+          return;
+        }
+
         if (live && isMounted) {
           // If customer details missing, attempt detailed order fetch
           if (!live.customerPhone && live.id) {
@@ -123,7 +370,9 @@ const ActiveOrderScreen = () => {
 
           const s = (live.status || '').toLowerCase();
           let backendStep = 0;
-          if (isPassenger) {
+          // BUG-03 fix: recompute isPassenger directly on the fresh live order to avoid stale closure
+          const isLivePassenger = checkIsPassengerOrder(live);
+          if (isLivePassenger) {
             if (s === 'accepted' || s === 'assigned') backendStep = 0;
             else if (s === 'arrived' || s === 'arrived_pickup' || s === 'at_pickup') backendStep = 1;
             else if (s === 'transit' || s === 'in_transit' || s === 'started' || s === 'ride_started') backendStep = 2;
@@ -152,12 +401,18 @@ const ActiveOrderScreen = () => {
       }
     };
     syncLiveOrder();
-    const interval = setInterval(syncLiveOrder, 5000);
+    const interval = setInterval(() => {
+      if (completed) {
+        clearInterval(interval);
+        return;
+      }
+      syncLiveOrder();
+    }, 5000);
     return () => {
       isMounted = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [completed]);
 
   const orderId = activeOrder?.id;
   const displayOrderId = activeOrder?.bookingId || (orderId ? `#ORD-${orderId}` : '#ORD-LIVE');
@@ -188,30 +443,66 @@ const ActiveOrderScreen = () => {
     activeOrder?.mobileNumber || 
     activeOrder?.phoneNumber || 
     '';
-  const pickupAddress = activeOrder?.pickupAddress || activeOrder?.pickup || 'Pickup location';
-  const dropAddress = activeOrder?.dropAddress || activeOrder?.drop || 'Drop location';
+  const pickupAddress = formatAddressString(activeOrder?.pickupAddress || activeOrder?.pickup, 'Pickup location');
+  const dropAddress = formatAddressString(activeOrder?.dropAddress || activeOrder?.drop, 'Drop location');
   const rawAmount = typeof activeOrder?.amount === 'number' && activeOrder.amount > 0
     ? activeOrder.amount
-    : parseFloat(String(activeOrder?.amount || activeOrder?.fare || activeOrder?.price || activeOrder?.totalAmount || activeOrder?.totalFare || activeOrder?.payout || '0').replace('₹', '')) || 0;
+    : parseFloat(String(
+        activeOrder?.amount ||
+        activeOrder?.fare ||
+        activeOrder?.offeredFare ||
+        activeOrder?.estimatedFare ||
+        activeOrder?.finalAmount ||
+        activeOrder?.netAmount ||
+        activeOrder?.price ||
+        activeOrder?.totalAmount ||
+        activeOrder?.totalFare ||
+        activeOrder?.payout ||
+        '0'
+      ).replace(/[^\d.]/g, '')) || 0;
   const fare = rawAmount;
 
   // Use coordinates from backend order data; fall back to a generic centre only if truly absent
+  const parsedPickup = resolveCoordinates(
+    activeOrder?.pickupLat ?? activeOrder?.pickup_lat ?? activeOrder?.pickupLatitude,
+    activeOrder?.pickupLng ?? activeOrder?.pickup_lng ?? activeOrder?.pickupLongitude ?? activeOrder?.pickupLon,
+    activeOrder?.pickup
+  );
+  const parsedDrop = resolveCoordinates(
+    activeOrder?.dropLat ?? activeOrder?.drop_lat ?? activeOrder?.dropLatitude,
+    activeOrder?.dropLng ?? activeOrder?.drop_lng ?? activeOrder?.dropLongitude ?? activeOrder?.dropLon,
+    activeOrder?.drop
+  );
+
   const PICKUP_COORD = {
-    latitude: parseFloat(activeOrder?.pickupLat || activeOrder?.pickup_lat || '0') || 17.385044,
-    longitude: parseFloat(activeOrder?.pickupLng || activeOrder?.pickup_lng || activeOrder?.pickupLon || '0') || 78.486671,
+    latitude: parsedPickup.lat || 17.385044,
+    longitude: parsedPickup.lng || 78.486671,
   };
   const DROP_COORD = {
-    latitude: parseFloat(activeOrder?.dropLat || activeOrder?.drop_lat || '0') || 17.405044,
-    longitude: parseFloat(activeOrder?.dropLng || activeOrder?.drop_lng || activeOrder?.dropLon || '0') || 78.506671,
+    latitude: parsedDrop.lat || 17.405044,
+    longitude: parsedDrop.lng || 78.506671,
   };
 
+  const isPickupCompleted = useMemo(() => {
+    const s = String(activeOrder?.status || '').toLowerCase();
+    if (['arrived', 'at_pickup', 'picked_up', 'in_transit', 'transit', 'started', 'in_progress', 'delivered', 'completed'].includes(s)) {
+      return true;
+    }
+    return currentStep >= 1;
+  }, [activeOrder?.status, currentStep]);
+
   const handleMapPress = () => {
-    const targetAddr = currentStep < 2 ? pickupAddress : dropAddress;
-    const navUrl = `google.navigation:q=${encodeURIComponent(targetAddr)}`;
-    const webUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(targetAddr)}`;
-    Linking.openURL(navUrl).catch(() => {
-      Linking.openURL(webUrl).catch(() => {});
-    });
+    if (!isPickupCompleted) {
+      launchTurnByTurnNavigation(
+        { lat: parsedPickup.lat || PICKUP_COORD.latitude, lng: parsedPickup.lng || PICKUP_COORD.longitude },
+        pickupAddress
+      );
+    } else {
+      launchTurnByTurnNavigation(
+        { lat: parsedDrop.lat || DROP_COORD.latitude, lng: parsedDrop.lng || DROP_COORD.longitude },
+        dropAddress
+      );
+    }
   };
 
   // Map step index to backend status values (Step 3 is null so it strictly opens OTP modal)
@@ -226,7 +517,7 @@ const ActiveOrderScreen = () => {
   const [showPaymentQrModal, setShowPaymentQrModal] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'online' | null>(null);
   const [collectedAmount, setCollectedAmount] = useState('');
-  const [commRate, setCommRate] = useState(5);
+  const [commRate, setCommRate] = useState(0);
   const [paymentVerifying, setPaymentVerifying] = useState(false);
   const [paymentSuccessAnim, setPaymentSuccessAnim] = useState(false);
   const [isPaymentVerifiedByServer, setIsPaymentVerifiedByServer] = useState(false);
@@ -250,8 +541,8 @@ const ActiveOrderScreen = () => {
     const fetchCommissionAndState = async () => {
       try {
         const wal = await getDriverWallet().catch(() => null);
-        if (wal && wal.wallet && wal.wallet.commissionPercentage && isMounted) {
-          setCommRate(wal.wallet.commissionPercentage);
+        if (isMounted) {
+          setCommRate(0);
         }
       } catch (e) {}
 
@@ -348,15 +639,15 @@ const ActiveOrderScreen = () => {
             }).catch(() => {});
           }
 
-          const grossFare = typeof fare === 'number' ? fare : parseFloat(String(fare || 0)) || 100;
-          const commission = Math.round(grossFare * (commRate / 100));
-          const netEarning = grossFare - commission;
+          const grossFare = typeof fare === 'number' && fare > 0 ? fare : (parseFloat(String(fare || 0)) || 100);
+          const commission = 0;
+          const netEarning = grossFare;
           const paymentId = `PAY_${displayOrderId}_${Date.now().toString().slice(-6)}`;
 
           setPaymentDetails({
             grossFare,
-            commission,
-            netEarning,
+            commission: 0,
+            netEarning: grossFare,
             paymentId,
           });
           setPaymentMethod(null);
@@ -387,7 +678,23 @@ const ActiveOrderScreen = () => {
 
           console.log('[CARGO] Transition successful to step:', nextStep + 1);
         } else {
-          // Final step (Delivered swipe) strictly opens Customer Delivery OTP modal
+          // BUG-11 fix: Final step (Delivered swipe) MUST notify backend driver has arrived at drop-point
+          // BEFORE opening the OTP modal so DB transitions: in_transit → arrived → OTP_VERIFIED → completed
+          const targetOrderId = orderId || activeOrder?.bookingId || activeOrder?.id || activeOrder?._id || activeOrder?.orderId || displayOrderId;
+          if (targetOrderId) {
+            const cleanTargetId = String(targetOrderId).replace(/^#+/, '').trim();
+            try {
+              console.log('[CARGO] Sending arrived status to backend before OTP verification for order:', cleanTargetId);
+              await updateOrderStatus(cleanTargetId, 'arrived', undefined, {
+                bookingId: displayOrderId,
+                driverName: driverName || 'Driver',
+                status: 'ARRIVED_DROP',
+              });
+              console.log('[CARGO] Successfully recorded arrived status with backend');
+            } catch (err) {
+              console.warn('[CARGO] Warning: arrived status ping non-fatal error:', err);
+            }
+          }
           setShowOtpModal(true);
         }
       }
@@ -513,7 +820,8 @@ const ActiveOrderScreen = () => {
 
     try {
       // Step 1: Validate Delivery OTP with backend ONLY (without marking order as completed or delivered)
-      const res = await verifyDeliveryOtpOnly(orderId || displayOrderId, enteredOtp);
+      const effectiveId = activeOrder?.id || activeOrder?.bookingId || activeOrder?._id || orderId || displayOrderId;
+      const res = await verifyDeliveryOtpOnly(effectiveId, enteredOtp);
       if (!res || !res.success) {
         setVerifyingOtp(false);
         completionTriggered.current = false;
@@ -528,15 +836,15 @@ const ActiveOrderScreen = () => {
 
       console.log('[DELIVERY] OTP Verified! Moving to PAYMENT_CONFIRMATION_PENDING. Order is NOT marked as delivered yet.');
 
-      const grossFare = typeof fare === 'number' ? fare : parseFloat(String(fare || 0)) || 500;
-      const commission = Math.round(grossFare * (commRate / 100)); // platform commission
-      const netEarning = grossFare - commission; // Driver net earnings
+      const grossFare = typeof fare === 'number' && fare > 0 ? fare : (parseFloat(String(fare || 0)) || 500);
+      const commission = 0; // zero commission
+      const netEarning = grossFare; // 100% to driver
       const paymentId = `PAY_${displayOrderId}_${Date.now().toString().slice(-6)}`;
 
       setPaymentDetails({
         grossFare,
-        commission,
-        netEarning,
+        commission: 0,
+        netEarning: grossFare,
         paymentId,
       });
 
@@ -675,14 +983,12 @@ const ActiveOrderScreen = () => {
       setCompletionState('success');
       setCompleted(true);
 
-      const gross = res.earnings?.grossFare || (res as any)?.fare?.grossAmount || paymentDetails?.grossFare || fare;
-      const comm = res.earnings?.platformCommission || (res as any)?.fare?.commission || paymentDetails?.commission || Math.round(gross * (commRate / 100));
-      const net = res.earnings?.driverNetEarning || (res as any)?.fare?.driverNet || paymentDetails?.netEarning || (gross - comm);
-      const driverPct = Math.max(0, 100 - commRate);
+      const gross = paymentDetails?.grossFare || (typeof fare === 'number' && fare > 0 ? fare : parseFloat(String(fare || 0))) || res.earnings?.grossFare || (res as any)?.fare?.grossAmount || 0;
+      const completionMessage = `Total Fare: ₹${gross}\nYour Earnings: ₹${gross}`;
 
       Alert.alert(
         isPassenger ? 'Ride Completed 🎉' : 'Delivery Completed 🎉',
-        `Ride Fare: ₹${gross}\nAdmin Commission (${commRate}%): -₹${comm}\nYour Net Earnings (${driverPct}%): ₹${net}`,
+        completionMessage,
         [
           { 
             text: 'Return to Dashboard', 
@@ -800,19 +1106,19 @@ const ActiveOrderScreen = () => {
 
           {/* Uber/Rapido Map Pins */}
           {/* Pickup Pin */}
-          <View style={{ position: 'absolute', top: 120, left: 45, alignItems: 'center' }} pointerEvents="none">
-            <View style={{ backgroundColor: '#10B981', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10, marginBottom: 2 }}>
-              <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>PICKUP</Text>
+          <View style={{ position: 'absolute', top: 120, left: 45, alignItems: 'center', opacity: isPickupCompleted ? 0.4 : 1 }} pointerEvents="none">
+            <View style={{ backgroundColor: isPickupCompleted ? '#64748B' : '#10B981', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10, marginBottom: 2 }}>
+              <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>{isPickupCompleted ? '✓ PICKED UP' : 'PICKUP'}</Text>
             </View>
-            <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: '#10B981', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#FFF' }}>
-              <Text style={{ color: '#FFF', fontWeight: '900', fontSize: 13 }}>P</Text>
+            <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: isPickupCompleted ? '#64748B' : '#10B981', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#FFF' }}>
+              <Text style={{ color: '#FFF', fontWeight: '900', fontSize: 13 }}>{isPickupCompleted ? '✓' : 'P'}</Text>
             </View>
           </View>
 
           {/* Drop Pin */}
-          <View style={{ position: 'absolute', top: 45, left: 270, alignItems: 'center' }} pointerEvents="none">
+          <View style={{ position: 'absolute', top: 45, left: 270, alignItems: 'center', transform: [{ scale: isPickupCompleted ? 1.15 : 1 }] }} pointerEvents="none">
             <View style={{ backgroundColor: '#EF4444', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10, marginBottom: 2 }}>
-              <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>DROP</Text>
+              <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>{isPickupCompleted ? '★ ACTIVE DROP' : 'DROP'}</Text>
             </View>
             <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: '#EF4444', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#FFF' }}>
               <Text style={{ color: '#FFF', fontWeight: '900', fontSize: 13 }}>D</Text>
@@ -828,9 +1134,11 @@ const ActiveOrderScreen = () => {
 
           {/* Live Navigation ETA Badge */}
           <View style={styles.mapOverlayInfo}>
-            <TouchableOpacity style={[styles.etaBadge, { backgroundColor: '#0052FF' }]} onPress={handleMapPress}>
+            <TouchableOpacity style={[styles.etaBadge, { backgroundColor: isPickupCompleted ? '#0052FF' : '#10B981' }]} onPress={handleMapPress}>
               <Ionicons name="navigate" size={14} color="#FFFFFF" />
-              <Text style={[styles.etaText, { color: '#FFFFFF' }]}>Start Navigation • ETA: 12 min</Text>
+              <Text style={[styles.etaText, { color: '#FFFFFF' }]}>
+                {isPickupCompleted ? 'Navigate to Drop • ETA: 12 min' : 'Navigate to Pickup • ETA: 8 min'}
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -869,50 +1177,115 @@ const ActiveOrderScreen = () => {
         </View>
 
         {/* Route Details */}
-        <View style={[styles.routeCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <View style={styles.routePoint}>
-            <View style={[styles.routeMarker, { backgroundColor: colors.success }]}>
-              <Ionicons name="location" size={12} color="#FFFFFF" />
-            </View>
-            <View style={styles.routeInfo}>
-              <Text style={[styles.routeTypeLabel, { color: colors.textSecondary }]}>PICKUP</Text>
-              <Text style={[styles.routeAddress, { color: colors.text }]}>{pickupAddress}</Text>
-            </View>
-            <TouchableOpacity 
-              style={[styles.navBtn, { backgroundColor: theme === 'dark' ? 'rgba(0,82,255,0.2)' : 'rgba(0,82,255,0.08)' }]}
-              onPress={() => {
-                const navUrl = `google.navigation:q=${encodeURIComponent(pickupAddress)}`;
-                const webUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(pickupAddress)}`;
-                Linking.openURL(navUrl).catch(() => {
-                  Linking.openURL(webUrl).catch(() => {});
-                });
-              }}
-            >
-              <Ionicons name="navigate-outline" size={16} color={colors.primary} />
-            </TouchableOpacity>
-          </View>
-          <View style={[styles.routeLine, { backgroundColor: colors.border }]} />
-          <View style={styles.routePoint}>
-            <View style={[styles.routeMarker, { backgroundColor: colors.error }]}>
-              <Ionicons name="flag" size={12} color="#FFFFFF" />
-            </View>
-            <View style={styles.routeInfo}>
-              <Text style={[styles.routeTypeLabel, { color: colors.textSecondary }]}>DROP</Text>
-              <Text style={[styles.routeAddress, { color: colors.text }]}>{dropAddress}</Text>
-            </View>
-            <TouchableOpacity 
-              style={[styles.navBtn, { backgroundColor: theme === 'dark' ? 'rgba(0,82,255,0.2)' : 'rgba(0,82,255,0.08)' }]}
-              onPress={() => {
-                const navUrl = `google.navigation:q=${encodeURIComponent(dropAddress)}`;
-                const webUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(dropAddress)}`;
-                Linking.openURL(navUrl).catch(() => {
-                  Linking.openURL(webUrl).catch(() => {});
-                });
-              }}
-            >
-              <Ionicons name="navigate-outline" size={16} color={colors.primary} />
-            </TouchableOpacity>
-          </View>
+        <View style={[
+          styles.routeCard, 
+          { 
+            backgroundColor: colors.card, 
+            borderColor: isPickupCompleted ? (theme === 'dark' ? 'rgba(0,82,255,0.5)' : '#93C5FD') : colors.border,
+            borderWidth: isPickupCompleted ? 1.5 : 1,
+          }
+        ]}>
+          {isPickupCompleted ? (
+            /* Option 1: Pickup is completed -> Collapsed & Disabled, Drop is Dominant Active Destination */
+            <>
+              {/* Collapsed Pickup (Disabled) */}
+              <View style={[
+                styles.pickupDoneRow, 
+                { 
+                  backgroundColor: theme === 'dark' ? 'rgba(16,185,129,0.08)' : 'rgba(16,185,129,0.05)',
+                  borderColor: theme === 'dark' ? 'rgba(16,185,129,0.25)' : 'rgba(16,185,129,0.18)',
+                }
+              ]}>
+                <View style={[styles.miniCheckCircle, { backgroundColor: colors.success }]}>
+                  <Ionicons name="checkmark" size={12} color="#FFFFFF" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.pickupDoneBadgeText, { color: colors.success }]}>✓ PICKUP COMPLETED</Text>
+                  <Text style={[styles.pickupCollapsedAddress, { color: colors.textSecondary }]} numberOfLines={1}>
+                    {pickupAddress}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Dominant Active Drop Destination */}
+              <View style={styles.activeDropContainer}>
+                <View style={styles.routePoint}>
+                  <View style={[styles.routeMarker, { backgroundColor: colors.error, width: 34, height: 34, borderRadius: 10 }]}>
+                    <Ionicons name="flag" size={16} color="#FFFFFF" />
+                  </View>
+                  <View style={styles.routeInfo}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={[styles.routeTypeLabel, { color: colors.error, fontWeight: '800' }]}>CURRENT DESTINATION • DROP</Text>
+                      <View style={[styles.livePulseDot, { backgroundColor: colors.error }]} />
+                    </View>
+                    <Text style={[styles.routeAddress, { color: colors.text, fontSize: 15, fontWeight: '700', marginTop: 2 }]}>
+                      {dropAddress}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Direct High-Visibility Navigation CTA to Drop */}
+                <TouchableOpacity 
+                  style={[styles.bigNavBtn, { backgroundColor: colors.primary }]}
+                  onPress={() => {
+                    launchTurnByTurnNavigation(
+                      { lat: parsedDrop.lat || DROP_COORD.latitude, lng: parsedDrop.lng || DROP_COORD.longitude },
+                      dropAddress
+                    );
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="navigate" size={16} color="#FFFFFF" />
+                  <Text style={styles.bigNavBtnText}>Start Navigation to Drop</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          ) : (
+            /* Pickup In Progress: Both shown, Pickup highlighted as Active */
+            <>
+              <View style={styles.routePoint}>
+                <View style={[styles.routeMarker, { backgroundColor: colors.success }]}>
+                  <Ionicons name="location" size={14} color="#FFFFFF" />
+                </View>
+                <View style={styles.routeInfo}>
+                  <Text style={[styles.routeTypeLabel, { color: colors.success, fontWeight: '800' }]}>CURRENT TARGET • PICKUP</Text>
+                  <Text style={[styles.routeAddress, { color: colors.text, fontWeight: '600' }]}>{pickupAddress}</Text>
+                </View>
+                <TouchableOpacity 
+                  style={[styles.navBtn, { backgroundColor: theme === 'dark' ? 'rgba(0,82,255,0.25)' : 'rgba(0,82,255,0.1)' }]}
+                  onPress={() => {
+                    launchTurnByTurnNavigation(
+                      { lat: parsedPickup.lat || PICKUP_COORD.latitude, lng: parsedPickup.lng || PICKUP_COORD.longitude },
+                      pickupAddress
+                    );
+                  }}
+                >
+                  <Ionicons name="navigate" size={16} color={colors.primary} />
+                </TouchableOpacity>
+              </View>
+              <View style={[styles.routeLine, { backgroundColor: colors.border }]} />
+              <View style={[styles.routePoint, { opacity: 0.8 }]}>
+                <View style={[styles.routeMarker, { backgroundColor: colors.error }]}>
+                  <Ionicons name="flag" size={12} color="#FFFFFF" />
+                </View>
+                <View style={styles.routeInfo}>
+                  <Text style={[styles.routeTypeLabel, { color: colors.textSecondary }]}>NEXT STOP • DROP</Text>
+                  <Text style={[styles.routeAddress, { color: colors.textSecondary }]}>{dropAddress}</Text>
+                </View>
+                <TouchableOpacity 
+                  style={[styles.navBtn, { backgroundColor: theme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }]}
+                  onPress={() => {
+                    launchTurnByTurnNavigation(
+                      { lat: parsedDrop.lat || DROP_COORD.latitude, lng: parsedDrop.lng || DROP_COORD.longitude },
+                      dropAddress
+                    );
+                  }}
+                >
+                  <Ionicons name="navigate-outline" size={16} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
         </View>
 
         {/* Delivery / Ride Progress Steps */}
@@ -1158,17 +1531,13 @@ const ActiveOrderScreen = () => {
             {/* Financial Ledger Breakdown */}
             <View style={[styles.ledgerCard, { backgroundColor: colors.surface, borderColor: colors.border, width: '100%', marginBottom: 16 }]}>
               <View style={styles.ledgerRow}>
-                <Text style={[styles.ledgerLabel, { color: colors.textSecondary }]}>Gross Trip Fare</Text>
-                <Text style={[styles.ledgerVal, { color: colors.text }]}>₹{Number(paymentDetails?.grossFare ?? fare ?? 0).toFixed(2)}</Text>
-              </View>
-              <View style={styles.ledgerRow}>
-                <Text style={[styles.ledgerLabel, { color: colors.textSecondary }]}>Platform Commission ({commRate}%)</Text>
-                <Text style={[styles.ledgerVal, { color: '#EF4444' }]}>-₹{Number(paymentDetails?.commission ?? Math.round(Number(paymentDetails?.grossFare ?? fare ?? 0) * (commRate / 100))).toFixed(2)}</Text>
+                <Text style={[styles.ledgerLabel, { color: colors.textSecondary }]}>Total Ride Fare</Text>
+                <Text style={[styles.ledgerVal, { color: colors.text, fontWeight: '700' }]}>₹{Number(paymentDetails?.grossFare ?? fare ?? 0).toFixed(2)}</Text>
               </View>
               <View style={[styles.ledgerDivider, { backgroundColor: colors.border }]} />
               <View style={styles.ledgerRow}>
-                <Text style={[styles.ledgerNetLabel, { color: colors.text }]}>Your Net Earnings</Text>
-                <Text style={styles.ledgerNetVal}>₹{Number(paymentDetails?.netEarning ?? (Number(paymentDetails?.grossFare ?? fare ?? 0) - Math.round(Number(paymentDetails?.grossFare ?? fare ?? 0) * (commRate / 100)))).toFixed(2)}</Text>
+                <Text style={[styles.ledgerNetLabel, { color: colors.text }]}>Your Total Earnings</Text>
+                <Text style={styles.ledgerNetVal}>₹{Number(paymentDetails?.grossFare ?? fare ?? 0).toFixed(2)}</Text>
               </View>
             </View>
 
@@ -1499,6 +1868,60 @@ const styles = StyleSheet.create({
   routeLine: {
     height: 1,
     marginLeft: 42,
+  },
+  pickupDoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  miniCheckCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickupDoneBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  pickupCollapsedAddress: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 1,
+  },
+  activeDropContainer: {
+    marginTop: 2,
+    gap: 10,
+  },
+  livePulseDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
+  bigNavBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    marginTop: 4,
+    elevation: 2,
+    shadowColor: '#0052FF',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+  },
+  bigNavBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
   stepsCard: {
     borderRadius: 16,

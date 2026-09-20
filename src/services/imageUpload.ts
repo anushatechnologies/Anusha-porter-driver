@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { authFetch } from './api';
+import { cleanUrl } from '../utils/urlHelpers';
 
 /**
  * Upload a local image URI to the backend and return the persistent server URL.
@@ -13,8 +14,6 @@ import { authFetch } from './api';
  * or null if upload fails.
  */
 const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'https://api.anushaporter.com';
-
-import { cleanUrl } from '../utils/urlHelpers';
 
 export const uploadImageToBackend = async (
   localUri: string,
@@ -39,25 +38,32 @@ export const uploadImageToBackend = async (
       // On native, use the file URI directly
       const filename = localUri.split('/').pop() || 'upload.jpg';
       const match = /\.(\w+)$/.exec(filename);
-      const type = match ? `image/${match[1]}` : 'image/jpeg';
+      // Normalise extension: lowercase and map 'jpg' → 'jpeg' for a valid MIME type
+      const rawExt = (match?.[1] || 'jpeg').toLowerCase();
+      const ext = rawExt === 'jpg' ? 'jpeg' : rawExt;
+      const type = `image/${ext}`;
       body = new FormData();
       body.append('file', { uri: localUri, name: filename, type } as any);
       body.append('category', category);
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
-    const res = await authFetch(backendUrl, { method: 'POST', body, signal: controller.signal });
-    clearTimeout(timeoutId);
-    if (!res.ok) {
-      console.warn('Image upload failed:', await res.text());
-      return null;
+    const uploadRoutes = [`${BASE_URL}/api/upload`, `${BASE_URL}/api/upload/image`];
+    for (const backendUrl of uploadRoutes) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
+        const res = await authFetch(backendUrl, { method: 'POST', body, signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          let url = data.url || data.fileUrl || data.path || data.imageUrl || data.s3Url || '';
+          if (url) return cleanUrl(url);
+        }
+      } catch (err) {
+        // try next endpoint
+      }
     }
-    const data = await res.json();
-    let url = data.url || data.fileUrl || data.path || data.imageUrl || data.s3Url || '';
-    if (!url) return null;
-
-    return cleanUrl(url);
+    return null;
   } catch (e) {
     console.warn('uploadImageToBackend error:', e);
     return null;

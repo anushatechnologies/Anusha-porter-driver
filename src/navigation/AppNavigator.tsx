@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeContext';
 import { InAppUpdateModal } from '../components/InAppUpdateModal';
 import { useInAppUpdate } from '../hooks/useInAppUpdate';
+import { UPDATE_CONFIG } from '../services/UpdateService';
 import { setRouteGetter } from '../services/updateSafety';
 import { navigationRef } from './navigationRef';
 export { navigationRef };
@@ -181,19 +182,21 @@ const AppNavigator = () => {
         <Stack.Screen name="ActiveOrder" component={ActiveOrderScreen} />
         <Stack.Screen name="Notifications" component={NotificationsScreen} />
         <Stack.Screen name="OrderHistory" component={OrderHistoryScreen} />
-        <Stack.Screen name="Wallet" component={DriverDashboardScreen} />
+        <Stack.Screen name="Wallet" component={DriverWalletScreen} />
         <Stack.Screen name="Support" component={SupportScreen} />
         <Stack.Screen name="PrivacyPolicy" component={PrivacyPolicyScreen} />
       </Stack.Navigator>
 
       {/* Official Google Play in-app update popup */}
-      <InAppUpdateModal
-        visible={isModalVisible}
-        mode={modalMode}
-        allowLater={allowLater}
-        onUpdateNow={handleUpdateNow}
-        onLater={handleLater}
-      />
+      {UPDATE_CONFIG.enabled && (
+        <InAppUpdateModal
+          visible={isModalVisible}
+          mode={modalMode}
+          allowLater={allowLater}
+          onUpdateNow={handleUpdateNow}
+          onLater={handleLater}
+        />
+      )}
     </NavigationContainer>
   );
 };

@@ -15,14 +15,46 @@ let currentAlarmSession = 0;
 let failsafeTimeout: NodeJS.Timeout | null = null;
 
 export const getAlarmSound = (): Audio.Sound | null => sound;
+export const isAlarmPlaying = (): boolean => sound !== null || alarmInterval !== null || isStarting;
 
 /**
- * Start the alarm. Plays a loud square-wave siren via expo-av.
+ * Silently clean up any existing audio resources WITHOUT incrementing
+ * the session counter. Used internally by startAlarm to avoid the
+ * race condition where stopAlarm() would invalidate the new session.
+ */
+const _cleanupExistingAudio = async () => {
+  // Clear any running speech interval
+  if (alarmInterval) {
+    clearInterval(alarmInterval);
+    alarmInterval = null;
+  }
+
+  // Stop and unload any existing expo-av sound
+  if (sound) {
+    const currentSound = sound;
+    sound = null;
+    try {
+      await currentSound.stopAsync();
+    } catch {}
+    try {
+      await currentSound.unloadAsync();
+    } catch {}
+  }
+
+  // Stop any in-progress speech
+  try {
+    Speech.stop();
+  } catch {}
+};
+
+/**
+ * Start the alarm. Plays a loud alarm tone via expo-av.
  * Automatically stops after 30 seconds via failsafe timer if not stopped earlier.
  * Falls back to Speech if audio file fails.
  */
 export const startAlarm = async () => {
-  if (isStarting) return;
+  // If already playing or currently starting, do not tear down and restart
+  if (isStarting || sound !== null) return;
   isStarting = true;
   const sessionId = ++currentAlarmSession;
 
@@ -45,17 +77,17 @@ export const startAlarm = async () => {
       playThroughEarpieceAndroid: false,
     });
 
-    // Stop any existing sound/speech first
-    await stopAlarm();
+    // Clean up any existing sound/speech WITHOUT invalidating our session
+    await _cleanupExistingAudio();
 
-    // If stop was called while awaiting setAudioMode or stopAlarm, abort
+    // If stopAlarm was called externally while we were awaiting, abort
     if (sessionId !== currentAlarmSession) return;
 
-    // Load and play chime sound
+    // Load and play alarm sound
     try {
       const { sound: newSound } = await Audio.Sound.createAsync(
         require('../../assets/loud_alarm.wav'),
-        { shouldPlay: true, isLooping: true, volume: 0.5 }
+        { shouldPlay: true, isLooping: true, volume: 1.0 }
       );
 
       // CRITICAL: If stop was called while createAsync was in-flight, clean up immediately
@@ -126,6 +158,9 @@ export const stopAlarm = async () => {
 
   // Invalidate any currently starting sessions immediately
   currentAlarmSession++;
+
+  // Also reset isStarting to unblock future startAlarm calls
+  isStarting = false;
 
   try {
     if (alarmInterval) {

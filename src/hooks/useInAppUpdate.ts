@@ -53,14 +53,16 @@ export function useInAppUpdate(): UseInAppUpdateResult {
     if (getUpdateDismissedThisSession()) return;
     if (!canShowUpdateDialog(currentRouteName)) return;
 
-    // Throttle: don't check Google Play more than once every 15 minutes
+    // Throttle: don't check Google Play more than once every 10 minutes if a check has already completed
     const now = Date.now();
-    if (now - lastCheckTimeRef.current < 15 * 60 * 1000) return;
-    lastCheckTimeRef.current = now;
+    if (lastCheckTimeRef.current > 0 && now - lastCheckTimeRef.current < 10 * 60 * 1000) return;
 
     isCheckingRef.current = true;
     try {
       const info: UpdateInfo | null = await fetchUpdateInfo();
+      if (info) {
+        lastCheckTimeRef.current = now;
+      }
       if (!info || !info.updateAvailable) return;
 
       const isImmediate =
