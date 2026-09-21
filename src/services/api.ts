@@ -27,6 +27,9 @@ export interface Driver {
   vehicle?: string;
   vehicleType?: string;
   vehicle_type?: string;
+  serviceType?: string;
+  service_type?: string;
+  serviceTrack?: string;
   vehicleName?: string;
   vehicleNumber?: string;
   rcNumber?: string;
@@ -349,11 +352,11 @@ export const sanitizeDriverUrls = (driver: Driver): Driver => {
     : (rawKyc === 'rejected' ? 'rejected' : 'pending');
   const statusVal = (driver.status || dAny.onlineStatus || dAny.online_status || 'offline') as 'online' | 'offline' | 'suspended';
 
-  const resolvedVehicle = (typeof driver.vehicle === 'string' && driver.vehicle.trim()) 
-    ? driver.vehicle.trim() 
+  const resolvedVehicle = (typeof driver.vehicle === 'string' && driver.vehicle.trim())
+    ? driver.vehicle.trim()
     : (driver.vehicleType || dAny.vehicle_type || dAny.vehicleName || (driver.vehicle as any)?.name || (driver.vehicle as any)?.type || 'Vehicle');
-  const resolvedVehicleType = (typeof driver.vehicleType === 'string' && driver.vehicleType.trim()) 
-    ? driver.vehicleType.trim() 
+  const resolvedVehicleType = (typeof driver.vehicleType === 'string' && driver.vehicleType.trim())
+    ? driver.vehicleType.trim()
     : (driver.vehicle || dAny.vehicle_type || dAny.vehicleName || 'Vehicle');
   const resolvedVehicleCode = dAny.vehicle_type || dAny.type || dAny.type_code || resolvedVehicleType.toLowerCase().replace(/\s+/g, '_');
 
@@ -418,9 +421,9 @@ export const getFreshFirebaseToken = async (forceRefresh = false): Promise<strin
 const getAuthHeaders = async (customHeaders: Record<string, string> = {}) => {
   let token = await AsyncStorage.getItem('authToken');
   if (!token) {
-    token = (await AsyncStorage.getItem('adminToken')) || 
-            (await AsyncStorage.getItem('token')) || 
-            (await AsyncStorage.getItem('userToken'));
+    token = (await AsyncStorage.getItem('adminToken')) ||
+      (await AsyncStorage.getItem('token')) ||
+      (await AsyncStorage.getItem('userToken'));
   }
   if (!token) {
     const refreshed = await getFreshFirebaseToken(false);
@@ -479,7 +482,7 @@ export const verifyFirebaseOtp = async (firebaseIdToken: string, mode: 'login' |
     body.phone = digits.length > 10 ? digits.slice(-10) : digits;
     body.firebaseToken = firebaseIdToken;
   }
-  
+
   try {
     const res = await fetch(`${BASE}/api/auth/verify-otp`, {
       method: 'POST',
@@ -536,7 +539,7 @@ export const getDriverProfileByPhone = async (phone: string): Promise<Driver | n
           return sanitizeDriverUrls(data);
         }
       }
-    } catch {}
+    } catch { }
 
     // 2. Try direct targeted phone path endpoint
     try {
@@ -546,7 +549,7 @@ export const getDriverProfileByPhone = async (phone: string): Promise<Driver | n
         const dObj = data?.driver || data?.data || data;
         if (dObj && (dObj.id || dObj.phone || dObj.name)) return sanitizeDriverUrls(dObj);
       }
-    } catch {}
+    } catch { }
 
     // 3. Fallback to list search
     const listRes = await authFetch(`${BASE}/api/drivers`);
@@ -581,10 +584,10 @@ const checkIfFullyRegistered = (driverObj?: any): boolean => {
   if (!driverObj) return false;
   const name = String(driverObj.name || driverObj.fullName || '').trim();
   const hasValidName = name.length > 0 && name.toLowerCase() !== 'driver' && name.toLowerCase() !== 'null';
-  
+
   const kyc = String(driverObj.kyc || driverObj.kycStatus || '').toLowerCase();
   const isApprovedOrPending = kyc === 'verified' || kyc === 'approved' || kyc === 'pending';
-  
+
   const hasVehicle = Boolean(driverObj.vehicle || driverObj.vehicleType || driverObj.vehicleNumber || driverObj.vehicle_number);
   const hasDocs = Boolean(
     driverObj.documents ||
@@ -646,7 +649,7 @@ export const checkDriverPhone = async (rawPhone: string): Promise<PhoneCheckResu
           };
         }
       }
-    } catch {}
+    } catch { }
 
     // 2. Query live drivers database to check if phone exists
     let conclusiveServerResponse = false;
@@ -725,7 +728,7 @@ export const checkDriverPhone = async (rawPhone: string): Promise<PhoneCheckResu
               }
             }
           }
-        } catch {}
+        } catch { }
       }
 
       // Fallback to list search if direct routes did not resolve
@@ -884,10 +887,11 @@ export const updateDriverProfile = async (
       { url: `${BASE}/api/drivers/me`, method: 'PATCH' },
       { url: `${BASE}/api/driver/profile/update`, method: 'PUT' },
       { url: `${BASE}/api/driver/profile`, method: 'PUT' },
+      { url: `${BASE}/api/driver/register`, method: 'POST' },
     ];
 
-    // BUG-B05 defensive compatibility: normalize payout and vehicle fields
-    // so both camelCase and snake_case backend column mappings succeed.
+    // Defensive compatibility: normalize payout, vehicle, phone, and name fields
+    // so both camelCase, snake_case, and standard flow guide column mappings succeed.
     const normalizedPayload: any = {
       ...payload,
       ...(payload.bankAccountNumber ? {
@@ -909,11 +913,27 @@ export const updateDriverProfile = async (
         upi_id: payload.upiId,
       } : {}),
       ...(payload.vehicle ? {
+        vehicle: payload.vehicle,
         vehicleType: payload.vehicle,
         vehicle_type: payload.vehicle,
       } : {}),
+      ...(payload.vehicleType && !payload.vehicle ? {
+        vehicle: payload.vehicleType,
+        vehicleType: payload.vehicleType,
+        vehicle_type: payload.vehicleType,
+      } : {}),
+      ...(payload.name && !payload.fullName ? { fullName: payload.name } : {}),
+      ...(payload.fullName && !payload.name ? { name: payload.fullName } : {}),
+      ...(payload.phone && !payload.mobile ? { mobile: payload.phone } : {}),
+      ...(payload.mobile && !payload.phone ? { phone: payload.mobile } : {}),
       ...(payload.vehicleNumber ? {
         vehicle_number: payload.vehicleNumber,
+      } : {}),
+      ...(payload.serviceType || payload.service_type || payload.serviceTrack ? {
+        serviceType: payload.serviceType || payload.service_type || payload.serviceTrack,
+        service_type: payload.serviceType || payload.service_type || payload.serviceTrack,
+        serviceTrack: payload.serviceTrack || payload.serviceType || payload.service_type,
+        serviceCategory: payload.serviceCategory || payload.serviceType || payload.service_type,
       } : {}),
     };
 
@@ -930,14 +950,21 @@ export const updateDriverProfile = async (
           // Update local cache
           try {
             const existing = await AsyncStorage.getItem('driverProfile');
-            const merged = { ...(existing ? JSON.parse(existing) : {}), ...driver, ...payload };
+            const existingParsed = existing ? JSON.parse(existing) : {};
+            const merged = { ...existingParsed, ...driver, ...payload };
+            if (!merged.serviceType && existingParsed.serviceType) {
+              merged.serviceType = existingParsed.serviceType;
+            }
+            if (!merged.serviceTrack && existingParsed.serviceTrack) {
+              merged.serviceTrack = existingParsed.serviceTrack;
+            }
             await AsyncStorage.setItem('driverProfile', JSON.stringify(merged));
-          } catch {}
+          } catch { }
           return { success: true, driver, message: data?.message || 'Profile updated successfully' };
         }
-        if (res.status !== 404 && res.status !== 405) {
+        if (res.status === 401 || res.status === 403) {
           const errData = await res.json().catch(() => ({}));
-          return { success: false, message: errData?.message || 'Failed to update profile' };
+          return { success: false, message: errData?.message || 'Session expired. Please login again.' };
         }
       } catch (err) {
         console.warn(`[API] updateDriverProfile ${route.method} ${route.url} error:`, err);
@@ -984,7 +1011,7 @@ export const rejectDriverOffer = async (
           const data = await res.json().catch(() => ({}));
           return { success: false, bookingId: data.bookingId || cleanId, message: data.message || 'Failed to reject offer' };
         }
-      } catch {}
+      } catch { }
     }
     // Fallback: use generic respondToDriverOffer with accept=false
     return { success: true, bookingId: cleanId, message: 'Offer rejected' };
@@ -1070,7 +1097,7 @@ export const getRegistrationProgress = async (phoneOrToken?: string): Promise<{
   return { success: false, hasDraft: false };
 };
 
-/** POST /api/drivers/register — Save and Next step data progression */
+/** POST /api/driver/register (or /api/drivers/register) — Save and Next step data progression */
 export const saveRegistrationStep = async (stepPayload: any, customToken?: string) => {
   const token = customToken || (await AsyncStorage.getItem('authToken'));
   const headers: Record<string, string> = {
@@ -1081,13 +1108,27 @@ export const saveRegistrationStep = async (stepPayload: any, customToken?: strin
   const payloadToSend = {
     saveAndNext: stepPayload.submit ? undefined : (stepPayload.saveAndNext ?? true),
     ...stepPayload,
+    ...(stepPayload.vehicle ? {
+      vehicle: stepPayload.vehicle,
+      vehicleType: stepPayload.vehicle,
+      vehicle_type: stepPayload.vehicle,
+    } : {}),
+    ...(stepPayload.vehicleType && !stepPayload.vehicle ? {
+      vehicle: stepPayload.vehicleType,
+      vehicleType: stepPayload.vehicleType,
+      vehicle_type: stepPayload.vehicleType,
+    } : {}),
+    ...(stepPayload.name && !stepPayload.fullName ? { fullName: stepPayload.name } : {}),
+    ...(stepPayload.fullName && !stepPayload.name ? { name: stepPayload.fullName } : {}),
+    ...(stepPayload.phone && !stepPayload.mobile ? { mobile: stepPayload.phone } : {}),
+    ...(stepPayload.mobile && !stepPayload.phone ? { phone: stepPayload.mobile } : {}),
   };
 
   const routes = [
+    `${BASE}/api/driver/register`,
     `${BASE}/api/drivers/register`,
     `${BASE}/api/driver/register/save-and-next`,
     `${BASE}/api/drivers/register/save-and-next`,
-    `${BASE}/api/driver/register`,
   ];
   let lastRes: Response | null = null;
   for (const url of routes) {
@@ -1112,14 +1153,14 @@ export const saveRegistrationStep = async (stepPayload: any, customToken?: strin
     }
   }
   if (lastRes) return lastRes;
-  return await authFetch(`${BASE}/api/drivers/register`, {
+  return await authFetch(`${BASE}/api/driver/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payloadToSend),
   });
 };
 
-/** POST /api/drivers/register (or /api/driver/register) — create or update driver profile */
+/** POST /api/driver/register (or /api/drivers/register) — create or update driver profile */
 export const createDriverProfile = async (payload: any, customToken?: string) => {
   const token = customToken || (await AsyncStorage.getItem('authToken'));
   const headers: Record<string, string> = {
@@ -1127,13 +1168,31 @@ export const createDriverProfile = async (payload: any, customToken?: string) =>
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 
+  const normalizedPayload = {
+    ...payload,
+    ...(payload.vehicle ? {
+      vehicle: payload.vehicle,
+      vehicleType: payload.vehicle,
+      vehicle_type: payload.vehicle,
+    } : {}),
+    ...(payload.vehicleType && !payload.vehicle ? {
+      vehicle: payload.vehicleType,
+      vehicleType: payload.vehicleType,
+      vehicle_type: payload.vehicleType,
+    } : {}),
+    ...(payload.name && !payload.fullName ? { fullName: payload.name } : {}),
+    ...(payload.fullName && !payload.name ? { name: payload.fullName } : {}),
+    ...(payload.phone && !payload.mobile ? { mobile: payload.phone } : {}),
+    ...(payload.mobile && !payload.phone ? { phone: payload.mobile } : {}),
+  };
+
   const routes = [
+    `${BASE}/api/driver/register`,
+    `${BASE}/api/drivers/register`,
     `${BASE}/api/driver/registration/submit`,
     `${BASE}/api/drivers/registration/submit`,
     `${BASE}/api/driver/register/submit`,
     `${BASE}/api/driver/registration/save-and-next`,
-    `${BASE}/api/drivers/register`,
-    `${BASE}/api/driver/register`,
     `${BASE}/api/drivers`,
   ];
   let lastRes: Response | null = null;
@@ -1142,7 +1201,7 @@ export const createDriverProfile = async (payload: any, customToken?: string) =>
       const res = await fetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(payload),
+        body: JSON.stringify(normalizedPayload),
       });
 
       // If success or expected client validation / conflict (duplicate email/phone)
@@ -1164,10 +1223,10 @@ export const createDriverProfile = async (payload: any, customToken?: string) =>
     }
   }
   if (lastRes) return lastRes;
-  return await authFetch(`${BASE}/api/drivers/register`, {
+  return await authFetch(`${BASE}/api/driver/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(normalizedPayload),
   });
 };
 
@@ -1212,7 +1271,7 @@ export const updateDriverKycStatusAdmin = async (
           const data = await res.json().catch(() => ({}));
           return { success: true, kycStatus: data.kycStatus || data.kyc || status };
         }
-      } catch {}
+      } catch { }
     }
     return { success: false };
   } catch (err) {
@@ -1274,51 +1333,56 @@ export const getActiveVehicles = async (serviceType?: 'OUR_SERVICES' | 'PASSENGE
   const stAndParam = serviceType ? `&serviceType=${serviceType}` : '';
 
   // Routes aligned with Complete Frontend Integration & API Flow Guide:
-  // Goods Catalog: GET /api/admin/services, GET /api/services, GET /api/categories
-  // Passenger Catalog: GET /api/passenger/categories, GET /api/passenger/services, GET /api/admin/passenger/pricing
-  const routes = serviceType === 'PASSENGER'
-    ? [
+  // Driver App: GET /api/driver/vehicle-types (Returns active Admin vehicles)
+  // Customer App / General: GET /api/vehicle/types, GET /api/vehicle-types?status=active, GET /api/customer/services
+  const routes = [
+    // 1. Primary Driver App dedicated endpoint (Returns array of active Admin vehicles)
+    serviceType ? `${BASE}/api/driver/vehicle-types?serviceType=${serviceType}` : `${BASE}/api/driver/vehicle-types`,
+    `${BASE}/api/driver/vehicle-types`,
+    // 2. Active vehicles public/app endpoints
+    serviceType ? `${BASE}/api/vehicle/types?serviceType=${serviceType}` : `${BASE}/api/vehicle/types`,
+    `${BASE}/api/vehicle/types`,
+    serviceType ? `${BASE}/api/vehicle-types?status=active&serviceType=${serviceType}` : `${BASE}/api/vehicle-types?status=active`,
+    `${BASE}/api/vehicle-types?status=active`,
+    `${BASE}/api/customer/services`,
+    // 3. Fallback catalog routes by serviceType
+    ...(serviceType === 'PASSENGER'
+      ? [
         `${BASE}/api/admin/passenger/categories`,
         `${BASE}/api/admin/passenger/vehicles`,
-        `${BASE}/api/admin/services`,
-        `${BASE}/api/services`,
-        `${BASE}/api/passenger/categories`,
         `${BASE}/api/passenger/services`,
         `${BASE}/api/passenger/vehicles`,
         `${BASE}/api/admin/passenger/pricing`,
         `${BASE}/api/vehicles?serviceType=PASSENGER`,
         `${BASE}/api/vehicle-types?serviceType=PASSENGER`,
+        `${BASE}/api/admin/services`,
+        `${BASE}/api/services`,
         `${BASE}/api/admin/vehicle-types`,
         `${BASE}/api/admin/vehicles`,
       ]
-    : serviceType === 'OUR_SERVICES'
-    ? [
-        `${BASE}/api/admin/services`,
-        `${BASE}/api/services`,
-        `${BASE}/api/categories`,
-        `${BASE}/api/vehicle-types?serviceType=OUR_SERVICES`,
-        `${BASE}/api/vehicles?serviceType=OUR_SERVICES`,
-        `${BASE}/api/vehicle-types?status=active`,
-        `${BASE}/api/vehicle-types`,
-        `${BASE}/api/admin/vehicle-types`,
-        `${BASE}/api/admin/vehicles`,
-      ]
-    : [
-        `${BASE}/api/admin/services`,
-        `${BASE}/api/admin/passenger/categories`,
-        `${BASE}/api/admin/passenger/vehicles`,
-        `${BASE}/api/services`,
-        `${BASE}/api/passenger/categories`,
-        `${BASE}/api/passenger/services`,
-        `${BASE}/api/categories`,
-        `${BASE}/api/vehicles?status=active`,
-        `${BASE}/api/vehicle-types?status=active`,
-        `${BASE}/api/admin/vehicle-types`,
-        `${BASE}/api/admin/vehicles`,
-        `${BASE}/api/passenger/vehicles`,
-        `${BASE}/api/vehicles`,
-        `${BASE}/api/vehicle-types`,
-      ];
+      : serviceType === 'OUR_SERVICES'
+        ? [
+          `${BASE}/api/admin/services`,
+          `${BASE}/api/services`,
+          `${BASE}/api/vehicle-types?serviceType=OUR_SERVICES`,
+          `${BASE}/api/vehicles?serviceType=OUR_SERVICES`,
+          `${BASE}/api/vehicle-types`,
+          `${BASE}/api/admin/vehicle-types`,
+          `${BASE}/api/admin/vehicles`,
+        ]
+        : [
+          `${BASE}/api/admin/services`,
+          `${BASE}/api/admin/passenger/categories`,
+          `${BASE}/api/admin/passenger/vehicles`,
+          `${BASE}/api/services`,
+          `${BASE}/api/passenger/services`,
+          `${BASE}/api/vehicles`,
+          `${BASE}/api/admin/vehicle-types`,
+          `${BASE}/api/admin/vehicles`,
+          `${BASE}/api/passenger/vehicles`,
+          `${BASE}/api/vehicle-types`,
+        ]),
+  ];
 
   const headers: Record<string, string> = {
     'Accept': 'application/json',
@@ -1360,26 +1424,26 @@ export const getActiveVehicles = async (serviceType?: 'OUR_SERVICES' | 'PASSENGE
             const name = (v.displayName || v.name || v.label || v.title || v.type || v.vehicleName || 'Vehicle').trim();
             const normalizedKey = name.toLowerCase();
 
-            const rawImageUrl = 
-              v.imageUrl || 
-              v.iconUrl || 
-              v.image_url || 
-              v.image || 
-              v.photoUrl || 
-              v.vehicleImage || 
-              v.vehicle_image || 
-              v.photo || 
-              v.icon_url || 
-              v.imgUrl || 
-              v.img || 
-              v.thumbnail || 
-              v.vehicle_photo || 
-              v.vehiclePhoto || 
-              v.badge || 
-              v.mediaUrl || 
-              v.assetUrl || 
-              v.logoUrl || 
-              (typeof v.icon === 'string' && (v.icon.includes('/') || v.icon.startsWith('http') || v.icon.startsWith('data:')) ? v.icon : '') || 
+            const rawImageUrl =
+              v.imageUrl ||
+              v.iconUrl ||
+              v.image_url ||
+              v.image ||
+              v.photoUrl ||
+              v.vehicleImage ||
+              v.vehicle_image ||
+              v.photo ||
+              v.icon_url ||
+              v.imgUrl ||
+              v.img ||
+              v.thumbnail ||
+              v.vehicle_photo ||
+              v.vehiclePhoto ||
+              v.badge ||
+              v.mediaUrl ||
+              v.assetUrl ||
+              v.logoUrl ||
+              (typeof v.icon === 'string' && (v.icon.includes('/') || v.icon.startsWith('http') || v.icon.startsWith('data:')) ? v.icon : '') ||
               '';
             const imageUrl = rawImageUrl ? cleanUrl(rawImageUrl) : '';
 
@@ -1414,7 +1478,7 @@ export const getActiveVehicles = async (serviceType?: 'OUR_SERVICES' | 'PASSENGE
             const capacity = v.passengerCapacity
               ? `Passengers: Up to ${v.passengerCapacity}`
               : (v.capacity || v.capacityLabel || (capKg > 0 ? `Load: Up to ${capKg}kg` : (v.description || 'Standard Load')));
-            
+
             // Smart icon mapping based on vehicle category name / type
             let resolvedIcon = 'truck-delivery';
             const s = (name + ' ' + type + ' ' + (v.description || '')).toLowerCase();
@@ -1443,25 +1507,25 @@ export const getActiveVehicles = async (serviceType?: 'OUR_SERVICES' | 'PASSENGE
             ).toUpperCase();
 
             const isFromPassengerRoute = url.includes('/passenger');
-            const isPassengerName = 
-              s.includes('passenger') || s.includes('cab') || s.includes('car') || s.includes('taxi') || 
-              s.includes('sedan') || s.includes('suv') || s.includes('hatchback') || s.includes('luxury') || 
+            const isPassengerName =
+              s.includes('passenger') || s.includes('cab') || s.includes('car') || s.includes('taxi') ||
+              s.includes('sedan') || s.includes('suv') || s.includes('hatchback') || s.includes('luxury') ||
               s.includes('bike taxi') || s.includes('auto taxi') || s.includes('ride') ||
               (isFromPassengerRoute && (s.includes('bike') || s.includes('auto')));
 
-            const isExplicitGoods = 
+            const isExplicitGoods =
               explicitSvcType === 'OUR_SERVICES' || explicitSvcType === 'GOODS' || explicitSvcType === 'DELIVERY' ||
-              s.includes('truck') || s.includes('mini truck') || s.includes('ace') || s.includes('pickup') || 
+              s.includes('truck') || s.includes('mini truck') || s.includes('ace') || s.includes('pickup') ||
               s.includes('lorry') || s.includes('14ft') || s.includes('17ft') || s.includes('packers');
 
-            const resolvedSvcType: 'PASSENGER' | 'OUR_SERVICES' = 
+            const resolvedSvcType: 'PASSENGER' | 'OUR_SERVICES' =
               isFromPassengerRoute
                 ? 'PASSENGER'
                 : (explicitSvcType === 'PASSENGER' || explicitSvcType === 'CAB' || explicitSvcType === 'TAXI' || explicitSvcType === 'RIDE')
-                ? 'PASSENGER'
-                : (isPassengerName && !isExplicitGoods)
-                ? 'PASSENGER'
-                : 'OUR_SERVICES';
+                  ? 'PASSENGER'
+                  : (isPassengerName && !isExplicitGoods)
+                    ? 'PASSENGER'
+                    : 'OUR_SERVICES';
 
             activeList.push({
               id,
@@ -1481,6 +1545,10 @@ export const getActiveVehicles = async (serviceType?: 'OUR_SERVICES' | 'PASSENGE
               serviceType: resolvedSvcType,
             });
           }
+        }
+        if (activeList.length > 0 && (url.includes('/api/driver/vehicle-types') || url.includes('/api/vehicle/types') || url.includes('/api/vehicle-types?status=active'))) {
+          // Official Admin vehicle API responded with active vehicles - no need to poll legacy fallback endpoints
+          break;
         }
       }
     } catch (err) {
@@ -1523,7 +1591,7 @@ export const getActiveVehicles = async (serviceType?: 'OUR_SERVICES' | 'PASSENGE
         }
       }
     }
-  } catch (e) {}
+  } catch (e) { }
 
   // Smart Admin Asset Sharing:
   // If the Admin uploaded custom photos in /api/services, /api/vehicle-types, or S3,
@@ -1587,19 +1655,18 @@ export const getActiveVehicles = async (serviceType?: 'OUR_SERVICES' | 'PASSENGE
           if (vSvc === 'OUR_SERVICES' || vSvc === 'GOODS' || vSvc === 'DELIVERY') return false;
         }
         const s = (v.name + ' ' + v.type + ' ' + (v.description || '')).toLowerCase();
-        const isPass = 
-          s.includes('passenger') || s.includes('cab') || s.includes('taxi') || 
-          s.includes('sedan') || s.includes('suv') || s.includes('bike taxi') || 
-          s.includes('auto taxi') || s.includes('hatchback') || s.includes('luxury') || 
-          s.includes('bike') || s.includes('auto');
+        const isPass =
+          s.includes('passenger') || s.includes('cab') || s.includes('taxi') ||
+          s.includes('sedan') || s.includes('suv') || s.includes('bike taxi') ||
+          s.includes('auto taxi') || s.includes('hatchback') || s.includes('luxury');
         return targetType === 'PASSENGER' ? Boolean(isPass) : !isPass;
       });
-      return res.length > 0 ? res : list;
+      return res;
     };
     return { success: true, vehicles: filterByServiceType(activeList, serviceType) };
   }
 
-  return { success: false, vehicles: [], message: 'No active vehicle categories configured in Admin panel.' };
+  return { success: false, vehicles: [], message: 'No vehicles currently available in this area.' };
 };
 
 /**
@@ -1690,7 +1757,7 @@ export const setDriverOnlineStatus = async (
           await AsyncStorage.setItem('@driver_is_online', status === 'online' ? 'true' : 'false');
           return { success: true, status, ...resData } as any;
         }
-      } catch {}
+      } catch { }
     }
 
     // 3. Option C: Phone-based endpoint
@@ -1707,7 +1774,7 @@ export const setDriverOnlineStatus = async (
           await AsyncStorage.setItem('@driver_is_online', status === 'online' ? 'true' : 'false');
           return { success: true, status, ...resData } as any;
         }
-      } catch {}
+      } catch { }
     }
 
     // 4. Option D: Email-based endpoint
@@ -1723,7 +1790,7 @@ export const setDriverOnlineStatus = async (
           await AsyncStorage.setItem('@driver_is_online', status === 'online' ? 'true' : 'false');
           return { success: true, status, ...resData } as any;
         }
-      } catch {}
+      } catch { }
     }
 
     // 5. Option E: ID-based endpoint
@@ -1739,7 +1806,7 @@ export const setDriverOnlineStatus = async (
           await AsyncStorage.setItem('@driver_is_online', status === 'online' ? 'true' : 'false');
           return { success: true, status, ...resData } as any;
         }
-      } catch {}
+      } catch { }
     }
 
     // Always persist online state locally and allow smooth operation even during momentary network jitter
@@ -1779,7 +1846,7 @@ export const registerDeviceToken = async (fcmToken: string): Promise<boolean> =>
           body: JSON.stringify(payload),
         });
         if (res.ok) return true;
-      } catch {}
+      } catch { }
     }
     return false;
   } catch {
@@ -1814,7 +1881,7 @@ export const updateDriverLocation = async (
         body: JSON.stringify(payload),
       });
       if (res && res.ok) return true;
-    } catch {}
+    } catch { }
   }
   return false;
 };
@@ -1835,7 +1902,7 @@ export const getActiveOrder = async (): Promise<any | null> => {
       if (!data) continue;
       if (data.hasActiveOrder === false) return null;
       if (!data.order && !data.data && data.success === false) continue;
-      
+
       const o = data.order || data.data || (data.bookingId || data.id || data.orderId || data.hasActiveOrder ? data : null);
       if (!o) continue;
 
@@ -1863,9 +1930,9 @@ export const getActiveOrder = async (): Promise<any | null> => {
             return null;
           }
         }
-      } catch (e) {}
+      } catch (e) { }
 
-      const resolvedName = 
+      const resolvedName =
         o.customerName ||
         o.customer_name ||
         o.senderName ||
@@ -1878,7 +1945,7 @@ export const getActiveOrder = async (): Promise<any | null> => {
         (typeof o.customer === 'string' ? o.customer : '') ||
         'Customer';
 
-      const resolvedPhone = 
+      const resolvedPhone =
         o.customerPhone ||
         o.customer_phone ||
         o.senderPhone ||
@@ -1894,8 +1961,8 @@ export const getActiveOrder = async (): Promise<any | null> => {
         o.phoneNumber ||
         '';
 
-      const rawAmt = typeof o.amount === 'number' 
-        ? o.amount 
+      const rawAmt = typeof o.amount === 'number'
+        ? o.amount
         : parseFloat(String(o.amount || o.fare || o.price || o.totalAmount || o.totalFare || o.payout || '0').replace('₹', '')) || 0;
 
       return {
@@ -1952,62 +2019,62 @@ export const getOrderDetails = async (orderId: string | number): Promise<any | n
       const o = data.order || data.booking || data.data || data;
       if (!o || (!o.id && !o.bookingId && !o.status)) continue;
 
-    const resolvedName = 
-      o.customerName ||
-      o.customer_name ||
-      o.senderName ||
-      o.contactName ||
-      o.receiverName ||
-      o.userName ||
-      o.customer?.name ||
-      o.user?.name ||
-      o.pickupName ||
-      'Customer';
+      const resolvedName =
+        o.customerName ||
+        o.customer_name ||
+        o.senderName ||
+        o.contactName ||
+        o.receiverName ||
+        o.userName ||
+        o.customer?.name ||
+        o.user?.name ||
+        o.pickupName ||
+        'Customer';
 
-    const resolvedPhone = 
-      o.customerPhone ||
-      o.customer_phone ||
-      o.senderPhone ||
-      o.contactPhone ||
-      o.receiverPhone ||
-      o.userPhone ||
-      o.customer?.phone ||
-      o.user?.phone ||
-      o.phone ||
-      o.mobile ||
-      o.pickupPhone ||
-      o.mobileNumber ||
-      o.phoneNumber ||
-      '';
+      const resolvedPhone =
+        o.customerPhone ||
+        o.customer_phone ||
+        o.senderPhone ||
+        o.contactPhone ||
+        o.receiverPhone ||
+        o.userPhone ||
+        o.customer?.phone ||
+        o.user?.phone ||
+        o.phone ||
+        o.mobile ||
+        o.pickupPhone ||
+        o.mobileNumber ||
+        o.phoneNumber ||
+        '';
 
-    const rawAmt = typeof o.amount === 'number' 
-      ? o.amount 
-      : parseFloat(String(o.amount || o.fare || o.price || o.totalAmount || o.totalFare || o.payout || '0').replace('₹', '')) || 0;
+      const rawAmt = typeof o.amount === 'number'
+        ? o.amount
+        : parseFloat(String(o.amount || o.fare || o.price || o.totalAmount || o.totalFare || o.payout || '0').replace('₹', '')) || 0;
 
-    return {
-      id: o.id || o.bookingId || orderId,
-      bookingId: o.bookingId || `BK_${orderId}`,
-      status: o.status,
-      customerName: resolvedName,
-      customerPhone: resolvedPhone,
-      pickupAddress: formatAddressString(o.pickupAddress || o.pickup, 'Pickup Location'),
-      dropAddress: formatAddressString(o.dropAddress || o.drop, 'Drop Location'),
-      amount: rawAmt,
-      deliveryOtp: o.deliveryOtp || o.otp,
-      distance: o.distance !== undefined ? String(o.distance) : (o.distanceKm !== undefined ? String(o.distanceKm) : (o.tripDistance || o.totalDistance || o.dist)),
-      distanceKm: o.distanceKm !== undefined ? Number(o.distanceKm) : (o.distance !== undefined ? (parseFloat(String(o.distance)) || undefined) : undefined),
-      pickupLat: o.pickupLat !== undefined ? Number(o.pickupLat) : (o.pickupLatitude || o.pickup_lat),
-      pickupLng: o.pickupLng !== undefined ? Number(o.pickupLng) : (o.pickupLongitude || o.pickup_lng),
-      dropLat: o.dropLat !== undefined ? Number(o.dropLat) : (o.dropLatitude || o.drop_lat),
-      dropLng: o.dropLng !== undefined ? Number(o.dropLng) : (o.dropLongitude || o.drop_lng),
-      canCancel: o.canCancel,
-      cancellationBlockedReason: o.cancellationBlockedReason,
-    };
-  } catch {
-    // try next route
+      return {
+        id: o.id || o.bookingId || orderId,
+        bookingId: o.bookingId || `BK_${orderId}`,
+        status: o.status,
+        customerName: resolvedName,
+        customerPhone: resolvedPhone,
+        pickupAddress: formatAddressString(o.pickupAddress || o.pickup, 'Pickup Location'),
+        dropAddress: formatAddressString(o.dropAddress || o.drop, 'Drop Location'),
+        amount: rawAmt,
+        deliveryOtp: o.deliveryOtp || o.otp,
+        distance: o.distance !== undefined ? String(o.distance) : (o.distanceKm !== undefined ? String(o.distanceKm) : (o.tripDistance || o.totalDistance || o.dist)),
+        distanceKm: o.distanceKm !== undefined ? Number(o.distanceKm) : (o.distance !== undefined ? (parseFloat(String(o.distance)) || undefined) : undefined),
+        pickupLat: o.pickupLat !== undefined ? Number(o.pickupLat) : (o.pickupLatitude || o.pickup_lat),
+        pickupLng: o.pickupLng !== undefined ? Number(o.pickupLng) : (o.pickupLongitude || o.pickup_lng),
+        dropLat: o.dropLat !== undefined ? Number(o.dropLat) : (o.dropLatitude || o.drop_lat),
+        dropLng: o.dropLng !== undefined ? Number(o.dropLng) : (o.dropLongitude || o.drop_lng),
+        canCancel: o.canCancel,
+        cancellationBlockedReason: o.cancellationBlockedReason,
+      };
+    } catch {
+      // try next route
+    }
   }
-}
-return null;
+  return null;
 };
 
 const cleanBookingId = (raw: any): string => {
@@ -2058,9 +2125,9 @@ export const resolveOrderDistance = (o: any): string => {
     const a =
       Math.sin(dLatRad / 2) * Math.sin(dLatRad / 2) +
       Math.cos((pLat * Math.PI) / 180) *
-        Math.cos((dLat * Math.PI) / 180) *
-        Math.sin(dLngRad / 2) *
-        Math.sin(dLngRad / 2);
+      Math.cos((dLat * Math.PI) / 180) *
+      Math.sin(dLngRad / 2) *
+      Math.sin(dLngRad / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     const distKm = R * c * 1.25;
     if (distKm > 0.1) return `${distKm.toFixed(1)} km`;
@@ -2068,7 +2135,7 @@ export const resolveOrderDistance = (o: any): string => {
 
   // 4. Estimate from fare if amount is available AND distanceKm, distance and coordinates are all missing
   const hasDistance = (o.distanceKm !== undefined && o.distanceKm !== null) ||
-                      (dVal && String(dVal).trim() !== '--' && String(dVal).trim() !== '');
+    (dVal && String(dVal).trim() !== '--' && String(dVal).trim() !== '');
   const hasCoords = pLat !== 0 && pLng !== 0 && dLat !== 0 && dLng !== 0;
 
   if (!hasDistance && !hasCoords) {
@@ -2127,7 +2194,7 @@ export const getOrderHistory = async (): Promise<OrderHistoryResponse> => {
         totalEarnings = data.totalEarnings !== undefined ? data.totalEarnings : totalEarnings;
         list = Array.isArray(data) ? data : (data.orders ?? data.value ?? []);
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 
   if (!Array.isArray(list) || list.length === 0) {
@@ -2153,8 +2220,8 @@ export const getOrderHistory = async (): Promise<OrderHistoryResponse> => {
   });
 
   const mappedOrders = uniqueList.map((o: any, idx: number) => {
-    const rawAmt = typeof o.amount === 'number' 
-      ? o.amount 
+    const rawAmt = typeof o.amount === 'number'
+      ? o.amount
       : parseFloat(String(o.amount || o.fare || o.price || o.totalAmount || o.totalFare || o.payout || '0').replace('₹', '')) || 0;
     const safeId = (o.id !== undefined && o.id !== null) ? String(o.id) : (o.orderId ? String(o.orderId) : String(idx + 1));
     const safeBookingId = cleanBookingId(o.bookingId) || cleanBookingId(safeId) || `BK_${safeId}`;
@@ -2181,7 +2248,7 @@ export const getOrderHistory = async (): Promise<OrderHistoryResponse> => {
     const s = (o.status || '').toLowerCase().trim();
     return ['completed', 'delivered', 'done', 'finished', 'closed', 'success'].includes(s);
   });
-  
+
   if (totalOrders === 0 || totalOrders < mappedOrders.length) {
     totalOrders = mappedOrders.length;
   }
@@ -2215,22 +2282,22 @@ export const getOrderHistory = async (): Promise<OrderHistoryResponse> => {
  */
 export const acceptOrder = async (
   orderIdentifier: number | string,
-  extraMeta?: { 
-    bookingId?: string; 
+  extraMeta?: {
+    bookingId?: string;
     driverId?: string | number;
-    driverName?: string; 
+    driverName?: string;
     driverPhone?: string;
     driverVehicleNumber?: string;
     driverEmail?: string;
-    customerName?: string; 
-    amount?: number 
+    customerName?: string;
+    amount?: number
   }
 ): Promise<{ success: boolean; statusCode?: number; error?: string; message?: string; order?: any }> => {
   try {
     const rawIdStr = String(orderIdentifier).trim();
     const cleanId = rawIdStr.replace(/^#+/, '');
-    const cleanBkId = extraMeta?.bookingId 
-      ? cleanBookingId(extraMeta.bookingId) 
+    const cleanBkId = extraMeta?.bookingId
+      ? cleanBookingId(extraMeta.bookingId)
       : (cleanId.startsWith('BK_') ? cleanId : `BK_${cleanId}`);
 
     // Load active driver profile from local storage for payload fallback
@@ -2250,7 +2317,7 @@ export const acceptOrder = async (
         fallbackDriverVehicle = fallbackDriverVehicle || prof?.vehicleNumber;
         fallbackDriverEmail = fallbackDriverEmail || prof?.email;
       }
-    } catch (e) {}
+    } catch (e) { }
 
     const driverPayload: any = {
       status: 'accepted',
@@ -2287,11 +2354,11 @@ export const acceptOrder = async (
 
         // 1. Winner Driver (200 OK)
         if (res.status === 200 && data?.success !== false) {
-          return { 
-            success: true, 
-            statusCode: 200, 
-            message: data?.message || 'Order accepted successfully', 
-            order: data?.booking || data?.order || data 
+          return {
+            success: true,
+            statusCode: 200,
+            message: data?.message || 'Order accepted successfully',
+            order: data?.booking || data?.order || data
           };
         }
 
@@ -2329,16 +2396,16 @@ export const acceptOrder = async (
       }
     }
 
-    return { 
-      success: false, 
-      statusCode: 500, 
-      message: 'Network connection error while accepting order. Please try again.' 
+    return {
+      success: false,
+      statusCode: 500,
+      message: 'Network connection error while accepting order. Please try again.'
     };
   } catch (e) {
-    return { 
-      success: false, 
-      statusCode: 500, 
-      message: 'Network connection error. Please check your network and try again.' 
+    return {
+      success: false,
+      statusCode: 500,
+      message: 'Network connection error. Please check your network and try again.'
     };
   }
 };
@@ -2415,9 +2482,9 @@ export const respondToDriverOffer = async (
       res = await authFetch(fallbackUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          accept, 
-          accepted: accept, 
+        body: JSON.stringify({
+          accept,
+          accepted: accept,
           action: accept ? 'accept' : 'reject',
           bookingId: cleanId,
         }),
@@ -2469,7 +2536,7 @@ export const respondToDriverOffer = async (
             message: legacyRes.message || 'Another driver partner has already accepted this booking.',
           };
         }
-      } catch {}
+      } catch { }
     } else if (res.status === 404 && !accept) {
       // Rejection fallback on 404: try /driver/orders/{id}/reject alias if supported by backend
       try {
@@ -2477,8 +2544,8 @@ export const respondToDriverOffer = async (
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ bookingId: cleanId, reason: 'driver_rejected' }),
-        }).catch(() => {});
-      } catch {}
+        }).catch(() => { });
+      } catch { }
 
       return {
         success: true,
@@ -2518,7 +2585,7 @@ export const respondToDriverOffer = async (
             message: legacyRes.message || 'Another driver partner has already accepted this booking.',
           };
         }
-      } catch {}
+      } catch { }
     }
     return {
       success: false,
@@ -2577,13 +2644,13 @@ export const verifyDeliveryOtpOnly = async (
       const data = await res.json().catch(() => ({}));
 
       if (res.status === 200 && data?.success !== false) {
-        return { 
-          success: true, 
+        return {
+          success: true,
           statusCode: 200,
           message: data?.message || 'OTP verified successfully. Awaiting payment confirmation.',
           status: data?.status || 'OTP_VERIFIED',
           otpVerified: true,
-          order: data?.order 
+          order: data?.order
         };
       }
 
@@ -2706,7 +2773,7 @@ export const verifyStartRideOtp = async (
         status: 'IN_TRANSIT',
       };
     }
-  } catch (err) {}
+  } catch (err) { }
 
   return { success: false, statusCode: 500, message: 'Network error during Start OTP verification. Please check your connection.' };
 };
@@ -2753,7 +2820,7 @@ export const confirmPaymentAndCompleteOrder = async (
 
   const methodUpper = String(meta.paymentMethod || 'CASH').toUpperCase();
   const methodStr = methodUpper.includes('ONLINE') || methodUpper.includes('UPI') ? 'ONLINE' : 'CASH';
-  
+
   const body = {
     bookingId: bookingIdStr,
     amount: Number(meta.amount || 0),
@@ -2803,7 +2870,7 @@ export const confirmPaymentAndCompleteOrder = async (
           customerName: meta.customerName,
           amount: meta.amount,
           customMessage: `🎉 Payment Received & Delivery Completed! Driver ${meta.driverName || 'Driver'} confirmed payment of ₹${meta.amount} for order ${bookingIdStr}.`,
-        }).catch(() => {});
+        }).catch(() => { });
 
         return {
           success: true,
@@ -2855,7 +2922,7 @@ export const updateOrderStatus = async (
   orderId: number | string,
   status: string,
   otp?: string,
-  extraMeta?: { bookingId?: string; driverName?: string; customerName?: string; amount?: number; [key: string]: any }
+  extraMeta?: { bookingId?: string; driverName?: string; customerName?: string; amount?: number;[key: string]: any }
 ): Promise<{ success: boolean; message?: string; order?: any }> => {
   const cleanId = String(orderId).replace(/^#+/, '').trim();
 
@@ -2895,7 +2962,7 @@ export const updateOrderStatus = async (
             driverName: extraMeta?.driverName,
             customerName: extraMeta?.customerName,
             amount: extraMeta?.amount,
-          }).catch(() => {});
+          }).catch(() => { });
 
           return {
             success: true,
@@ -2908,7 +2975,7 @@ export const updateOrderStatus = async (
           lastErrorMsg = data?.message || 'Verification failed.';
           break;
         }
-      } catch {}
+      } catch { }
     }
 
     return {
@@ -3002,7 +3069,7 @@ export const updateDriverKyc = async (
           body: JSON.stringify(body),
         });
         if (res.ok) return true;
-      } catch {}
+      } catch { }
     }
     return false;
   } catch {
@@ -3076,8 +3143,8 @@ export const getAdminVehicleTypes = async (): Promise<VehicleTypeAdmin[]> => {
       const res = await authFetch(url);
       if (res.ok) {
         const data = await res.json();
-        const rawList = Array.isArray(data) 
-          ? data 
+        const rawList = Array.isArray(data)
+          ? data
           : (data.vehicles || data.vehicleTypes || data.data || data.value || data.featuredServices || data.services || []);
         if (Array.isArray(rawList) && rawList.length > 0) {
           for (let index = 0; index < rawList.length; index++) {
@@ -3139,7 +3206,7 @@ export const getAdminVehicleTypes = async (): Promise<VehicleTypeAdmin[]> => {
         }
       }
     }
-  } catch (e) {}
+  } catch (e) { }
 
   return aggregated;
 };
@@ -3245,7 +3312,7 @@ export const createAdminVehicleType = async (payload: Partial<VehicleTypeAdmin> 
         list.push(vObj);
       }
       await AsyncStorage.setItem('@admin_custom_vehicle_types', JSON.stringify(list));
-    } catch (e) {}
+    } catch (e) { }
   };
 
   let lastError = 'Failed to create service in catalog';
@@ -3343,7 +3410,7 @@ export const updateAdminVehicleType = async (id: string | number, payload: Parti
           await AsyncStorage.setItem('@admin_custom_vehicle_types', JSON.stringify(list));
         }
       }
-    } catch (e) {}
+    } catch (e) { }
   };
 
   let lastError = 'Failed to update service in catalog';
@@ -3393,7 +3460,7 @@ export const toggleAdminVehicleTypeStatus = async (id: string | number, currentS
           await AsyncStorage.setItem('@admin_custom_vehicle_types', JSON.stringify(list));
         }
       }
-    } catch (e) {}
+    } catch (e) { }
   };
 
   for (const route of routes) {
@@ -3407,7 +3474,7 @@ export const toggleAdminVehicleTypeStatus = async (id: string | number, currentS
         await updateStatusLocally();
         return { success: true, message: `Vehicle status changed to ${nextStatus}` };
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 
   await updateStatusLocally();
@@ -3432,7 +3499,7 @@ export const deleteAdminVehicleType = async (id: string | number): Promise<{ suc
         const filtered = list.filter(item => String(item.id) !== String(id));
         await AsyncStorage.setItem('@admin_custom_vehicle_types', JSON.stringify(filtered));
       }
-    } catch (e) {}
+    } catch (e) { }
   };
 
   for (const url of routes) {
@@ -3442,7 +3509,7 @@ export const deleteAdminVehicleType = async (id: string | number): Promise<{ suc
         await deleteLocally();
         return { success: true, message: 'Vehicle category removed successfully' };
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 
   await deleteLocally();
@@ -3460,7 +3527,7 @@ export const reorderAdminServices = async (serviceIds: string[]): Promise<{ succ
     if (res.ok) {
       return { success: true, message: 'Services reordered successfully' };
     }
-  } catch (e) {}
+  } catch (e) { }
   return { success: false, message: 'Failed to reorder services' };
 };
 
@@ -3472,7 +3539,7 @@ export const getCategories = async (): Promise<any[]> => {
       const data = await res.json();
       return data.categories || [];
     }
-  } catch (e) {}
+  } catch (e) { }
   return [];
 };
 
@@ -3484,7 +3551,7 @@ export const getPassengerCategories = async (): Promise<any[]> => {
       const data = await res.json();
       return data.vehicles || data.categories || data.data || [];
     }
-  } catch (e) {}
+  } catch (e) { }
   return [];
 };
 
@@ -3496,7 +3563,7 @@ export const getPassengerPricing = async (): Promise<any[]> => {
       const data = await res.json();
       return Array.isArray(data) ? data : [];
     }
-  } catch (e) {}
+  } catch (e) { }
   return [];
 };
 
@@ -3508,7 +3575,7 @@ export const getPassengerServices = async (): Promise<any[]> => {
       const data = await res.json();
       return data.services || data.data || [];
     }
-  } catch (e) {}
+  } catch (e) { }
   return [];
 };
 
@@ -3916,7 +3983,7 @@ export const getAdminMinimumBalance = async (): Promise<{
           };
         }
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 
   return {
@@ -4048,7 +4115,7 @@ export const getAdminWalletSettings = async (): Promise<{ success: boolean; sett
           };
         }
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 
   return {
@@ -4347,7 +4414,7 @@ export const createWithdrawalRequest = async (
         };
 
         // Persist locally
-        await AsyncStorage.setItem('@active_withdrawal_request', JSON.stringify(item)).catch(() => {});
+        await AsyncStorage.setItem('@active_withdrawal_request', JSON.stringify(item)).catch(() => { });
 
         return {
           success: true,
@@ -4407,7 +4474,7 @@ export const getActiveWithdrawalRequest = async (): Promise<WithdrawalRequestIte
           };
         }
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 
   return null;
@@ -4445,7 +4512,7 @@ export const getWithdrawalHistoryList = async (): Promise<{ success: boolean; wi
           return { success: true, withdrawals: mapped };
         }
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 
   return { success: true, withdrawals: [] };
@@ -4492,7 +4559,7 @@ export const createRazorpayOrder = async (bookingId: string, amount: number, tra
           razorpayOrderId: data.razorpayOrderId || data.gatewayOrderId || data.orderId || data.paymentId,
         };
       }
-      
+
       // Handle minimum recharge error specifically
       if (res.status === 400 && (data?.error === 'MINIMUM_RECHARGE_AMOUNT_NOT_MET' || data?.message)) {
         throw new Error(data?.message || 'Minimum recharge amount is ₹1000');

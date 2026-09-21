@@ -143,7 +143,7 @@ const DriverRegistrationScreen = () => {
         setVehicleList(res.vehicles);
       } else {
         setVehicleList([]);
-        setVehicleError(res.message || 'No vehicle types are currently configured by Admin.');
+        setVehicleError(res.message || 'No vehicles currently available in this area.');
       }
     } catch (err: any) {
       setVehicleError(err?.message || 'Unable to load vehicle types. Please check your connection.');
@@ -1502,6 +1502,7 @@ const DriverRegistrationScreen = () => {
             await AsyncStorage.removeItem('driverDraftStep').catch(() => {});
             await AsyncStorage.removeItem('driverDraftData').catch(() => {});
             await AsyncStorage.removeItem('driverDraftServiceTrack').catch(() => {});
+            await AsyncStorage.setItem('driverServiceTrack', finalServiceType).catch(() => {});
             await AsyncStorage.setItem('driverProfile', JSON.stringify(profileData));
             await AsyncStorage.setItem('userToken', form.mobile);
             await AsyncStorage.setItem('loggedInEmail', form.email);
@@ -2094,7 +2095,7 @@ const DriverRegistrationScreen = () => {
           <View style={[styles.vehicleEmptyBox, { borderColor: colors.border }]}>
             <MaterialCommunityIcons name="car-off" size={26} color={colors.textSecondary} />
             <Text style={[styles.vehicleEmptyText, { color: colors.textSecondary }]}>
-              No vehicle types are currently available.
+              No vehicles currently available in this area.
             </Text>
           </View>
         ) : (

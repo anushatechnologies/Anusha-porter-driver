@@ -119,6 +119,14 @@ const DriverProfileScreen = () => {
           email: cleanDbEmail || localProfile?.email || '',
           dob: driverDb.dob || localProfile?.dob || '',
           gender: driverDb.gender || localProfile?.gender || '',
+          serviceType: driverDb.serviceType || driverDb.service_type || driverDb.serviceTrack || localProfile?.serviceType || localProfile?.serviceTrack || (
+            String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('cab') ||
+            String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('taxi') ? 'PASSENGER' : 'OUR_SERVICES'
+          ),
+          serviceTrack: driverDb.serviceTrack || driverDb.serviceType || localProfile?.serviceTrack || localProfile?.serviceType || (
+            String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('cab') ||
+            String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('taxi') ? 'PASSENGER' : 'OUR_SERVICES'
+          ),
           vehicleType: driverDb.vehicleType || localProfile?.vehicleType || 'Vehicle',
           vehicleNumber: cleanDbVeh || localProfile?.vehicleNumber || '',
           rcNumber: driverDb.rcNumber || localProfile?.rcNumber || '',
@@ -243,6 +251,14 @@ const DriverProfileScreen = () => {
                 email: driverDb.email || storedEmail || '',
                 dob: driverDb.dob || localProfile?.dob || '',
                 gender: driverDb.gender || localProfile?.gender || '',
+                serviceType: driverDb.serviceType || driverDb.service_type || driverDb.serviceTrack || localProfile?.serviceType || localProfile?.serviceTrack || (
+                  String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('cab') ||
+                  String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('taxi') ? 'PASSENGER' : 'OUR_SERVICES'
+                ),
+                serviceTrack: driverDb.serviceTrack || driverDb.serviceType || localProfile?.serviceTrack || localProfile?.serviceType || (
+                  String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('cab') ||
+                  String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('taxi') ? 'PASSENGER' : 'OUR_SERVICES'
+                ),
                 addressLine1: driverDb.addressLine1 || localProfile?.addressLine1 || '',
                 city: driverDb.city || localProfile?.city || '',
                 state: driverDb.state || localProfile?.state || '',
@@ -486,14 +502,96 @@ const DriverProfileScreen = () => {
   const loadVehicles = async () => {
     setLoadingVehicles(true);
     try {
-      const rawSType = profileData?.serviceType || (profileData as any)?.service_type || profileData?.serviceCategory;
-      const sType = String(rawSType || '').toUpperCase().includes('PASS') ? 'PASSENGER' : 'OUR_SERVICES';
+      // 1. Check all possible profile serviceType fields
+      const rawSType = profileData?.serviceType || (profileData as any)?.service_type || (profileData as any)?.serviceTrack || profileData?.serviceCategory;
+      
+      // 2. Check saved registration & permanent track from storage
+      const savedDraftTrack = await AsyncStorage.getItem('driverDraftServiceTrack').catch(() => null);
+      const savedPermanentTrack = await AsyncStorage.getItem('driverServiceTrack').catch(() => null);
+
+      // 3. Check current vehicle name / vehicle type heuristic
+      const currentVeh = String(profileData?.vehicleType || editForm?.vehicleType || editForm?.vehicle || '').toLowerCase();
+      const isVehPassenger = 
+        currentVeh.includes('cab') || currentVeh.includes('car') || currentVeh.includes('taxi') || 
+        currentVeh.includes('sedan') || currentVeh.includes('suv') || currentVeh.includes('bike taxi') || 
+        currentVeh.includes('auto taxi');
+      const isVehGoods = 
+        currentVeh.includes('truck') || currentVeh.includes('ace') || currentVeh.includes('pickup') || 
+        currentVeh.includes('lorry') || currentVeh.includes('407') || currentVeh.includes('1109') || 
+        currentVeh.includes('mini truck');
+
+      // Determine track strictly
+      let sType: 'PASSENGER' | 'OUR_SERVICES' = 'OUR_SERVICES';
+      if (
+        String(rawSType || '').toUpperCase().includes('PASS') || 
+        savedDraftTrack === 'PASSENGER' || 
+        savedPermanentTrack === 'PASSENGER' || 
+        (isVehPassenger && !isVehGoods)
+      ) {
+        sType = 'PASSENGER';
+      } else {
+        sType = 'OUR_SERVICES';
+      }
+
       const res = await getActiveVehicles(sType);
+      const goodsDefaults: VehicleOption[] = [
+        { id: '2_wheeler', name: '2 Wheeler (Bike/Scooter)', type: '2_wheeler', capacity: 'Up to 20 kg', iconName: 'motorbike', serviceType: 'OUR_SERVICES' },
+        { id: '3_wheeler', name: '3 Wheeler (Auto/Champion)', type: '3_wheeler', capacity: 'Up to 500 kg', iconName: 'truck-cargo-container', serviceType: 'OUR_SERVICES' },
+        { id: 'tata_ace', name: 'Tata Ace / Chota Hathi', type: 'tata_ace', capacity: 'Up to 750 kg', iconName: 'truck-delivery', serviceType: 'OUR_SERVICES' },
+        { id: 'pickup_8ft', name: 'Pickup 8ft / Dost', type: 'pickup_8ft', capacity: 'Up to 1.2 Ton', iconName: 'truck-flatbed', serviceType: 'OUR_SERVICES' },
+        { id: 'tata_407', name: 'Tata 407 (10ft)', type: 'tata_407', capacity: 'Up to 2.5 Ton', iconName: 'truck', serviceType: 'OUR_SERVICES' },
+        { id: 'canter_14ft', name: 'Canter / Eicher 14ft', type: 'canter_14ft', capacity: 'Up to 3.5 Ton', iconName: 'truck-trailer', serviceType: 'OUR_SERVICES' },
+      ];
+      const passengerDefaults: VehicleOption[] = [
+        { id: 'bike_taxi', name: 'Bike Taxi', type: 'bike_taxi', capacity: '1 Person', iconName: 'motorbike', serviceType: 'PASSENGER' },
+        { id: 'auto_taxi', name: 'Auto Taxi', type: 'auto_taxi', capacity: '3 Persons', iconName: 'rickshaw', serviceType: 'PASSENGER' },
+        { id: 'cab_mini', name: 'Cab Mini / Economy', type: 'cab_mini', capacity: '4 Persons', iconName: 'car-side', serviceType: 'PASSENGER' },
+        { id: 'cab_sedan', name: 'Cab Sedan', type: 'cab_sedan', capacity: '4 Persons', iconName: 'car', serviceType: 'PASSENGER' },
+        { id: 'cab_suv', name: 'Cab SUV / XL', type: 'cab_suv', capacity: '6-7 Persons', iconName: 'car-estate', serviceType: 'PASSENGER' },
+      ];
+
       if (res && Array.isArray(res.vehicles) && res.vehicles.length > 0) {
-        setAvailableVehicles(res.vehicles);
+        // Enforce strict category filter so Goods drivers only see Goods vehicles and Passenger drivers only see Passenger vehicles
+        const strictlyFiltered = res.vehicles.filter(v => {
+          const vSvc = String(v.serviceType || '').toUpperCase();
+          const vName = (v.name + ' ' + v.type).toLowerCase();
+          const isPassengerVeh = 
+            vSvc === 'PASSENGER' || vSvc === 'CAB' || vSvc === 'TAXI' || vSvc === 'RIDE' ||
+            vName.includes('cab') || vName.includes('taxi') || vName.includes('sedan') || 
+            vName.includes('suv') || vName.includes('bike taxi') || vName.includes('auto taxi');
+          
+          if (sType === 'PASSENGER') {
+            return isPassengerVeh;
+          } else {
+            return !isPassengerVeh;
+          }
+        });
+
+        if (strictlyFiltered.length > 0) {
+          setAvailableVehicles(strictlyFiltered);
+        } else {
+          setAvailableVehicles(sType === 'PASSENGER' ? passengerDefaults : goodsDefaults);
+        }
+      } else {
+        setAvailableVehicles(sType === 'PASSENGER' ? passengerDefaults : goodsDefaults);
       }
     } catch (e) {
       console.warn('[DriverProfileScreen] Failed to fetch admin vehicles:', e);
+      const isPassenger = String(profileData?.serviceType || '').toUpperCase().includes('PASS');
+      setAvailableVehicles(isPassenger ? [
+        { id: 'bike_taxi', name: 'Bike Taxi', type: 'bike_taxi', capacity: '1 Person', iconName: 'motorbike', serviceType: 'PASSENGER' },
+        { id: 'auto_taxi', name: 'Auto Taxi', type: 'auto_taxi', capacity: '3 Persons', iconName: 'rickshaw', serviceType: 'PASSENGER' },
+        { id: 'cab_mini', name: 'Cab Mini / Economy', type: 'cab_mini', capacity: '4 Persons', iconName: 'car-side', serviceType: 'PASSENGER' },
+        { id: 'cab_sedan', name: 'Cab Sedan', type: 'cab_sedan', capacity: '4 Persons', iconName: 'car', serviceType: 'PASSENGER' },
+        { id: 'cab_suv', name: 'Cab SUV / XL', type: 'cab_suv', capacity: '6-7 Persons', iconName: 'car-estate', serviceType: 'PASSENGER' },
+      ] : [
+        { id: '2_wheeler', name: '2 Wheeler (Bike/Scooter)', type: '2_wheeler', capacity: 'Up to 20 kg', iconName: 'motorbike', serviceType: 'OUR_SERVICES' },
+        { id: '3_wheeler', name: '3 Wheeler (Auto/Champion)', type: '3_wheeler', capacity: 'Up to 500 kg', iconName: 'truck-cargo-container', serviceType: 'OUR_SERVICES' },
+        { id: 'tata_ace', name: 'Tata Ace / Chota Hathi', type: 'tata_ace', capacity: 'Up to 750 kg', iconName: 'truck-delivery', serviceType: 'OUR_SERVICES' },
+        { id: 'pickup_8ft', name: 'Pickup 8ft / Dost', type: 'pickup_8ft', capacity: 'Up to 1.2 Ton', iconName: 'truck-flatbed', serviceType: 'OUR_SERVICES' },
+        { id: 'tata_407', name: 'Tata 407 (10ft)', type: 'tata_407', capacity: 'Up to 2.5 Ton', iconName: 'truck', serviceType: 'OUR_SERVICES' },
+        { id: 'canter_14ft', name: 'Canter / Eicher 14ft', type: 'canter_14ft', capacity: 'Up to 3.5 Ton', iconName: 'truck-trailer', serviceType: 'OUR_SERVICES' },
+      ]);
     } finally {
       setLoadingVehicles(false);
     }
@@ -522,7 +620,24 @@ const DriverProfileScreen = () => {
     if (editSaving) return;
     setEditSaving(true);
     try {
-      const payload: any = {};
+      // Preserve and synchronize driver's service track to prevent backend database erasure
+      const effectiveServiceType: string = 
+        profileData?.serviceType || 
+        (profileData as any)?.service_type || 
+        (profileData as any)?.serviceTrack || 
+        (
+          String(editForm.vehicle || profileData?.vehicleType || '').toLowerCase().includes('cab') ||
+          String(editForm.vehicle || profileData?.vehicleType || '').toLowerCase().includes('taxi')
+            ? 'PASSENGER'
+            : 'OUR_SERVICES'
+        );
+
+      const payload: any = {
+        serviceType: effectiveServiceType,
+        service_type: effectiveServiceType,
+        serviceTrack: effectiveServiceType,
+        serviceCategory: effectiveServiceType,
+      };
       if (editForm.name.trim()) payload.name = editForm.name.trim();
       // NOTE: phone is intentionally excluded — it is the login identity and cannot be changed via profile edit
       if (editForm.vehicle.trim()) { payload.vehicle = editForm.vehicle.trim(); payload.vehicleType = editForm.vehicle.trim(); }
@@ -537,6 +652,8 @@ const DriverProfileScreen = () => {
 
       const res = await updateDriverProfile(payload);
       if (res.success) {
+        // Persist track to local AsyncStorage
+        await AsyncStorage.setItem('driverServiceTrack', effectiveServiceType).catch(() => {});
         // Merge updates into local profile state
         setProfileData((prev: any) => ({
           ...prev,
@@ -550,6 +667,9 @@ const DriverProfileScreen = () => {
           ifscCode: editForm.bankIfscCode || prev?.ifscCode,
           accountHolderName: editForm.bankAccountName || prev?.accountHolderName,
           upiId: editForm.upiId || prev?.upiId,
+          serviceType: effectiveServiceType,
+          service_type: effectiveServiceType,
+          serviceTrack: effectiveServiceType,
         }));
         setEditModalVisible(false);
         Alert.alert('Profile Updated', res.message || 'Your profile has been updated successfully.');
@@ -1133,10 +1253,12 @@ const DriverProfileScreen = () => {
           <View style={[styles.vehicleDropdownSheet, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <View style={[styles.vehicleDropdownHeader, { borderBottomColor: colors.border }]}>
               <View style={{ flex: 1 }}>
-                <Text style={[styles.vehicleDropdownTitle, { color: colors.text }]}>Select Vehicle Model</Text>
+                <Text style={[styles.vehicleDropdownTitle, { color: colors.text }]}>
+                  {String(profileData?.serviceType || '').toUpperCase().includes('PASS') ? 'Select Passenger Vehicle' : 'Select Goods Vehicle'}
+                </Text>
                 <Text style={[styles.vehicleDropdownSubtitle, { color: colors.textSecondary }]}>
                   {availableVehicles.length > 0
-                    ? `${availableVehicles.length} vehicles available from Admin`
+                    ? `${availableVehicles.length} ${String(profileData?.serviceType || '').toUpperCase().includes('PASS') ? 'passenger' : 'goods'} vehicles from Admin`
                     : 'Loading vehicles from Admin...'}
                 </Text>
               </View>
@@ -1162,7 +1284,7 @@ const DriverProfileScreen = () => {
                   No Vehicles Available
                 </Text>
                 <Text style={{ marginTop: 4, color: colors.textSecondary, fontSize: 12, textAlign: 'center', paddingHorizontal: 20 }}>
-                  Could not load vehicles from Admin panel. Please check your connection.
+                  No vehicles currently available in this area.
                 </Text>
                 <TouchableOpacity
                   onPress={loadVehicles}

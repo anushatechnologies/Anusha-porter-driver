@@ -2,7 +2,7 @@
   "expo": {
     "name": "Anusha Porter Driver",
     "slug": "anusha-porter-driver",
-    "version": "2.28.26",
+    "version": "2.28.28",
     "sdkVersion": "54.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -19,7 +19,7 @@
       }
     },
     "android": {
-      "versionCode": 81,
+      "versionCode": 83,
       "adaptiveIcon": {
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundColor": "#FFFFFF"

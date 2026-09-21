@@ -443,8 +443,14 @@ const ActiveOrderScreen = () => {
     activeOrder?.mobileNumber || 
     activeOrder?.phoneNumber || 
     '';
-  const pickupAddress = formatAddressString(activeOrder?.pickupAddress || activeOrder?.pickup, 'Pickup location');
-  const dropAddress = formatAddressString(activeOrder?.dropAddress || activeOrder?.drop, 'Drop location');
+  const pickupAddress = formatAddressString(
+    activeOrder?.pickupAddress || activeOrder?.pickup || activeOrder?.pickupLocation || activeOrder?.pickup_address || activeOrder?.fromAddress,
+    'Pickup location'
+  );
+  const dropAddress = formatAddressString(
+    activeOrder?.dropAddress || activeOrder?.drop || activeOrder?.dropLocation || activeOrder?.drop_address || activeOrder?.deliveryAddress || activeOrder?.destination || activeOrder?.toAddress,
+    'Drop location'
+  );
   const rawAmount = typeof activeOrder?.amount === 'number' && activeOrder.amount > 0
     ? activeOrder.amount
     : parseFloat(String(
@@ -464,24 +470,27 @@ const ActiveOrderScreen = () => {
 
   // Use coordinates from backend order data; fall back to a generic centre only if truly absent
   const parsedPickup = resolveCoordinates(
-    activeOrder?.pickupLat ?? activeOrder?.pickup_lat ?? activeOrder?.pickupLatitude,
-    activeOrder?.pickupLng ?? activeOrder?.pickup_lng ?? activeOrder?.pickupLongitude ?? activeOrder?.pickupLon,
-    activeOrder?.pickup
+    activeOrder?.pickupLat ?? activeOrder?.pickup_lat ?? activeOrder?.pickupLatitude ?? activeOrder?.pickupLocation?.lat,
+    activeOrder?.pickupLng ?? activeOrder?.pickup_lng ?? activeOrder?.pickupLongitude ?? activeOrder?.pickupLon ?? activeOrder?.pickupLocation?.lng,
+    activeOrder?.pickup ?? activeOrder?.pickupAddress ?? activeOrder?.pickupLocation
   );
   const parsedDrop = resolveCoordinates(
-    activeOrder?.dropLat ?? activeOrder?.drop_lat ?? activeOrder?.dropLatitude,
-    activeOrder?.dropLng ?? activeOrder?.drop_lng ?? activeOrder?.dropLongitude ?? activeOrder?.dropLon,
-    activeOrder?.drop
+    activeOrder?.dropLat ?? activeOrder?.drop_lat ?? activeOrder?.dropLatitude ?? activeOrder?.dropLocation?.lat ?? activeOrder?.dropLocation?.latitude ?? activeOrder?.drop_location?.lat,
+    activeOrder?.dropLng ?? activeOrder?.drop_lng ?? activeOrder?.dropLongitude ?? activeOrder?.dropLon ?? activeOrder?.dropLocation?.lng ?? activeOrder?.dropLocation?.longitude ?? activeOrder?.drop_location?.lng,
+    activeOrder?.drop ?? activeOrder?.dropAddress ?? activeOrder?.dropLocation
   );
 
-  const PICKUP_COORD = {
-    latitude: parsedPickup.lat || 17.385044,
-    longitude: parsedPickup.lng || 78.486671,
-  };
-  const DROP_COORD = {
-    latitude: parsedDrop.lat || 17.405044,
-    longitude: parsedDrop.lng || 78.506671,
-  };
+  const hasValidPickup = Boolean(parsedPickup.lat && parsedPickup.lng);
+  const hasValidDrop = Boolean(parsedDrop.lat && parsedDrop.lng);
+
+  const PICKUP_COORD = hasValidPickup ? {
+    latitude: parsedPickup.lat,
+    longitude: parsedPickup.lng,
+  } : null;
+  const DROP_COORD = hasValidDrop ? {
+    latitude: parsedDrop.lat,
+    longitude: parsedDrop.lng,
+  } : null;
 
   const isPickupCompleted = useMemo(() => {
     const s = String(activeOrder?.status || '').toLowerCase();
@@ -494,12 +503,12 @@ const ActiveOrderScreen = () => {
   const handleMapPress = () => {
     if (!isPickupCompleted) {
       launchTurnByTurnNavigation(
-        { lat: parsedPickup.lat || PICKUP_COORD.latitude, lng: parsedPickup.lng || PICKUP_COORD.longitude },
+        hasValidPickup ? { lat: parsedPickup.lat, lng: parsedPickup.lng } : null,
         pickupAddress
       );
     } else {
       launchTurnByTurnNavigation(
-        { lat: parsedDrop.lat || DROP_COORD.latitude, lng: parsedDrop.lng || DROP_COORD.longitude },
+        hasValidDrop ? { lat: parsedDrop.lat, lng: parsedDrop.lng } : null,
         dropAddress
       );
     }
@@ -770,8 +779,8 @@ const ActiveOrderScreen = () => {
       try {
         console.log('[PASSENGER] Verifying Start-Ride OTP with backend:', enteredOtp);
         const res = await verifyStartRideOtp(activeOrder?.bookingId || orderId || displayOrderId, enteredOtp, {
-          lat: PICKUP_COORD.latitude,
-          lng: PICKUP_COORD.longitude,
+          lat: parsedPickup.lat || undefined,
+          lng: parsedPickup.lng || undefined,
           bookingId: activeOrder?.bookingId || displayOrderId,
         } as any);
 
@@ -1074,16 +1083,18 @@ const ActiveOrderScreen = () => {
             style={styles.mapView}
             customMapStyle={UBER_MAP_STYLE}
             initialRegion={{
-              latitude: PICKUP_COORD.latitude,
-              longitude: PICKUP_COORD.longitude,
+              latitude: parsedPickup.lat || parsedDrop.lat || 17.385044,
+              longitude: parsedPickup.lng || parsedDrop.lng || 78.486671,
               latitudeDelta: 0.05,
               longitudeDelta: 0.05,
             }}
             onPress={handleMapPress}
           >
-            <Marker coordinate={PICKUP_COORD} title="Pickup" pinColor="#10B981" />
-            <Marker coordinate={DROP_COORD} title="Drop" pinColor="#EF4444" />
-            <Polyline coordinates={[PICKUP_COORD, DROP_COORD]} strokeColor="#0052FF" strokeWidth={4} />
+            {PICKUP_COORD && <Marker coordinate={PICKUP_COORD} title="Pickup" pinColor="#10B981" />}
+            {DROP_COORD && <Marker coordinate={DROP_COORD} title="Drop" pinColor="#EF4444" />}
+            {PICKUP_COORD && DROP_COORD && (
+              <Polyline coordinates={[PICKUP_COORD, DROP_COORD]} strokeColor="#0052FF" strokeWidth={4} />
+            )}
           </MapView>
 
           {/* Uber/Rapido Vector Street Grid Overlay to prevent plain cream box */}
@@ -1229,7 +1240,7 @@ const ActiveOrderScreen = () => {
                   style={[styles.bigNavBtn, { backgroundColor: colors.primary }]}
                   onPress={() => {
                     launchTurnByTurnNavigation(
-                      { lat: parsedDrop.lat || DROP_COORD.latitude, lng: parsedDrop.lng || DROP_COORD.longitude },
+                      hasValidDrop ? { lat: parsedDrop.lat, lng: parsedDrop.lng } : null,
                       dropAddress
                     );
                   }}
@@ -1255,7 +1266,7 @@ const ActiveOrderScreen = () => {
                   style={[styles.navBtn, { backgroundColor: theme === 'dark' ? 'rgba(0,82,255,0.25)' : 'rgba(0,82,255,0.1)' }]}
                   onPress={() => {
                     launchTurnByTurnNavigation(
-                      { lat: parsedPickup.lat || PICKUP_COORD.latitude, lng: parsedPickup.lng || PICKUP_COORD.longitude },
+                      hasValidPickup ? { lat: parsedPickup.lat, lng: parsedPickup.lng } : null,
                       pickupAddress
                     );
                   }}
@@ -1276,7 +1287,7 @@ const ActiveOrderScreen = () => {
                   style={[styles.navBtn, { backgroundColor: theme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' }]}
                   onPress={() => {
                     launchTurnByTurnNavigation(
-                      { lat: parsedDrop.lat || DROP_COORD.latitude, lng: parsedDrop.lng || DROP_COORD.longitude },
+                      hasValidDrop ? { lat: parsedDrop.lat, lng: parsedDrop.lng } : null,
                       dropAddress
                     );
                   }}
