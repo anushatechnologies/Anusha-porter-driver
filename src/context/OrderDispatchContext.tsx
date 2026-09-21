@@ -121,7 +121,7 @@ export const OrderDispatchProvider: React.FC<{
   // Format an order object for the IncomingOrder screen
   const normalizeOrderPayload = useCallback((raw: any) => {
     const cleanId = String(raw.bookingId || raw.orderId || raw.offerId || raw.id || '').replace(/^#+/, '');
-    const amountVal = Number(raw.offeredFare || raw.amount || raw.fare) || 0;
+    const amountVal = Number(raw.offeredFare || raw.amount || raw.fare || raw.estimatedFare) || 0;
 
     const pCoords = resolveCoordinates(
       raw.pickupLat ?? raw.pickupLatitude ?? raw.pickup_lat,
@@ -145,10 +145,20 @@ export const OrderDispatchProvider: React.FC<{
       }
     }
 
+    const isPassengerBooking =
+      cleanId.startsWith('AP-') ||
+      cleanId.startsWith('PASS-') ||
+      cleanId.startsWith('TRK-') ||
+      raw.serviceCategory === 'passenger' ||
+      raw.serviceType === 'PASSENGER' ||
+      raw.serviceType === 'ONE_WAY' ||
+      raw.serviceType === 'ROUND_TRIP' ||
+      raw.serviceType === 'RENTAL';
+
     return {
       ...(raw || {}),
       id: cleanId,
-      bookingId: raw.bookingId || (cleanId ? `BK_${cleanId}` : cleanId),
+      bookingId: raw.bookingId || (isPassengerBooking ? cleanId : (cleanId ? `BK_${cleanId}` : cleanId)),
       orderId: raw.orderId || raw.id || cleanId,
       offerId: raw.offerId,
       pickup: formatAddressString(raw.pickupAddress || raw.pickup, 'Pickup Location'),
@@ -161,11 +171,14 @@ export const OrderDispatchProvider: React.FC<{
       dropLng: dCoords.lng || (raw.dropLng ?? raw.dropLongitude),
       amount: amountVal,
       offeredFare: amountVal,
+      estimatedFare: amountVal,
       distanceKm: raw.distanceKm,
       pickupDistanceKm: pickupDistVal,
       remainingSeconds: raw.remainingSeconds || 60,
-      serviceName: raw.serviceName || raw.vehicleType || raw.vehicleLabel || 'Vehicle',
-      serviceType: raw.serviceType,
+      serviceName: raw.serviceName || raw.vehicleCategory || (isPassengerBooking ? 'Cab' : (raw.vehicleType || raw.vehicleLabel || 'Vehicle')),
+      serviceType: isPassengerBooking ? 'PASSENGER' : (raw.serviceType || 'GOODS'),
+      serviceCategory: isPassengerBooking ? 'passenger' : (raw.serviceCategory || 'goods'),
+      isDirectOffer: Boolean(raw.isDirectOffer || raw.isDirectDispatch),
       status: raw.status || 'OFFERED',
     };
   }, []);
@@ -178,9 +191,9 @@ export const OrderDispatchProvider: React.FC<{
       return;
     }
 
-    // 5km Maximum Pickup Radius Guard: do not offer rides where pickup is > 5km away
-    if (normalized.pickupDistanceKm !== undefined && normalized.pickupDistanceKm > MAX_PICKUP_RADIUS_KM) {
-      console.log(`[OrderDispatchContext] 🚫 Dropping offer ${cleanId} — pickup is ${normalized.pickupDistanceKm}km away (> ${MAX_PICKUP_RADIUS_KM}km limit)`);
+    // Maximum Pickup Radius Guard: do not drop offers that are directly targeted to driver by backend dispatch
+    if (!normalized.isDirectOffer && normalized.pickupDistanceKm !== undefined && normalized.pickupDistanceKm > MAX_PICKUP_RADIUS_KM) {
+      console.log(`[OrderDispatchContext] 🚫 Dropping unassigned offer ${cleanId} — pickup is ${normalized.pickupDistanceKm}km away (> ${MAX_PICKUP_RADIUS_KM}km limit)`);
       return;
     }
 
@@ -419,11 +432,11 @@ export const OrderDispatchProvider: React.FC<{
     const unsubOfferNew = telemetrySocket.onOfferNew((event) => {
       if (!isOnlineRef.current) return;
       console.log('[OrderDispatchContext] 🚨 WebSocket offer received:', event.bookingId);
-      const offerData = event.data || {};
+      const offerData = { ...(event.data || {}), isDirectOffer: true };
       const normalized = normalizeOrderPayload(offerData);
 
-      // 5km Maximum Pickup Radius Guard
-      if (normalized.pickupDistanceKm !== undefined && normalized.pickupDistanceKm !== null && normalized.pickupDistanceKm > MAX_PICKUP_RADIUS_KM) {
+      // Direct targeted WebSocket offers from backend are always accepted
+      if (!normalized.isDirectOffer && normalized.pickupDistanceKm !== undefined && normalized.pickupDistanceKm !== null && normalized.pickupDistanceKm > MAX_PICKUP_RADIUS_KM) {
         console.log(`[OrderDispatchContext] 🚫 WebSocket offer ${normalized.id} pickup is ${normalized.pickupDistanceKm}km away (> ${MAX_PICKUP_RADIUS_KM}km limit), skipping.`);
         return;
       }

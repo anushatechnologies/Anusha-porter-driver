@@ -1348,13 +1348,14 @@ export const getActiveVehicles = async (serviceType?: 'OUR_SERVICES' | 'PASSENGE
     // 3. Fallback catalog routes by serviceType
     ...(serviceType === 'PASSENGER'
       ? [
+        `${BASE}/api/vehicle-types?serviceType=PASSENGER`,
+        `${BASE}/api/passenger/categories`,
+        `${BASE}/api/passenger/vehicles`,
         `${BASE}/api/admin/passenger/categories`,
         `${BASE}/api/admin/passenger/vehicles`,
         `${BASE}/api/passenger/services`,
-        `${BASE}/api/passenger/vehicles`,
         `${BASE}/api/admin/passenger/pricing`,
         `${BASE}/api/vehicles?serviceType=PASSENGER`,
-        `${BASE}/api/vehicle-types?serviceType=PASSENGER`,
         `${BASE}/api/admin/services`,
         `${BASE}/api/services`,
         `${BASE}/api/admin/vehicle-types`,
@@ -1889,6 +1890,9 @@ export const updateDriverLocation = async (
 /** GET /api/driver/orders/active or GET /api/drivers/me/orders/active */
 export const getActiveOrder = async (): Promise<any | null> => {
   const routes = [
+    `${BASE}/api/driver/rides/active`,
+    `${BASE}/api/rides/active`,
+    `${BASE}/api/passenger/bookings/active`,
     `${BASE}/api/driver/orders/active`,
     `${BASE}/api/drivers/me/orders/active`,
     `${BASE}/api/orders/active`,
@@ -2417,10 +2421,14 @@ export const acceptOrder = async (
 export const getActiveDriverOffers = async (coords?: { lat?: number; lng?: number }): Promise<DriverOffer[]> => {
   const geoParam = coords?.lat && coords?.lng ? `?lat=${coords.lat}&lng=${coords.lng}&radiusKm=5` : '';
   const routes = [
+    `${BASE}/api/driver/rides/available${geoParam}`,
+    `${BASE}/api/driver/rides/available`,
+    `${BASE}/api/driver/passenger/orders`,
     `${BASE}/api/driver/orders/available${geoParam}`,
     `${BASE}/api/driver/orders/available`,
     `${BASE}/api/driver/offers/active`,
     `${BASE}/api/driver/offers`,
+    `${BASE}/api/passenger/bookings`,
   ];
   for (const url of routes) {
     try {
@@ -2429,9 +2437,13 @@ export const getActiveDriverOffers = async (coords?: { lat?: number; lng?: numbe
         const data = await res.json().catch(() => null);
         if (!data) continue;
         if (Array.isArray(data)) return data;
-        const list = data.orders || data.availableOrders || data.offers || data.data;
+        let list = data.orders || data.availableOrders || data.offers || data.rides || data.data || data.bookings;
         if (Array.isArray(list)) {
-          // Proximity response received from backend (even if empty, it's an authoritative response)
+          // If response is from general /passenger/bookings, filter for pending/offered rides
+          if (url.includes('/passenger/bookings')) {
+            const pendingStatuses = ['pending', 'offered', 'searching', 'created', 'searching_for_driver', 'broadcast', 'requested'];
+            list = list.filter((b: any) => pendingStatuses.includes(String(b.status || '').toLowerCase().trim()));
+          }
           return list;
         }
       }
@@ -2452,43 +2464,57 @@ export const respondToDriverOffer = async (
   accept: boolean
 ): Promise<OfferResponse> => {
   const cleanId = String(bookingId).trim().replace(/^#+/, '');
-  const primaryUrl = accept
-    ? `${BASE}/api/driver/orders/${encodeURIComponent(cleanId)}/accept`
-    : `${BASE}/api/driver/orders/${encodeURIComponent(cleanId)}/reject`;
-  const alternateUrl = accept
-    ? `${BASE}/api/driver/bookings/${encodeURIComponent(cleanId)}/accept`
-    : `${BASE}/api/driver/bookings/${encodeURIComponent(cleanId)}/reject`;
-  const fallbackUrl = `${BASE}/api/driver/offers/${encodeURIComponent(cleanId)}/respond`;
+  const isPassenger = cleanId.startsWith('AP-') || cleanId.startsWith('PASS-') || cleanId.includes('CAR');
+
+  // Candidate URLs in priority order (supporting both Passenger Rides and Logistics Orders)
+  const candidateUrls = [
+    ...(isPassenger ? [
+      accept ? `${BASE}/api/driver/rides/${encodeURIComponent(cleanId)}/accept` : `${BASE}/api/driver/rides/${encodeURIComponent(cleanId)}/reject`,
+      accept ? `${BASE}/api/passenger/bookings/${encodeURIComponent(cleanId)}/accept` : `${BASE}/api/passenger/bookings/${encodeURIComponent(cleanId)}/reject`,
+      accept ? `${BASE}/api/rides/${encodeURIComponent(cleanId)}/accept` : `${BASE}/api/rides/${encodeURIComponent(cleanId)}/reject`,
+    ] : []),
+    accept ? `${BASE}/api/driver/orders/${encodeURIComponent(cleanId)}/accept` : `${BASE}/api/driver/orders/${encodeURIComponent(cleanId)}/reject`,
+    accept ? `${BASE}/api/driver/bookings/${encodeURIComponent(cleanId)}/accept` : `${BASE}/api/driver/bookings/${encodeURIComponent(cleanId)}/reject`,
+    accept ? `${BASE}/api/driver/rides/${encodeURIComponent(cleanId)}/accept` : `${BASE}/api/driver/rides/${encodeURIComponent(cleanId)}/reject`,
+    accept ? `${BASE}/api/passenger/bookings/${encodeURIComponent(cleanId)}/accept` : `${BASE}/api/passenger/bookings/${encodeURIComponent(cleanId)}/reject`,
+    `${BASE}/api/driver/offers/${encodeURIComponent(cleanId)}/respond`,
+  ];
 
   try {
-    // 1. Try dedicated exact backend endpoints from Developer Integration Guide
-    let res = await authFetch(primaryUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(accept ? {} : { reason: 'TOO_FAR' }),
-    }).catch(() => null);
+    let res: Response | null = null;
+    for (const url of candidateUrls) {
+      try {
+        const isLegacyRespond = url.endsWith('/respond');
+        const body = isLegacyRespond
+          ? JSON.stringify({
+              accept,
+              accepted: accept,
+              action: accept ? 'accept' : 'reject',
+              bookingId: cleanId,
+            })
+          : JSON.stringify(accept ? {} : { reason: 'TOO_FAR' });
 
-    // If primary route 404s/fails, try alternate route
-    if (!res || res.status === 404 || res.status === 405) {
-      res = await authFetch(alternateUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(accept ? {} : { reason: 'TOO_FAR' }),
-      }).catch(() => null);
+        res = await authFetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+        }).catch(() => null);
+
+        if (res && res.status !== 404 && res.status !== 405) {
+          break;
+        }
+      } catch {
+        // try next candidate endpoint
+      }
     }
 
-    // If both dedicated routes 404/fail, fallback to legacy respond route
-    if (!res || res.status === 404 || res.status === 405) {
-      res = await authFetch(fallbackUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          accept,
-          accepted: accept,
-          action: accept ? 'accept' : 'reject',
-          bookingId: cleanId,
-        }),
-      });
+    if (!res) {
+      return {
+        success: false,
+        status: 'NETWORK_ERROR',
+        bookingId: cleanId,
+        message: 'Could not connect to server to respond to offer.',
+      };
     }
 
     const data = await res.json().catch(() => ({}));

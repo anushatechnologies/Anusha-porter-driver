@@ -58,9 +58,9 @@ class TelemetrySocketService {
   private statusListeners: Set<StatusListener> = new Set();
 
   /**
-   * Determine WebSocket URL from configured base URL or environment
+   * Determine WebSocket URLs from configured base URL or environment
    */
-  private getWsUrl(): string {
+  private getWsUrls(): string[] {
     const rawBase = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'https://api.anushaporter.com';
     let wsBase = rawBase.trim();
     if (wsBase.startsWith('https://')) {
@@ -71,7 +71,90 @@ class TelemetrySocketService {
       wsBase = `wss://${wsBase}`;
     }
     wsBase = wsBase.replace(/\/+$/, '');
-    return `${wsBase}/ws/telemetry`;
+    return [
+      `${wsBase}/ws/telemetry`,
+      `${wsBase}/ws`,
+      `${wsBase}/websocket`,
+    ];
+  }
+
+  /**
+   * Send Spring STOMP and JSON topic subscriptions for the driver
+   * Topic: /topic/driver/{driverId}/offers
+   */
+  private subscribeToDriverChannels(ws: WebSocket, driverId: string, token: string): void {
+    const topics = [
+      ...(driverId ? [
+        `/topic/driver/${driverId}/offers`,
+        `/topic/driver/${driverId}/orders`,
+        `/topic/drivers/${driverId}/offers`,
+      ] : []),
+      '/topic/driver/offers',
+      '/topic/passenger/offers',
+      '/topic/offers',
+    ];
+
+    // 1. Send Spring Boot STOMP CONNECT frame
+    try {
+      const stompConnect = [
+        'CONNECT',
+        'accept-version:1.1,1.2',
+        'heart-beat:10000,10000',
+        token ? `Authorization:Bearer ${token}` : '',
+        token ? `passcode:${token}` : '',
+        '',
+        '',
+      ].filter(Boolean).join('\n') + '\0';
+      ws.send(stompConnect);
+
+      // Send STOMP SUBSCRIBE frames
+      topics.forEach((topic, idx) => {
+        const stompSub = [
+          'SUBSCRIBE',
+          `id:sub-driver-${idx}`,
+          `destination:${topic}`,
+          '',
+          '',
+        ].join('\n') + '\0';
+        ws.send(stompSub);
+      });
+    } catch (e) {
+      // ignore STOMP transport fallback
+    }
+
+    // 2. Send JSON subscriptions for raw WebSocket / custom gateways
+    topics.forEach((topic) => {
+      try {
+        ws.send(JSON.stringify({
+          action: 'subscribe',
+          topic,
+          destination: topic,
+          driverId: driverId ? String(driverId) : undefined,
+          token: token || undefined,
+        }));
+      } catch {}
+      try {
+        ws.send(JSON.stringify({
+          type: 'SUBSCRIBE',
+          destination: topic,
+          driverId: driverId ? String(driverId) : undefined,
+        }));
+      } catch {}
+    });
+
+    // 3. Driver registration broadcast
+    try {
+      ws.send(
+        JSON.stringify({
+          action: 'subscribe_driver',
+          driverId: driverId ? String(driverId) : undefined,
+          token: token || undefined,
+          topics,
+        })
+      );
+    } catch (e) {
+      // ignore
+    }
   }
 
   /**
@@ -91,17 +174,25 @@ class TelemetrySocketService {
       const token = (await AsyncStorage.getItem('authToken')) || (await AsyncStorage.getItem('@driver_token')) || (await AsyncStorage.getItem('userToken')) || '';
       const profileStr = await AsyncStorage.getItem('driverProfile');
       const profile = profileStr ? JSON.parse(profileStr) : null;
-      const driverId = profile?.id || profile?.driverId || '';
+      const driverId = profile?.id || profile?.driverId || profile?.userId || '';
 
-      const baseWsUrl = this.getWsUrl();
+      const wsUrls = this.getWsUrls();
       const queryParams: string[] = [];
-      if (token) queryParams.push(`token=${encodeURIComponent(token)}`);
-      if (driverId) queryParams.push(`driverId=${encodeURIComponent(String(driverId))}`);
+      if (token) {
+        queryParams.push(`token=${encodeURIComponent(token)}`);
+        queryParams.push(`access_token=${encodeURIComponent(token)}`);
+      }
+      if (driverId) {
+        queryParams.push(`driverId=${encodeURIComponent(String(driverId))}`);
+        queryParams.push(`driver_id=${encodeURIComponent(String(driverId))}`);
+      }
       queryParams.push(`role=driver`);
 
+      // Try primary endpoint (falling back automatically if socket fails)
+      const baseWsUrl = wsUrls[0] || 'wss://api.anushaporter.com/ws/telemetry';
       const fullWsUrl = queryParams.length > 0 ? `${baseWsUrl}?${queryParams.join('&')}` : baseWsUrl;
 
-      console.log(`[TelemetryWS] Connecting to ${baseWsUrl}...`);
+      console.log(`[TelemetryWS] Connecting to ${baseWsUrl} (Driver: ${driverId || 'anon'})...`);
       const ws = new WebSocket(fullWsUrl);
 
       ws.onopen = () => {
@@ -111,26 +202,43 @@ class TelemetrySocketService {
         this.notifyStatus(true);
         this.startHeartbeat();
 
-        try {
-          ws.send(
-            JSON.stringify({
-              action: 'subscribe_driver',
-              driverId: driverId ? String(driverId) : undefined,
-              token: token || undefined,
-            })
-          );
-        } catch (e) {
-          // ignore
-        }
+        // Subscribe to /topic/driver/{driverId}/offers and related dispatch channels
+        this.subscribeToDriverChannels(ws, String(driverId), token);
       };
 
       ws.onmessage = (event) => {
         try {
           if (!event.data) return;
-          const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
+          const raw = typeof event.data === 'string' ? event.data : event.data.toString();
+
+          // STOMP Connected frame
+          if (raw.startsWith('CONNECTED')) {
+            console.log('[TelemetryWS] STOMP session established ✔');
+            this.subscribeToDriverChannels(ws, String(driverId), token);
+            return;
+          }
+
+          let msg: any = null;
+
+          // Check for STOMP MESSAGE frame with JSON payload
+          if (raw.startsWith('MESSAGE')) {
+            const splitIdx = raw.indexOf('\r\n\r\n') !== -1 ? raw.indexOf('\r\n\r\n') + 4 : (raw.indexOf('\n\n') !== -1 ? raw.indexOf('\n\n') + 2 : -1);
+            if (splitIdx !== -1) {
+              const body = raw.slice(splitIdx).replace(/\0+$/, '').trim();
+              try {
+                msg = JSON.parse(body);
+              } catch {}
+            }
+          }
+
+          if (!msg) {
+            const cleanRaw = raw.replace(/\0+$/, '').trim();
+            msg = JSON.parse(cleanRaw);
+          }
+
           this.handleIncomingMessage(msg);
         } catch (err) {
-          console.warn('[TelemetryWS] Message parse error:', err);
+          console.warn('[TelemetryWS] Message parse error notice:', err);
         }
       };
 
@@ -190,7 +298,8 @@ class TelemetrySocketService {
     const rawEventName = msg.event || msg.action || msg.type || msg.data?.action || msg.data?.type || msg.data?.event;
     const eventName = typeof rawEventName === 'string' ? rawEventName.trim() : '';
 
-    // 1. New Order Offer (supports driver:offer:new, ORDER_OFFER, NEW_ORDER, NEW_BOOKING, BOOKING_OFFER, etc.)
+    // 1. New Order Offer (supports driver:offer:new, ORDER_OFFER, NEW_ORDER, NEW_BOOKING, BOOKING_OFFER, RIDE_OFFER,
+    // and direct payload from /topic/driver/{driverId}/offers containing bookingId, pickupAddress, dropAddress, estimatedFare)
     const isNewOffer =
       eventName === 'driver:offer:new' ||
       eventName === 'ORDER_OFFER' ||
@@ -203,7 +312,11 @@ class TelemetrySocketService {
       eventName === 'order:new' ||
       eventName === 'ORDER_BROADCAST' ||
       Boolean(msg.order && (msg.order.id || msg.order.bookingId)) ||
-      Boolean(msg.data?.order && (msg.data.order.id || msg.data.order.bookingId));
+      Boolean(msg.data?.order && (msg.data.order.id || msg.data.order.bookingId)) ||
+      Boolean(
+        (msg.bookingId || msg.id || msg.orderId) &&
+        (msg.pickupAddress || msg.dropAddress || msg.estimatedFare !== undefined || msg.amount !== undefined || msg.offeredFare !== undefined || msg.fare !== undefined)
+      );
 
     if (isNewOffer) {
       const rawBookingId =
@@ -221,12 +334,49 @@ class TelemetrySocketService {
       const cleanBookingId = String(rawBookingId).replace(/^#+/, '').trim();
 
       const orderData = msg.data?.order || msg.order || msg.data || msg;
+
+      const fareAmount = Number(
+        orderData.estimatedFare ??
+        orderData.offeredFare ??
+        orderData.amount ??
+        orderData.fare ??
+        msg.estimatedFare ??
+        msg.offeredFare ??
+        msg.amount ??
+        0
+      ) || 0;
+
+      const isPassengerRide = Boolean(
+        orderData.serviceCategory === 'passenger' ||
+        orderData.serviceType === 'PASSENGER' ||
+        orderData.serviceType === 'ONE_WAY' ||
+        orderData.serviceType === 'ROUND_TRIP' ||
+        orderData.serviceType === 'RENTAL' ||
+        cleanBookingId.includes('CAR') ||
+        cleanBookingId.includes('PASS') ||
+        ['CAB', 'AUTO', 'BIKE', 'CAR', 'TAXI'].includes(String(orderData.vehicleCategoryCode || orderData.vehicleCategory || orderData.vehicleType || '').toUpperCase())
+      );
+
       const payload: DriverOfferNewEvent = {
         event: 'driver:offer:new',
         bookingId: cleanBookingId,
-        data: orderData,
+        data: {
+          ...orderData,
+          bookingId: cleanBookingId,
+          id: cleanBookingId,
+          pickupAddress: orderData.pickupAddress || orderData.pickup || msg.pickupAddress || msg.pickup || 'Pickup Location',
+          dropAddress: orderData.dropAddress || orderData.drop || msg.dropAddress || msg.drop || 'Drop Location',
+          pickup: orderData.pickup || orderData.pickupAddress || msg.pickup || msg.pickupAddress || 'Pickup Location',
+          drop: orderData.drop || orderData.dropAddress || msg.drop || msg.dropAddress || 'Drop Location',
+          amount: fareAmount,
+          offeredFare: fareAmount,
+          estimatedFare: fareAmount,
+          serviceType: isPassengerRide ? 'PASSENGER' : (orderData.serviceType || 'GOODS'),
+          serviceCategory: isPassengerRide ? 'passenger' : (orderData.serviceCategory || 'goods'),
+          serviceName: orderData.serviceName || orderData.vehicleCategory || (isPassengerRide ? 'Cab' : 'Vehicle'),
+        },
       };
-      console.log(`[TelemetryWS] 🚨 New offer received for bookingId: ${payload.bookingId}`, orderData);
+      console.log(`[TelemetryWS] 🚨 New offer received for bookingId: ${payload.bookingId}`, payload.data);
       this.offerNewListeners.forEach((listener) => {
         try {
           listener(payload);
