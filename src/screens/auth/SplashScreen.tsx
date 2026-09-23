@@ -16,7 +16,8 @@ import Constants from 'expo-constants';
 import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import AsyncStorage from '../../services/asyncStorageShim';
-import { getDriverProfile } from '../../services/api';
+import { getDriverProfile, getRegistrationProgress } from '../../services/api';
+import { safeRequestPermission } from '../../services/fcmService';
 import { cleanUrl } from '../../utils/urlHelpers';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
@@ -49,6 +50,9 @@ const SplashScreen = () => {
 
     // Check saved session & navigate appropriately
     const checkAuthAndNavigate = async () => {
+      // Trigger OS Notification Allow Permission prompt on app launch
+      safeRequestPermission().catch(() => {});
+
       // Delay to show branding animation smoothly
       await new Promise(resolve => setTimeout(resolve, 1800));
 
@@ -78,6 +82,60 @@ const SplashScreen = () => {
           }
         }
 
+        // ── STEP 1: Call GET /api/drivers/register/progress (backend's source of truth) ──
+        let progressData: any = null;
+        try {
+          const phoneForProgress = (profile?.mobile || token || '').replace(/\D/g, '').slice(-10);
+          progressData = await getRegistrationProgress(phoneForProgress);
+        } catch (err) {
+          console.warn('[Splash] getRegistrationProgress failed:', err);
+        }
+
+        // If the progress endpoint returned a clear answer, trust it completely
+        if (progressData?.success) {
+          const backendIsRegistered = progressData.isRegistered === true;
+          const backendKycStatus = String(progressData.kycStatus || '').toLowerCase();
+          const backendStep = Number(progressData.registrationStep || 0);
+
+          if (backendIsRegistered && (backendKycStatus === 'approved' || backendKycStatus === 'verified')) {
+            // Fully registered & approved → Dashboard
+            if (profile) {
+              await AsyncStorage.setItem('driverProfile', JSON.stringify({
+                ...profile, isRegistered: true, registrationCompleted: true,
+                registrationStep: 5, kyc: 'approved', kycStatus: 'approved',
+              }));
+            }
+            navigation.replace('DriverTabs');
+            return;
+          }
+
+          if (!backendIsRegistered || backendKycStatus === 'draft') {
+            // Incomplete registration draft → Resume at the correct step
+            const resumeStep = backendStep >= 1 && backendStep <= 4 ? backendStep : 1;
+            navigation.replace('DriverRegistration', {
+              mobile: profile?.mobile || progressData.phone,
+              fullName: profile?.fullName || progressData.name,
+              registrationStep: resumeStep,
+              draftData: progressData,
+            });
+            return;
+          }
+
+          if (backendKycStatus === 'pending') {
+            navigation.replace('ApprovalPending');
+            return;
+          }
+
+          if (backendKycStatus === 'rejected') {
+            navigation.replace('DriverRegistration', {
+              mobile: profile?.mobile || progressData.phone,
+              fullName: profile?.fullName || progressData.name,
+            });
+            return;
+          }
+        }
+
+        // ── STEP 2: Fallback — fetch driver profile if progress endpoint unavailable ──
         let driverDb: any = null;
         try {
           driverDb = await getDriverProfile();
@@ -91,7 +149,8 @@ const SplashScreen = () => {
               return;
             }
 
-            currentKyc = driverDb.kyc || profile?.kyc || 'verified';
+            // FIX: Default KYC to 'pending' (NOT 'verified') — draft drivers must not be auto-approved
+            currentKyc = driverDb.kycStatus || driverDb.kyc || profile?.kycStatus || profile?.kyc || 'pending';
             const rawPhoto = driverDb.profilePhotoUri ||
                              driverDb.documents?.profilePhotoUrl ||
                              (driverDb.documents as any)?.profilePhotoUri ||
@@ -115,22 +174,17 @@ const SplashScreen = () => {
               kyc: currentKyc,
               kycStatus: currentKyc,
               isRegistered: Boolean(
-                driverDb.isRegistered ||
-                driverDb.registrationCompleted ||
-                Number(driverDb.registrationStep) >= 5 ||
-                profile?.isRegistered ||
-                currentKyc === 'approved' ||
-                currentKyc === 'verified'
+                driverDb.isRegistered === true ||
+                driverDb.registrationCompleted === true ||
+                (currentKyc === 'approved' || currentKyc === 'verified')
               ),
               registrationCompleted: Boolean(
-                driverDb.isRegistered ||
-                driverDb.registrationCompleted ||
-                Number(driverDb.registrationStep) >= 5 ||
-                profile?.registrationCompleted ||
-                currentKyc === 'approved' ||
-                currentKyc === 'verified'
+                driverDb.isRegistered === true ||
+                driverDb.registrationCompleted === true ||
+                (currentKyc === 'approved' || currentKyc === 'verified')
               ),
-              registrationStep: Number(driverDb.registrationStep || profile?.registrationStep || 5),
+              // FIX: Default registrationStep to 0 (NOT 5) — unknown step must not skip registration
+              registrationStep: Number(driverDb.registrationStep || profile?.registrationStep || 0),
               rejectedReason: driverDb.rejectedReason || '',
             };
             await AsyncStorage.setItem('driverProfile', JSON.stringify(updatedProfile));
@@ -140,43 +194,45 @@ const SplashScreen = () => {
           console.warn('Splash status check error:', err);
         }
 
-        const isRegistered = Boolean(
-          (driverDb as any)?.isRegistered === true ||
-          (driverDb as any)?.registrationCompleted === true ||
-          ((driverDb as any)?.registrationStep !== undefined && Number((driverDb as any).registrationStep) >= 5) ||
-          profile?.isRegistered === true ||
-          profile?.registrationCompleted === true ||
-          (profile?.registrationStep !== undefined && Number(profile.registrationStep) >= 5) ||
-          currentKyc === 'verified' ||
-          currentKyc === 'approved'
-        );
-
-        if (isRegistered) {
-          // Already registered driver -> Go directly to DriverTabs!
-          navigation.replace('DriverTabs');
-          return;
-        }
-
+        // ── STEP 3: Final routing decision (fallback path) ──
         if (currentKyc === 'pending') {
           navigation.replace('ApprovalPending');
           return;
         }
 
-        const isComplete = Boolean(
-          (profile?.vehicleNumber || profile?.vehicleType) &&
-          (profile?.aadhaarNumber || profile?.licenseNumber) &&
-          (profile?.aadhaarUri || profile?.licenseUri || profile?.profilePhotoUri) &&
-          (profile?.accountNumber || profile?.account_number) &&
-          (profile?.bankName || profile?.bank_name)
+        const isApproved = currentKyc === 'approved' || currentKyc === 'verified';
+        const isRegistered = Boolean(
+          (driverDb as any)?.isRegistered === true ||
+          (driverDb as any)?.registrationCompleted === true ||
+          profile?.isRegistered === true ||
+          profile?.registrationCompleted === true ||
+          isApproved
         );
 
-        if (!isComplete || currentKyc === 'rejected') {
+        if (isRegistered && isApproved) {
+          // Already registered & approved driver -> Go directly to DriverTabs!
+          navigation.replace('DriverTabs');
+          return;
+        }
+
+        // Driver has a draft or incomplete registration → resume
+        const savedStep = Number(profile?.registrationStep || 0);
+        if (savedStep > 0 && savedStep < 5) {
+          navigation.replace('DriverRegistration', {
+            mobile: profile?.mobile,
+            fullName: profile?.fullName,
+            registrationStep: savedStep,
+          });
+          return;
+        }
+
+        if (currentKyc === 'rejected') {
           navigation.replace('DriverRegistration', { mobile: profile?.mobile, fullName: profile?.fullName });
           return;
         }
 
-        // Completed driver auto-approved directly to DriverTabs
-        navigation.replace('DriverTabs');
+        // No clear state — send to registration as a fresh start
+        navigation.replace('DriverRegistration', { mobile: profile?.mobile, fullName: profile?.fullName });
         return;
       } catch (e) {
         console.log('AsyncStorage error:', e);

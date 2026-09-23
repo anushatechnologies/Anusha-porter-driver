@@ -14,6 +14,7 @@ import {
   Modal,
   Platform,
   ActivityIndicator,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -21,6 +22,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import AsyncStorage from '../../services/asyncStorageShim';
+import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
 import Svg, { Defs, LinearGradient, Stop, Path } from 'react-native-svg';
 import {
@@ -72,6 +74,36 @@ const DriverProfileScreen = () => {
       setImageError(false);
       const data = await AsyncStorage.getItem('driverProfile');
       let localProfile: any = data ? JSON.parse(data) : null;
+
+      // Resilient fallback: If localProfile is missing address or bank details, recover them from registration draft
+      if (!localProfile?.addressLine1 || !localProfile?.bankName || !localProfile?.vehicleNumber) {
+        try {
+          const draftRaw = await AsyncStorage.getItem('driverDraftData');
+          if (draftRaw) {
+            const draft = JSON.parse(draftRaw);
+            localProfile = {
+              ...(draft || {}),
+              ...(localProfile || {}),
+              addressLine1: localProfile?.addressLine1 || localProfile?.address || draft?.addressLine1 || draft?.address || '',
+              city: localProfile?.city || draft?.city || '',
+              state: localProfile?.state || draft?.state || '',
+              pincode: localProfile?.pincode || localProfile?.pin || draft?.pincode || draft?.pin || '',
+              bankName: localProfile?.bankName || draft?.bankName || '',
+              accountHolderName: localProfile?.accountHolderName || draft?.accountHolderName || '',
+              accountNumber: localProfile?.accountNumber || draft?.accountNumber || '',
+              ifscCode: localProfile?.ifscCode || draft?.ifscCode || '',
+              vehicleNumber: localProfile?.vehicleNumber || draft?.vehicleNumber || '',
+              rcNumber: localProfile?.rcNumber || draft?.rcNumber || '',
+              aadhaarNumber: localProfile?.aadhaarNumber || draft?.aadhaarNumber || '',
+              panNumber: localProfile?.panNumber || draft?.panNumber || '',
+              licenseNumber: localProfile?.licenseNumber || draft?.licenseNumber || '',
+              dob: localProfile?.dob || draft?.dob || '',
+              gender: localProfile?.gender || draft?.gender || '',
+            };
+          }
+        } catch { }
+      }
+
       if (localProfile) {
         if (localProfile.fullName === 'Test Driver') localProfile.fullName = '';
         if (localProfile.email === 'testdriver@example.com') localProfile.email = '';
@@ -102,7 +134,7 @@ const DriverProfileScreen = () => {
           const accRes = await getDriverPayoutAccount();
           if (accRes && accRes.account) payoutAccount = accRes.account;
         } catch (accErr) {
-          console.warn('Payout account fetch notice:', accErr);
+          // Payout account endpoint might not be active, fallback to driver profile details
         }
 
         const resolvedPhoto = extractPhoto(driverDb, localProfile);
@@ -113,41 +145,41 @@ const DriverProfileScreen = () => {
 
         const merged = {
           ...(localProfile || {}),
-          fullName: cleanDbName || localProfile?.fullName || 'Driver Partner',
-          mobile: driverDb.phone || localProfile?.mobile || localProfile?.phone || '',
-          phone: driverDb.phone || localProfile?.phone || localProfile?.mobile || '',
-          email: cleanDbEmail || localProfile?.email || '',
-          dob: driverDb.dob || localProfile?.dob || '',
+          fullName: cleanDbName || localProfile?.fullName || localProfile?.name || 'Driver Partner',
+          mobile: driverDb.phone || (driverDb as any).mobile || localProfile?.mobile || localProfile?.phone || '',
+          phone: driverDb.phone || (driverDb as any).mobile || localProfile?.phone || localProfile?.mobile || '',
+          email: cleanDbEmail || driverDb.email || localProfile?.email || '',
+          dob: driverDb.dob || (driverDb as any).dateOfBirth || (driverDb as any).date_of_birth || localProfile?.dob || '',
           gender: driverDb.gender || localProfile?.gender || '',
           serviceType: driverDb.serviceType || driverDb.service_type || driverDb.serviceTrack || localProfile?.serviceType || localProfile?.serviceTrack || (
             String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('cab') ||
-            String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('taxi') ? 'PASSENGER' : 'OUR_SERVICES'
+              String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('taxi') ? 'PASSENGER' : 'OUR_SERVICES'
           ),
           serviceTrack: driverDb.serviceTrack || driverDb.serviceType || localProfile?.serviceTrack || localProfile?.serviceType || (
             String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('cab') ||
-            String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('taxi') ? 'PASSENGER' : 'OUR_SERVICES'
+              String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('taxi') ? 'PASSENGER' : 'OUR_SERVICES'
           ),
-          vehicleType: driverDb.vehicleType || localProfile?.vehicleType || 'Vehicle',
-          vehicleNumber: cleanDbVeh || localProfile?.vehicleNumber || '',
-          rcNumber: driverDb.rcNumber || localProfile?.rcNumber || '',
-          aadhaarNumber: driverDb.aadhaarNumber || localProfile?.aadhaarNumber || '',
-          panNumber: driverDb.panNumber || localProfile?.panNumber || '',
-          licenseNumber: driverDb.licenseNumber || localProfile?.licenseNumber || '',
-          accountHolderName: driverDb.accountHolderName || (driverDb as any).bankAccountName || localProfile?.accountHolderName || '',
-          bankName: payoutAccount?.bankName || driverDb.bankName || localProfile?.bankName || '',
-          accountNumber: payoutAccount?.accountNumberMasked || (driverDb.accountNumber ? `XXXX XXXX ${driverDb.accountNumber.slice(-4)}` : (localProfile?.accountNumber ? `XXXX XXXX ${localProfile.accountNumber.slice(-4)}` : '')),
-          rawAccountNumber: payoutAccount?.accountNumber || (driverDb as any).bankAccountNumber || driverDb.accountNumber || localProfile?.bankAccountNumber || localProfile?.accountNumber || '',
-          bankAccountNumber: payoutAccount?.accountNumber || (driverDb as any).bankAccountNumber || driverDb.accountNumber || localProfile?.bankAccountNumber || localProfile?.accountNumber || '',
-          ifscCode: payoutAccount?.ifscCode || (driverDb as any).bankIfscCode || driverDb.ifscCode || localProfile?.ifscCode || '',
+          vehicleType: driverDb.vehicleType || (driverDb as any).vehicle_type || (driverDb as any).vehicle || localProfile?.vehicleType || localProfile?.vehicle || 'Vehicle',
+          vehicleNumber: cleanDbVeh || driverDb.vehicleNumber || (driverDb as any).vehicle_number || (driverDb as any).vehicleNo || localProfile?.vehicleNumber || '',
+          rcNumber: driverDb.rcNumber || (driverDb as any).rc_number || localProfile?.rcNumber || '',
+          aadhaarNumber: driverDb.aadhaarNumber || (driverDb as any).aadhaar_number || (driverDb as any).aadhaar || localProfile?.aadhaarNumber || '',
+          panNumber: driverDb.panNumber || (driverDb as any).pan_number || (driverDb as any).pan || localProfile?.panNumber || '',
+          licenseNumber: driverDb.licenseNumber || (driverDb as any).license_number || (driverDb as any).drivingLicense || localProfile?.licenseNumber || '',
+          accountHolderName: payoutAccount?.accountHolderName || driverDb.accountHolderName || (driverDb as any).bankAccountName || (driverDb as any).account_holder_name || localProfile?.accountHolderName || '',
+          bankName: payoutAccount?.bankName || driverDb.bankName || (driverDb as any).bank_name || (driverDb as any).bankDetails?.bankName || localProfile?.bankName || localProfile?.bank_name || '',
+          accountNumber: payoutAccount?.accountNumberMasked || (driverDb.accountNumber ? (driverDb.accountNumber.startsWith('XXXX') ? driverDb.accountNumber : `XXXX XXXX ${driverDb.accountNumber.slice(-4)}`) : (localProfile?.accountNumber ? (localProfile.accountNumber.startsWith('XXXX') ? localProfile.accountNumber : `XXXX XXXX ${localProfile.accountNumber.slice(-4)}`) : '')),
+          rawAccountNumber: payoutAccount?.accountNumber || (driverDb as any).bankAccountNumber || driverDb.accountNumber || (driverDb as any).account_number || localProfile?.bankAccountNumber || localProfile?.accountNumber || '',
+          bankAccountNumber: payoutAccount?.accountNumber || (driverDb as any).bankAccountNumber || driverDb.accountNumber || (driverDb as any).account_number || localProfile?.bankAccountNumber || localProfile?.accountNumber || '',
+          ifscCode: payoutAccount?.ifscCode || (driverDb as any).bankIfscCode || driverDb.ifscCode || (driverDb as any).ifsc_code || (driverDb as any).bankDetails?.ifscCode || localProfile?.ifscCode || '',
           upiId: payoutAccount?.upiId || (driverDb as any).upiId || localProfile?.upiId || '',
           partnerId: driverDb.id ? 'PRT-' + driverDb.id : (localProfile?.partnerId || (localProfile?.mobile ? 'PRT-' + localProfile.mobile.slice(-4) : 'PRT-PENDING')),
           rating: String(driverDb.rating || localProfile?.rating || '5.0'),
           tenure: String(driverDb.tenure || localProfile?.tenure || '0m'),
           kyc: (driverDb.kyc || driverDb.kycStatus || localProfile?.kyc || 'pending'),
-          addressLine1: driverDb.addressLine1 || localProfile?.addressLine1 || '',
+          addressLine1: driverDb.addressLine1 || (driverDb as any).address || localProfile?.addressLine1 || localProfile?.address || '',
           city: driverDb.city || localProfile?.city || '',
           state: driverDb.state || localProfile?.state || '',
-          pincode: driverDb.pincode || localProfile?.pincode || '',
+          pincode: driverDb.pincode || (driverDb as any).pin || localProfile?.pincode || localProfile?.pin || '',
           panUri: cleanUrl(driverDb.panUri || driverDb.panUrl || driverDb.documents?.panUrl || (driverDb.documents as any)?.panUri || localProfile?.panUri || ''),
           profilePhotoUri: resolvedPhoto || localProfile?.profilePhotoUri,
           aadhaarUri: cleanUrl(driverDb.aadhaarUri || driverDb.documents?.aadhaarUrl || localProfile?.aadhaarUri || ''),
@@ -162,6 +194,31 @@ const DriverProfileScreen = () => {
             bankPassbookUrl: cleanUrl(driverDb.documents?.bankPassbookUrl || localProfile?.documents?.bankPassbookUrl || localProfile?.bankPassbookUri || ''),
           }
         };
+
+        // Fetch actual completed trips count & calculate real-time rating from order history
+        try {
+          const historyRes = await getOrderHistory();
+          const orders = historyRes?.orders || [];
+          const completedOrders = orders.filter((o: any) => o.status === 'completed' || o.status === 'delivered');
+          merged.trips = completedOrders.length;
+
+          let totalRatingSum = 0;
+          let ratedCount = 0;
+          completedOrders.forEach((o: any) => {
+            const r = parseFloat(String(o.rating || o.customerRating || o.stars || o.ratingScore || 0));
+            if (r > 0 && r <= 5) {
+              totalRatingSum += r;
+              ratedCount++;
+            }
+          });
+
+          if (ratedCount > 0) {
+            const avg = totalRatingSum / ratedCount;
+            merged.rating = avg.toFixed(1);
+          } else if (completedOrders.length > 0) {
+            merged.rating = '5.0';
+          }
+        } catch { }
 
         setProfileData(merged);
         await AsyncStorage.setItem('driverProfile', JSON.stringify(merged));
@@ -193,147 +250,9 @@ const DriverProfileScreen = () => {
       let isMounted = true;
       const loadProfile = async () => {
         try {
-          // Step 1: Load what we have from storage immediately to show something
-          const data = await AsyncStorage.getItem('driverProfile');
-          let localProfile: any = data ? JSON.parse(data) : null;
-          if (localProfile) {
-            if (localProfile.fullName === 'Test Driver') localProfile.fullName = '';
-            if (localProfile.email === 'testdriver@example.com') localProfile.email = '';
-            if (localProfile.vehicleNumber === 'TG01AB1234') localProfile.vehicleNumber = '';
-            if (isMounted) setProfileData(localProfile);
-          }
-
-          // Step 2: Get the logged-in email if available
-          const storedEmail = await AsyncStorage.getItem('loggedInEmail') || localProfile?.email;
-
-          // Step 3: Always fetch fresh data from live backend API for all logged in drivers
-          try {
-            const driverDb = await getDriverProfile();
-            if (!isMounted) return;
-            if (driverDb) {
-              const extractPhoto = (db: any, loc: any): string => {
-                const candidates = [
-                  db?.profilePhotoUri,
-                  db?.profilePhotoUrl,
-                  db?.profilePhoto,
-                  db?.photo,
-                  db?.avatar,
-                  db?.avatarUrl,
-                  db?.image,
-                  db?.imageUrl,
-                  db?.profile_photo,
-                  db?.profile_photo_url,
-                  db?.profile_photo_uri,
-                  db?.documents?.profilePhotoUrl,
-                  db?.documents?.profile_photo_url,
-                  db?.documents?.profilePhotoUri,
-                  db?.documents?.profilePhoto,
-                  loc?.profilePhotoUri,
-                  loc?.profilePhotoUrl,
-                  loc?.profilePhoto,
-                  loc?.photo,
-                  loc?.avatar,
-                ];
-                for (const c of candidates) {
-                  if (c && typeof c === 'string' && c.trim().length > 0) {
-                    return cleanUrl(c);
-                  }
-                }
-                return '';
-              };
-
-              const rawPhoto = extractPhoto(driverDb, localProfile);
-
-              const merged = {
-                ...(localProfile || {}),
-                fullName: driverDb.name || localProfile?.fullName || '',
-                mobile: driverDb.phone || localProfile?.mobile || '',
-                email: driverDb.email || storedEmail || '',
-                dob: driverDb.dob || localProfile?.dob || '',
-                gender: driverDb.gender || localProfile?.gender || '',
-                serviceType: driverDb.serviceType || driverDb.service_type || driverDb.serviceTrack || localProfile?.serviceType || localProfile?.serviceTrack || (
-                  String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('cab') ||
-                  String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('taxi') ? 'PASSENGER' : 'OUR_SERVICES'
-                ),
-                serviceTrack: driverDb.serviceTrack || driverDb.serviceType || localProfile?.serviceTrack || localProfile?.serviceType || (
-                  String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('cab') ||
-                  String(driverDb.vehicleType || localProfile?.vehicleType || '').toLowerCase().includes('taxi') ? 'PASSENGER' : 'OUR_SERVICES'
-                ),
-                addressLine1: driverDb.addressLine1 || localProfile?.addressLine1 || '',
-                city: driverDb.city || localProfile?.city || '',
-                state: driverDb.state || localProfile?.state || '',
-                pincode: driverDb.pincode || localProfile?.pincode || '',
-                vehicleType: driverDb.vehicleType || localProfile?.vehicleType || '',
-                vehicleNumber: driverDb.vehicleNumber || localProfile?.vehicleNumber || '',
-                rcNumber: driverDb.rcNumber || localProfile?.rcNumber || '',
-                aadhaarNumber: driverDb.aadhaarNumber || localProfile?.aadhaarNumber || '',
-                panNumber: driverDb.panNumber || localProfile?.panNumber || '',
-                licenseNumber: driverDb.licenseNumber || localProfile?.licenseNumber || '',
-                bankName: driverDb.bankName || localProfile?.bankName || '',
-                accountHolderName: driverDb.accountHolderName || localProfile?.accountHolderName || '',
-                accountNumber: driverDb.accountNumber || localProfile?.accountNumber || '',
-                ifscCode: driverDb.ifscCode || localProfile?.ifscCode || '',
-                partnerId: driverDb.id ? 'PRT-' + driverDb.id : (localProfile?.partnerId || (localProfile?.mobile ? 'PRT-' + localProfile.mobile.slice(-4) : 'PRT-PENDING')),
-                profilePhotoUri: rawPhoto,
-                aadhaarUri: cleanUrl(driverDb.aadhaarUri || driverDb.documents?.aadhaarUrl || localProfile?.aadhaarUri || ''),
-                panUri: cleanUrl(driverDb.panUri || driverDb.panUrl || driverDb.documents?.panUrl || (driverDb.documents as any)?.panUri || localProfile?.panUri || ''),
-                licenseUri: cleanUrl(driverDb.licenseUri || driverDb.documents?.licenseUrl || localProfile?.licenseUri || ''),
-                rcUri: cleanUrl(driverDb.rcUri || driverDb.documents?.rcUrl || localProfile?.rcUri || ''),
-                bankPassbookUri: cleanUrl(driverDb.bankPassbookUri || driverDb.documents?.bankPassbookUrl || localProfile?.bankPassbookUri || ''),
-                kyc: driverDb.kyc || driverDb.kycStatus || localProfile?.kyc || 'pending',
-                rating: '—',
-                trips: driverDb.trips !== undefined ? driverDb.trips : (localProfile?.trips || 0),
-                tenure: (() => {
-                  const dObj = driverDb as any;
-                  const regDate = dObj?.createdAt || dObj?.created_at || dObj?.joinedDate || dObj?.registeredAt || localProfile?.createdAt;
-                  if (!regDate) return '0m';
-                  const d = new Date(regDate);
-                  if (isNaN(d.getTime())) return '0m';
-                  const days = Math.floor(Math.abs(Date.now() - d.getTime()) / (1000 * 60 * 60 * 24));
-                  if (days < 30) return days <= 1 ? '1d' : `${days}d`;
-                  const m = Math.floor(days / 30);
-                  if (m < 12) return `${m}m`;
-                  const y = Math.floor(m / 12);
-                  const rem = m % 12;
-                  return rem > 0 ? `${y}y ${rem}m` : `${y}y`;
-                })(),
-              };
-
-              // Fetch actual completed trips count & calculate real-time rating from real order ratings
-              try {
-                const historyRes = await getOrderHistory();
-                const orders = historyRes?.orders || [];
-                const completedOrders = orders.filter((o: any) => o.status === 'completed' || o.status === 'delivered');
-                merged.trips = completedOrders.length;
-
-                let totalRatingSum = 0;
-                let ratedCount = 0;
-                completedOrders.forEach((o: any) => {
-                  const r = parseFloat(String(o.rating || o.customerRating || o.stars || o.ratingScore || 0));
-                  if (r > 0 && r <= 5) {
-                    totalRatingSum += r;
-                    ratedCount++;
-                  }
-                });
-
-                if (ratedCount > 0) {
-                  const avg = totalRatingSum / ratedCount;
-                  merged.rating = avg.toFixed(1);
-                } else if (completedOrders.length > 0) {
-                  merged.rating = '5.0';
-                } else {
-                  merged.rating = '—';
-                }
-              } catch (e) {}
-
-              setProfileData(merged);
-              await AsyncStorage.setItem('driverProfile', JSON.stringify(merged));
-            }
-          } catch (dbErr) {
-            console.warn('Backend driver profile update notice:', dbErr);
-          }
+          await fetchProfileFreshData();
         } catch (e) {
-          console.warn('Failed to load profile from storage:', e);
+          console.warn('Failed to load profile on focus:', e);
         }
       };
       loadProfile();
@@ -504,28 +423,28 @@ const DriverProfileScreen = () => {
     try {
       // 1. Check all possible profile serviceType fields
       const rawSType = profileData?.serviceType || (profileData as any)?.service_type || (profileData as any)?.serviceTrack || profileData?.serviceCategory;
-      
+
       // 2. Check saved registration & permanent track from storage
       const savedDraftTrack = await AsyncStorage.getItem('driverDraftServiceTrack').catch(() => null);
       const savedPermanentTrack = await AsyncStorage.getItem('driverServiceTrack').catch(() => null);
 
       // 3. Check current vehicle name / vehicle type heuristic
       const currentVeh = String(profileData?.vehicleType || editForm?.vehicleType || editForm?.vehicle || '').toLowerCase();
-      const isVehPassenger = 
-        currentVeh.includes('cab') || currentVeh.includes('car') || currentVeh.includes('taxi') || 
-        currentVeh.includes('sedan') || currentVeh.includes('suv') || currentVeh.includes('bike taxi') || 
+      const isVehPassenger =
+        currentVeh.includes('cab') || currentVeh.includes('car') || currentVeh.includes('taxi') ||
+        currentVeh.includes('sedan') || currentVeh.includes('suv') || currentVeh.includes('bike taxi') ||
         currentVeh.includes('auto taxi');
-      const isVehGoods = 
-        currentVeh.includes('truck') || currentVeh.includes('ace') || currentVeh.includes('pickup') || 
-        currentVeh.includes('lorry') || currentVeh.includes('407') || currentVeh.includes('1109') || 
+      const isVehGoods =
+        currentVeh.includes('truck') || currentVeh.includes('ace') || currentVeh.includes('pickup') ||
+        currentVeh.includes('lorry') || currentVeh.includes('407') || currentVeh.includes('1109') ||
         currentVeh.includes('mini truck');
 
       // Determine track strictly
       let sType: 'PASSENGER' | 'OUR_SERVICES' = 'OUR_SERVICES';
       if (
-        String(rawSType || '').toUpperCase().includes('PASS') || 
-        savedDraftTrack === 'PASSENGER' || 
-        savedPermanentTrack === 'PASSENGER' || 
+        String(rawSType || '').toUpperCase().includes('PASS') ||
+        savedDraftTrack === 'PASSENGER' ||
+        savedPermanentTrack === 'PASSENGER' ||
         (isVehPassenger && !isVehGoods)
       ) {
         sType = 'PASSENGER';
@@ -555,11 +474,11 @@ const DriverProfileScreen = () => {
         const strictlyFiltered = res.vehicles.filter(v => {
           const vSvc = String(v.serviceType || '').toUpperCase();
           const vName = (v.name + ' ' + v.type).toLowerCase();
-          const isPassengerVeh = 
+          const isPassengerVeh =
             vSvc === 'PASSENGER' || vSvc === 'CAB' || vSvc === 'TAXI' || vSvc === 'RIDE' ||
-            vName.includes('cab') || vName.includes('taxi') || vName.includes('sedan') || 
+            vName.includes('cab') || vName.includes('taxi') || vName.includes('sedan') ||
             vName.includes('suv') || vName.includes('bike taxi') || vName.includes('auto taxi');
-          
+
           if (sType === 'PASSENGER') {
             return isPassengerVeh;
           } else {
@@ -621,13 +540,13 @@ const DriverProfileScreen = () => {
     setEditSaving(true);
     try {
       // Preserve and synchronize driver's service track to prevent backend database erasure
-      const effectiveServiceType: string = 
-        profileData?.serviceType || 
-        (profileData as any)?.service_type || 
-        (profileData as any)?.serviceTrack || 
+      const effectiveServiceType: string =
+        profileData?.serviceType ||
+        (profileData as any)?.service_type ||
+        (profileData as any)?.serviceTrack ||
         (
           String(editForm.vehicle || profileData?.vehicleType || '').toLowerCase().includes('cab') ||
-          String(editForm.vehicle || profileData?.vehicleType || '').toLowerCase().includes('taxi')
+            String(editForm.vehicle || profileData?.vehicleType || '').toLowerCase().includes('taxi')
             ? 'PASSENGER'
             : 'OUR_SERVICES'
         );
@@ -653,7 +572,7 @@ const DriverProfileScreen = () => {
       const res = await updateDriverProfile(payload);
       if (res.success) {
         // Persist track to local AsyncStorage
-        await AsyncStorage.setItem('driverServiceTrack', effectiveServiceType).catch(() => {});
+        await AsyncStorage.setItem('driverServiceTrack', effectiveServiceType).catch(() => { });
         // Merge updates into local profile state
         setProfileData((prev: any) => ({
           ...prev,
@@ -690,8 +609,8 @@ const DriverProfileScreen = () => {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
-      <ScrollView 
-        showsVerticalScrollIndicator={false} 
+      <ScrollView
+        showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
         refreshControl={
           <RefreshControl
@@ -702,7 +621,7 @@ const DriverProfileScreen = () => {
           />
         }
       >
-        
+
         {/* Curved Header Section */}
         <View style={styles.headerSection}>
           <Svg height={200} width={width} style={StyleSheet.absoluteFillObject}>
@@ -712,9 +631,9 @@ const DriverProfileScreen = () => {
                 <Stop offset="1" stopColor="#00C896" stopOpacity="1" />
               </LinearGradient>
             </Defs>
-            <Path 
-              d={`M0 0 L${width} 0 L${width} 140 Q${width/2} 220 0 140 Z`}
-              fill="url(#waveGrad)" 
+            <Path
+              d={`M0 0 L${width} 0 L${width} 140 Q${width / 2} 220 0 140 Z`}
+              fill="url(#waveGrad)"
             />
           </Svg>
 
@@ -778,7 +697,27 @@ const DriverProfileScreen = () => {
         <View style={styles.contentBody}>
 
           {/* Personal Information */}
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>Personal Details</Text>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: 0 }]}>Personal Details</Text>
+            <TouchableOpacity
+              onPress={openEditModal}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                backgroundColor: `${colors.primary}18`,
+                paddingHorizontal: 12,
+                paddingVertical: 6,
+                borderRadius: 14,
+                gap: 5,
+                borderWidth: 1,
+                borderColor: `${colors.primary}40`,
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="create-outline" size={15} color={colors.primary} />
+              <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primary }}>Edit Profile</Text>
+            </TouchableOpacity>
+          </View>
           <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border }, !isDark && styles.softShadow]}>
             <View style={styles.detailItemRow}>
               <Ionicons name="call-outline" size={18} color="#0D5CFF" />
@@ -814,21 +753,21 @@ const DriverProfileScreen = () => {
           </View>
 
           {/* Address Information */}
-          {(profileData?.addressLine1 || profileData?.city || profileData?.state || profileData?.pincode) ? (
+          {(profileData?.addressLine1 || profileData?.address || profileData?.city || profileData?.state || profileData?.pincode) ? (
             <>
               <Text style={[styles.sectionTitle, { color: colors.text }]}>Address Details</Text>
               <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border }, !isDark && styles.softShadow]}>
                 <View style={styles.detailItemRow}>
                   <Ionicons name="location-outline" size={18} color="#10B981" />
                   <Text style={[styles.detailItemLabel, { color: colors.textSecondary }]}>Address:</Text>
-                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{formatAddressString(profileData?.addressLine1, 'N/A')}</Text>
+                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{formatAddressString(profileData?.addressLine1 || profileData?.address, 'N/A')}</Text>
                 </View>
                 <View style={[styles.fieldDivider, { backgroundColor: colors.border }]} />
                 <View style={styles.detailItemRow}>
                   <Ionicons name="map-outline" size={18} color="#10B981" />
                   <Text style={[styles.detailItemLabel, { color: colors.textSecondary }]}>City / State:</Text>
                   <Text style={[styles.detailItemValue, { color: colors.text }]}>
-                    {[profileData?.city, profileData?.state, profileData?.pincode].filter(Boolean).join(', ') || 'N/A'}
+                    {[profileData?.city, profileData?.state, profileData?.pincode || profileData?.pin].filter(Boolean).join(', ') || 'N/A'}
                   </Text>
                 </View>
               </View>
@@ -844,7 +783,7 @@ const DriverProfileScreen = () => {
               </View>
               <View style={styles.vehicleTextCol}>
                 <Text style={[styles.vehicleMake, { color: colors.textSecondary }]}>{vehicleMake}</Text>
-                <Text style={[styles.vehiclePlate, { color: colors.text }]}>{vehiclePlate || 'N/A'}</Text>
+                <Text style={[styles.vehiclePlate, { color: colors.text }]}>{vehiclePlate || profileData?.vehicleNumber || 'N/A'}</Text>
               </View>
               <View style={styles.activeTag}>
                 <Text style={styles.activeTagText}>ACTIVE</Text>
@@ -856,65 +795,65 @@ const DriverProfileScreen = () => {
                 {serviceCapability.label}
               </Text>
             </View>
-            {!!profileData?.rcNumber && (
+            {!!(profileData?.rcNumber || profileData?.rc_number) && (
               <>
                 <View style={[styles.fieldDivider, { backgroundColor: colors.border }]} />
                 <View style={styles.detailItemRow}>
                   <Ionicons name="document-text-outline" size={18} color="#0D5CFF" />
                   <Text style={[styles.detailItemLabel, { color: colors.textSecondary }]}>RC Number:</Text>
-                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData.rcNumber}</Text>
+                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData.rcNumber || profileData.rc_number}</Text>
                 </View>
               </>
             )}
-            {!!profileData?.licenseNumber && (
+            {!!(profileData?.licenseNumber || profileData?.license_number) && (
               <>
                 <View style={[styles.fieldDivider, { backgroundColor: colors.border }]} />
                 <View style={styles.detailItemRow}>
                   <Ionicons name="card-outline" size={18} color="#0D5CFF" />
                   <Text style={[styles.detailItemLabel, { color: colors.textSecondary }]}>License No:</Text>
-                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData.licenseNumber}</Text>
+                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData.licenseNumber || profileData.license_number}</Text>
                 </View>
               </>
             )}
-            {!!profileData?.aadhaarNumber && (
+            {!!(profileData?.aadhaarNumber || profileData?.aadhaar_number) && (
               <>
                 <View style={[styles.fieldDivider, { backgroundColor: colors.border }]} />
                 <View style={styles.detailItemRow}>
                   <Ionicons name="finger-print-outline" size={18} color="#0D5CFF" />
                   <Text style={[styles.detailItemLabel, { color: colors.textSecondary }]}>Aadhaar No:</Text>
-                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData.aadhaarNumber}</Text>
+                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData.aadhaarNumber || profileData.aadhaar_number}</Text>
                 </View>
               </>
             )}
-            {!!profileData?.panNumber && (
+            {!!(profileData?.panNumber || profileData?.pan_number) && (
               <>
                 <View style={[styles.fieldDivider, { backgroundColor: colors.border }]} />
                 <View style={styles.detailItemRow}>
                   <Ionicons name="document-text-outline" size={18} color="#0D5CFF" />
                   <Text style={[styles.detailItemLabel, { color: colors.textSecondary }]}>PAN Number:</Text>
-                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData.panNumber}</Text>
+                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData.panNumber || profileData.pan_number}</Text>
                 </View>
               </>
             )}
           </View>
 
           {/* Bank Account Details */}
-          {(profileData?.bankName || profileData?.accountNumber || profileData?.ifscCode) ? (
+          {(profileData?.bankName || profileData?.bank_name || profileData?.accountNumber || profileData?.account_number || profileData?.ifscCode || profileData?.ifsc_code) ? (
             <>
               <Text style={[styles.sectionTitle, { color: colors.text }]}>Bank Account Details</Text>
               <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border }, !isDark && styles.softShadow]}>
                 <View style={styles.detailItemRow}>
                   <Ionicons name="business-outline" size={18} color="#F59E0B" />
                   <Text style={[styles.detailItemLabel, { color: colors.textSecondary }]}>Bank Name:</Text>
-                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData?.bankName || 'N/A'}</Text>
+                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData?.bankName || profileData?.bank_name || 'N/A'}</Text>
                 </View>
-                {!!profileData?.accountHolderName && (
+                {!!(profileData?.accountHolderName || profileData?.account_holder_name) && (
                   <>
                     <View style={[styles.fieldDivider, { backgroundColor: colors.border }]} />
                     <View style={styles.detailItemRow}>
                       <Ionicons name="person-circle-outline" size={18} color="#F59E0B" />
                       <Text style={[styles.detailItemLabel, { color: colors.textSecondary }]}>Holder Name:</Text>
-                      <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData.accountHolderName}</Text>
+                      <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData.accountHolderName || profileData.account_holder_name}</Text>
                     </View>
                   </>
                 )}
@@ -922,13 +861,13 @@ const DriverProfileScreen = () => {
                 <View style={styles.detailItemRow}>
                   <Ionicons name="wallet-outline" size={18} color="#F59E0B" />
                   <Text style={[styles.detailItemLabel, { color: colors.textSecondary }]}>Account No:</Text>
-                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData?.accountNumber || 'N/A'}</Text>
+                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData?.accountNumber || profileData?.account_number || profileData?.bankAccountNumber || 'N/A'}</Text>
                 </View>
                 <View style={[styles.fieldDivider, { backgroundColor: colors.border }]} />
                 <View style={styles.detailItemRow}>
                   <Ionicons name="barcode-outline" size={18} color="#F59E0B" />
                   <Text style={[styles.detailItemLabel, { color: colors.textSecondary }]}>IFSC Code:</Text>
-                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData?.ifscCode || 'N/A'}</Text>
+                  <Text style={[styles.detailItemValue, { color: colors.text }]}>{profileData?.ifscCode || profileData?.ifsc_code || profileData?.bankIfscCode || 'N/A'}</Text>
                 </View>
               </View>
             </>
@@ -936,7 +875,7 @@ const DriverProfileScreen = () => {
 
           <Text style={[styles.sectionTitle, { color: colors.text }]}>Settings & Support</Text>
           <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border, padding: 0, overflow: 'hidden' }, !isDark && styles.softShadow]}>
-            
+
 
             <TouchableOpacity style={[styles.menuRow, { borderBottomColor: colors.border, borderBottomWidth: StyleSheet.hairlineWidth }]} onPress={() => navigation.navigate('OrderHistory' as any)}>
               <View style={styles.menuLeft}>
@@ -977,7 +916,7 @@ const DriverProfileScreen = () => {
               <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
             </TouchableOpacity>
 
-            <TouchableOpacity style={[styles.menuRow, { borderBottomColor: colors.border, borderBottomWidth: StyleSheet.hairlineWidth }]} onPress={() => navigation.navigate('PrivacyPolicy' as any)}>
+            <TouchableOpacity style={styles.menuRow} onPress={() => navigation.navigate('PrivacyPolicy' as any)}>
               <View style={styles.menuLeft}>
                 <View style={[styles.menuIconBg, { backgroundColor: 'rgba(13,92,255,0.1)' }]}>
                   <Ionicons name="shield-checkmark" size={18} color="#0D5CFF" />
@@ -985,19 +924,6 @@ const DriverProfileScreen = () => {
                 <View>
                   <Text style={[styles.menuText, { color: colors.text }]}>Privacy Policy</Text>
                   <Text style={[styles.menuSubtext, { color: colors.textSecondary }]}>Location & data terms</Text>
-                </View>
-              </View>
-              <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.menuRow} onPress={() => Alert.alert('Language', 'Choose language:\n• English\n• Hindi')}>
-              <View style={styles.menuLeft}>
-                <View style={[styles.menuIconBg, { backgroundColor: 'rgba(245,158,11,0.1)' }]}>
-                  <Ionicons name="language" size={18} color="#F59E0B" />
-                </View>
-                <View>
-                  <Text style={[styles.menuText, { color: colors.text }]}>Language</Text>
-                  <Text style={[styles.menuSubtext, { color: colors.textSecondary }]}>English (Default)</Text>
                 </View>
               </View>
               <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
@@ -1011,7 +937,7 @@ const DriverProfileScreen = () => {
               const performLogout = async () => {
                 try {
                   // 1. Set driver status to offline on backend
-                  await setDriverOnlineStatus('offline').catch(() => {});
+                  await setDriverOnlineStatus('offline').catch(() => { });
 
                   // 2. Sign out of Firebase Auth session
                   try {
@@ -1021,8 +947,9 @@ const DriverProfileScreen = () => {
                     console.warn('Firebase signOut notice:', fbSignOutErr);
                   }
 
-                  // 3. Completely clear all cached storage keys
-                  await AsyncStorage.clear();
+                  // 3. Clear auth/session storage keys while preserving notification read history
+                  const { clearSessionKeepNotifications } = require('../../services/asyncStorageShim');
+                  await clearSessionKeepNotifications();
                 } catch (e) {
                   console.warn('Logout storage clear error:', e);
                 }
@@ -1059,7 +986,9 @@ const DriverProfileScreen = () => {
             <Ionicons name="log-out-outline" size={20} color="#EF4444" />
           </TouchableOpacity>
 
-          <Text style={[styles.versionText, { color: colors.textMuted }]}>Anusha Porter Driver v2.28.6 (Production)</Text>
+          <Text style={[styles.versionText, { color: colors.textMuted }]}>
+            Anusha Porter Driver v{Constants.expoConfig?.version ?? '2.28.39'} (Production)
+          </Text>
         </View>
       </ScrollView>
 
@@ -1070,7 +999,11 @@ const DriverProfileScreen = () => {
         animationType="slide"
         onRequestClose={() => setEditModalVisible(false)}
       >
-        <View style={styles.editModalOverlay}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.editModalOverlay}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+        >
           <View style={[styles.editModalSheet, { backgroundColor: colors.card }]}>
             {/* Modal Header */}
             <View style={[styles.editModalHeader, { borderBottomColor: colors.border }]}>
@@ -1090,7 +1023,12 @@ const DriverProfileScreen = () => {
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={styles.editModalScroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <ScrollView
+              style={styles.editModalScroll}
+              contentContainerStyle={{ paddingBottom: 140 }}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
               {/* Personal */}
               <Text style={[styles.editSectionLabel, { color: colors.textSecondary }]}>PERSONAL</Text>
               <View style={[styles.editFieldRow, { borderColor: colors.border, backgroundColor: colors.background }]}>
@@ -1239,7 +1177,7 @@ const DriverProfileScreen = () => {
               </View>
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Vehicle Selection Modal (Admin Panel Dynamic Vehicles) */}

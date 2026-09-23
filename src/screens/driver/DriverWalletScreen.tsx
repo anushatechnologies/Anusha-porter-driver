@@ -18,6 +18,7 @@ import {
   getWalletTransactions,
   getOrderHistory,
   DriverWallet,
+  normalizeTimestamp,
 } from '../../services/api';
 
 const DriverWalletScreen = () => {
@@ -225,18 +226,18 @@ const DriverWalletScreen = () => {
                   const refId = txn.orderId || (txn as any).orderRef || (txn as any).referenceId;
 
                   let title = 'Transaction';
-                  let subtext = txn.createdAt ? new Date(txn.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recent';
+                  let subtext = txn.createdAt ? new Date(normalizeTimestamp(txn.createdAt)).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : 'Recent';
                   
                   if (isCommission) {
                     title = 'Ride Commission';
                     const fareText = txn.orderFare ? ` • Fare: ₹${Number(txn.orderFare).toFixed(0)}` : '';
-                    subtext = `${refId ? `Order #${refId}` : 'Ride Fee'}${fareText} • ${txn.createdAt ? new Date(txn.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'Today'}`;
+                    subtext = `${refId ? `Order #${refId}` : 'Ride Fee'}${fareText} • ${txn.createdAt ? new Date(normalizeTimestamp(txn.createdAt)).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', timeZone: 'Asia/Kolkata' }) : 'Today'}`;
                   } else if (rawType === 'ORDER_EARNING') {
                     title = 'Ride Fare Collected';
                     subtext = `${refId ? `Order #${refId} • ` : ''}Cash in Hand`;
                   } else if (rawType === 'RECHARGE' || rawType === 'WALLET_RECHARGE' || isCredit) {
                     title = 'Wallet Credit';
-                    subtext = `Balance Added • ${txn.createdAt ? new Date(txn.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'Today'}`;
+                    subtext = `Balance Added • ${txn.createdAt ? new Date(normalizeTimestamp(txn.createdAt)).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', timeZone: 'Asia/Kolkata' }) : 'Today'}`;
                   }
 
                   return (

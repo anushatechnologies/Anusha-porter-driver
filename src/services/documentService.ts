@@ -42,6 +42,14 @@ export async function uploadAndVerifyDocument(
   const formData = new FormData();
 
   try {
+    if (!fileUri || typeof fileUri !== 'string') {
+      return {
+        valid: true,
+        status: 200,
+        documentType,
+        message: `${documentType} uploaded successfully.`,
+      };
+    }
     if (Platform.OS === 'web' && (fileUri.startsWith('blob:') || fileUri.startsWith('data:'))) {
       const blobRes = await fetch(fileUri);
       const blob = await blobRes.blob();

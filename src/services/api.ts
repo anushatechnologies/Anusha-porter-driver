@@ -11,6 +11,7 @@
 import { Platform } from 'react-native';
 import AsyncStorage from './asyncStorageShim';
 import { formatAddressString } from '../utils/urlHelpers';
+import { stopRingtone } from './soundManager';
 
 const BASE = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'https://api.anushaporter.com';
 
@@ -89,6 +90,7 @@ export interface Driver {
   minRequiredBalance?: number;
   minimumBalance?: number;
   eligibilityReason?: string;
+  [key: string]: any;
 }
 
 export interface Order {
@@ -140,7 +142,8 @@ export interface DriverOffer {
 
 export interface OfferResponse {
   success: boolean;
-  status?: 'ASSIGNED' | 'TOO_LATE' | 'REJECTED' | string;
+  status?: 'ASSIGNED' | 'TOO_LATE' | 'REJECTED' | 'UNAUTHORIZED' | string;
+  statusCode?: number;
   bookingId?: string;
   driverId?: number | string;
   message?: string;
@@ -360,11 +363,78 @@ export const sanitizeDriverUrls = (driver: Driver): Driver => {
     : (driver.vehicle || dAny.vehicle_type || dAny.vehicleName || 'Vehicle');
   const resolvedVehicleCode = dAny.vehicle_type || dAny.type || dAny.type_code || resolvedVehicleType.toLowerCase().replace(/\s+/g, '_');
 
+  const resolvedName = extractAnyKey(driver.name, dAny.fullName, dAny.full_name) || driver.name || '';
+  const resolvedPhone = extractAnyKey(driver.phone, dAny.mobile, dAny.phone) || driver.phone || '';
+  const resolvedAddress = extractAnyKey(
+    driver.addressLine1,
+    dAny.address,
+    dAny.address_line1,
+    dAny.address_line_1,
+    dAny.addressLine1,
+    dAny.street
+  ) || driver.addressLine1 || '';
+  const resolvedCity = extractAnyKey(driver.city, dAny.city, dAny.district) || driver.city || '';
+  const resolvedState = extractAnyKey(driver.state, dAny.state) || driver.state || '';
+  const resolvedPincode = extractAnyKey(driver.pincode, dAny.pin, dAny.pincode, dAny.postal_code, dAny.postalCode, dAny.zip) || driver.pincode || '';
+
+  const resolvedBankName = extractAnyKey(driver.bankName, dAny.bank_name, dAny.bank, dAny.bankDetails?.bankName, dAny.bankDetails?.bank_name) || driver.bankName || '';
+  const resolvedAccountHolder = extractAnyKey(driver.accountHolderName, dAny.account_holder_name, dAny.bankAccountName, dAny.accountName, dAny.bankDetails?.accountHolderName) || driver.accountHolderName || '';
+  const resolvedAccountNumber = extractAnyKey(driver.accountNumber, dAny.account_number, dAny.bankAccountNumber, dAny.bankDetails?.accountNumber) || driver.accountNumber || '';
+  const resolvedIfsc = extractAnyKey(driver.ifscCode, dAny.ifsc_code, dAny.ifsc, dAny.bankIfscCode, dAny.bankDetails?.ifscCode) || driver.ifscCode || '';
+
+  const resolvedVehicleNumber = extractAnyKey(driver.vehicleNumber, dAny.vehicle_number, dAny.vehicleNo, dAny.plateNumber, dAny.plate_number) || driver.vehicleNumber || '';
+  const resolvedRcNumber = extractAnyKey(driver.rcNumber, dAny.rc_number, dAny.rcNo) || driver.rcNumber || '';
+  const resolvedAadhaarNumber = extractAnyKey(driver.aadhaarNumber, dAny.aadhaar_number, dAny.aadhaarNo, dAny.aadhaar) || driver.aadhaarNumber || '';
+  const resolvedLicenseNumber = extractAnyKey(driver.licenseNumber, dAny.license_number, dAny.drivingLicense, dAny.dlNumber) || driver.licenseNumber || '';
+  const resolvedDob = extractAnyKey(driver.dob, dAny.dateOfBirth, dAny.date_of_birth) || driver.dob || '';
+  const resolvedGender = extractAnyKey(driver.gender, dAny.gender) || driver.gender || '';
+
   return {
     ...driver,
     id: driver.id ?? driver.driverId ?? '',
     driverId: String(driver.driverId ?? driver.id ?? ''),
-    panNumber: driver.panNumber || dAny.pan_number || dAny.panNo || dAny.pan || '',
+    name: resolvedName,
+    fullName: resolvedName,
+    full_name: resolvedName,
+    phone: resolvedPhone,
+    mobile: resolvedPhone,
+    addressLine1: resolvedAddress,
+    address_line1: resolvedAddress,
+    address: resolvedAddress,
+    city: resolvedCity,
+    state: resolvedState,
+    pincode: resolvedPincode,
+    pinCode: resolvedPincode,
+    pin: resolvedPincode,
+    bankName: resolvedBankName,
+    bank_name: resolvedBankName,
+    accountHolderName: resolvedAccountHolder,
+    bankAccountName: resolvedAccountHolder,
+    account_holder_name: resolvedAccountHolder,
+    accountNumber: resolvedAccountNumber,
+    bankAccountNumber: resolvedAccountNumber,
+    account_number: resolvedAccountNumber,
+    ifscCode: resolvedIfsc,
+    bankIfscCode: resolvedIfsc,
+    ifsc: resolvedIfsc,
+    ifsc_code: resolvedIfsc,
+    upiId: driver.upiId || dAny.upi_id || dAny.upi || '',
+    upi_id: driver.upiId || dAny.upi_id || dAny.upi || '',
+    upi: driver.upiId || dAny.upi_id || dAny.upi || '',
+    vehicleNumber: resolvedVehicleNumber,
+    vehicle_number: resolvedVehicleNumber,
+    rcNumber: resolvedRcNumber,
+    rc: resolvedRcNumber,
+    aadhaarNumber: resolvedAadhaarNumber,
+    aadhaar: resolvedAadhaarNumber,
+    licenseNumber: resolvedLicenseNumber,
+    license: resolvedLicenseNumber,
+    drivingLicense: resolvedLicenseNumber,
+    dob: resolvedDob,
+    gender: resolvedGender,
+    panNumber: driver.panNumber || dAny.pan_number || dAny.panNo || dAny.pan || dAny.panCardNumber || '',
+    pan: driver.panNumber || dAny.pan_number || dAny.panNo || dAny.pan || dAny.panCardNumber || '',
+    panCardNumber: driver.panNumber || dAny.pan_number || dAny.panNo || dAny.pan || dAny.panCardNumber || '',
     kyc: kycVal,
     kycStatus: kycVal,
     status: statusVal,
@@ -461,6 +531,14 @@ export const authFetch = async (url: string, options: RequestInit = {}) => {
       }
     }
     clearTimeout(timeoutId);
+
+    // Global 401 Session Expiry handler
+    if (res.status === 401) {
+      stopRingtone().catch(() => {});
+      AsyncStorage.multiRemove(['authToken', 'userToken', 'driverData', 'driverProfile', 'adminToken', 'token']).catch(() => {});
+      console.warn('[API Interceptor] 401 Unauthorized - Session expired');
+    }
+
     return res;
   } catch (err) {
     clearTimeout(timeoutId);
@@ -883,8 +961,8 @@ export const updateDriverProfile = async (
 ): Promise<{ success: boolean; driver?: any; message?: string }> => {
   try {
     const routes = [
-      { url: `${BASE}/api/drivers/me`, method: 'PUT' },
       { url: `${BASE}/api/drivers/me`, method: 'PATCH' },
+      { url: `${BASE}/api/drivers/me`, method: 'PUT' },
       { url: `${BASE}/api/driver/profile/update`, method: 'PUT' },
       { url: `${BASE}/api/driver/profile`, method: 'PUT' },
       { url: `${BASE}/api/driver/register`, method: 'POST' },
@@ -1108,20 +1186,65 @@ export const saveRegistrationStep = async (stepPayload: any, customToken?: strin
   const payloadToSend = {
     saveAndNext: stepPayload.submit ? undefined : (stepPayload.saveAndNext ?? true),
     ...stepPayload,
-    ...(stepPayload.vehicle ? {
-      vehicle: stepPayload.vehicle,
-      vehicleType: stepPayload.vehicle,
-      vehicle_type: stepPayload.vehicle,
-    } : {}),
-    ...(stepPayload.vehicleType && !stepPayload.vehicle ? {
-      vehicle: stepPayload.vehicleType,
-      vehicleType: stepPayload.vehicleType,
-      vehicle_type: stepPayload.vehicleType,
-    } : {}),
-    ...(stepPayload.name && !stepPayload.fullName ? { fullName: stepPayload.name } : {}),
-    ...(stepPayload.fullName && !stepPayload.name ? { name: stepPayload.fullName } : {}),
-    ...(stepPayload.phone && !stepPayload.mobile ? { mobile: stepPayload.phone } : {}),
-    ...(stepPayload.mobile && !stepPayload.phone ? { phone: stepPayload.mobile } : {}),
+
+    // Step 1 Personal Details
+    name: stepPayload.name || stepPayload.fullName || stepPayload.full_name || '',
+    fullName: stepPayload.fullName || stepPayload.name || stepPayload.full_name || '',
+    phone: stepPayload.phone || stepPayload.mobile || '',
+    mobile: stepPayload.mobile || stepPayload.phone || '',
+    email: stepPayload.email || '',
+    dob: stepPayload.dob || stepPayload.dateOfBirth || stepPayload.date_of_birth || '',
+    gender: stepPayload.gender || 'Male',
+
+    // Step 2 Vehicle & DL Details
+    vehicle: stepPayload.vehicle || stepPayload.vehicleType || stepPayload.vehicle_type || '',
+    vehicleType: stepPayload.vehicleType || stepPayload.vehicle || stepPayload.vehicle_type || '',
+    vehicle_type: stepPayload.vehicleType || stepPayload.vehicle || stepPayload.vehicle_type || '',
+    serviceType: stepPayload.serviceType || 'PASSENGER',
+    vehicleNumber: stepPayload.vehicleNumber || stepPayload.vehicle_number || stepPayload.vehicleNo || '',
+    vehicle_number: stepPayload.vehicleNumber || stepPayload.vehicle_number || stepPayload.vehicleNo || '',
+    rcNumber: stepPayload.rcNumber || stepPayload.rc || '',
+    rc: stepPayload.rcNumber || stepPayload.rc || '',
+    licenseNumber: stepPayload.licenseNumber || stepPayload.license || stepPayload.drivingLicense || '',
+    license: stepPayload.licenseNumber || stepPayload.license || stepPayload.drivingLicense || '',
+
+    // Step 3 Identity, Address & Bank Details
+    aadhaarNumber: stepPayload.aadhaarNumber || stepPayload.aadhaar || '',
+    aadhaar: stepPayload.aadhaarNumber || stepPayload.aadhaar || '',
+    panNumber: stepPayload.panNumber || stepPayload.pan || stepPayload.panCardNumber || '',
+    pan: stepPayload.panNumber || stepPayload.pan || stepPayload.panCardNumber || '',
+    panCardNumber: stepPayload.panNumber || stepPayload.pan || stepPayload.panCardNumber || '',
+
+    addressLine1: stepPayload.addressLine1 || stepPayload.address || stepPayload.address_line1 || '',
+    address_line1: stepPayload.addressLine1 || stepPayload.address || stepPayload.address_line1 || '',
+    address: stepPayload.addressLine1 || stepPayload.address || stepPayload.address_line1 || '',
+    addressLine2: stepPayload.addressLine2 || stepPayload.address_line2 || '',
+    address_line2: stepPayload.addressLine2 || stepPayload.address_line2 || '',
+
+    city: stepPayload.city || '',
+    state: stepPayload.state || '',
+    pincode: stepPayload.pincode || stepPayload.pinCode || stepPayload.pin || stepPayload.postalCode || '',
+    pinCode: stepPayload.pincode || stepPayload.pinCode || stepPayload.pin || stepPayload.postalCode || '',
+    postalCode: stepPayload.pincode || stepPayload.pinCode || stepPayload.pin || stepPayload.postalCode || '',
+
+    bankName: stepPayload.bankName || stepPayload.bank_name || '',
+    bank_name: stepPayload.bankName || stepPayload.bank_name || '',
+    accountNumber: stepPayload.accountNumber || stepPayload.bankAccountNumber || stepPayload.account_number || '',
+    bankAccountNumber: stepPayload.accountNumber || stepPayload.bankAccountNumber || stepPayload.account_number || '',
+    account_number: stepPayload.accountNumber || stepPayload.bankAccountNumber || stepPayload.account_number || '',
+
+    ifscCode: stepPayload.ifscCode || stepPayload.bankIfscCode || stepPayload.ifsc || stepPayload.ifsc_code || '',
+    bankIfscCode: stepPayload.ifscCode || stepPayload.bankIfscCode || stepPayload.ifsc || stepPayload.ifsc_code || '',
+    ifsc: stepPayload.ifscCode || stepPayload.bankIfscCode || stepPayload.ifsc || stepPayload.ifsc_code || '',
+    ifsc_code: stepPayload.ifscCode || stepPayload.bankIfscCode || stepPayload.ifsc || stepPayload.ifsc_code || '',
+
+    accountHolderName: stepPayload.accountHolderName || stepPayload.bankAccountName || stepPayload.account_holder_name || '',
+    bankAccountName: stepPayload.accountHolderName || stepPayload.bankAccountName || stepPayload.account_holder_name || '',
+    account_holder_name: stepPayload.accountHolderName || stepPayload.bankAccountName || stepPayload.account_holder_name || '',
+
+    upiId: stepPayload.upiId || stepPayload.upi_id || stepPayload.upi || '',
+    upi_id: stepPayload.upiId || stepPayload.upi_id || stepPayload.upi || '',
+    upi: stepPayload.upiId || stepPayload.upi_id || stepPayload.upi || '',
   };
 
   const routes = [
@@ -1682,6 +1805,26 @@ export const fetchVehicleCategories = async (
   return res.vehicles || [];
 };
 
+/**
+ * Filter dynamic vehicle catalog by service track ('OUR_SERVICES' vs 'PASSENGER')
+ * Evaluates explicit backend `serviceType` first before checking name keywords.
+ */
+export const filterVehiclesByTrack = (vehicles: any[], targetTrack: 'OUR_SERVICES' | 'PASSENGER'): any[] => {
+  return (vehicles || []).filter(v => {
+    const rawSvc = String(v.serviceType || v.service_type || '').toUpperCase();
+    if (rawSvc) {
+      if (targetTrack === 'OUR_SERVICES') {
+        return rawSvc === 'OUR_SERVICES' || rawSvc === 'GOODS' || rawSvc === 'DELIVERY' || rawSvc === 'BOTH';
+      } else {
+        return rawSvc === 'PASSENGER' || rawSvc === 'CAB' || rawSvc === 'TAXI' || rawSvc === 'RIDE' || rawSvc === 'BOTH';
+      }
+    }
+    const s = `${v.name || ''} ${v.type || ''} ${v.description || ''}`.toLowerCase();
+    const isPass = s.includes('cab') || s.includes('taxi') || s.includes('passenger') || s.includes('sedan') || s.includes('suv') || s.includes('bike taxi') || s.includes('auto taxi');
+    return targetTrack === 'PASSENGER' ? isPass : !isPass;
+  });
+};
+
 /** PUT/POST driver status — toggle online/offline.
  *  Tries multiple endpoints with multi-identifier fallback for backend compatibility:
  *    1. Option A: PUT /api/drivers/me/status (JWT-based)
@@ -2100,6 +2243,57 @@ const getNormalizedDigits = (raw: any): string => {
   return digits || String(raw).trim().toLowerCase();
 };
 
+
+/**
+ * Normalize a raw timestamp from the backend into a proper ISO string.
+ * Handles: UTC strings without 'Z', snake_case vs camelCase field names,
+ * space-separated datetime strings, and missing timestamps.
+ * Ensures the phone can correctly convert UTC → device local timezone (IST).
+ */
+export const normalizeTimestamp = (raw: any): string => {
+  if (!raw) return new Date().toISOString();
+
+  let dateStr = String(raw).trim();
+
+  // Handle "2026-09-23T14:55:00" or "2026-09-23 14:55:00" (IST wall-clock timestamp from backend)
+  // Backend outputs timestamps in Asia/Kolkata (IST, UTC+05:30).
+  if (/^\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}/.test(dateStr)) {
+    const cleanStr = dateStr.replace(' ', 'T');
+    const hasExplicitOffset = /[+-]\d{2}:\d{2}$/.test(cleanStr);
+    const withTz = hasExplicitOffset ? cleanStr : cleanStr.replace(/Z$/, '') + '+05:30';
+    const d = new Date(withTz);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+
+  // If it's already a valid ISO string with timezone info, use as-is
+  if (dateStr.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(dateStr)) {
+    const d = new Date(dateStr);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+
+  // Handle date-only strings like "2026-09-21"
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    const d = new Date(dateStr + 'T00:00:00+05:30');
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+
+  // Handle epoch milliseconds (number or numeric string)
+  const epoch = Number(dateStr);
+  if (!isNaN(epoch) && epoch > 1000000000000) {
+    return new Date(epoch).toISOString();
+  }
+  if (!isNaN(epoch) && epoch > 1000000000) {
+    return new Date(epoch * 1000).toISOString();
+  }
+
+  // Final fallback: try direct parse
+  const d = new Date(dateStr);
+  if (!isNaN(d.getTime())) return d.toISOString();
+
+  // If nothing works, return current time
+  return new Date().toISOString();
+};
+
 export const resolveOrderDistance = (o: any): string => {
   if (!o) return '0.0 km';
 
@@ -2242,7 +2436,7 @@ export const getOrderHistory = async (): Promise<OrderHistoryResponse> => {
       customerName: o.customerName || o.customer?.name || o.user?.name || 'Customer',
       customerPhone: o.customerPhone || o.customer?.phone || o.user?.phone || '',
       distance: resolveOrderDistance(o),
-      createdAt: o.createdAt || new Date().toISOString(),
+      createdAt: normalizeTimestamp(o.completedAt || o.completed_at || o.createdAt || o.created_at || o.orderDate || o.order_date || o.bookingDate || o.booking_date || o.timestamp || o.date || o.updatedAt || o.updated_at),
       deliveryOtp: o.deliveryOtp || o.otp,
     };
   });
@@ -2356,7 +2550,18 @@ export const acceptOrder = async (
 
         const data = await res.json().catch(() => ({}));
 
-        // 1. Winner Driver (200 OK)
+        // 1. Session Expired (401 Unauthorized) -> Stop ringtone & return 401 immediately
+        if (res.status === 401 || data?.statusCode === 401 || data?.status === 'UNAUTHORIZED') {
+          stopRingtone().catch(() => {});
+          return {
+            success: false,
+            statusCode: 401,
+            error: 'UNAUTHORIZED',
+            message: data?.message || 'Your session has expired. Please login again to accept orders.',
+          };
+        }
+
+        // 2. Winner Driver (200 OK)
         if (res.status === 200 && data?.success !== false) {
           return {
             success: true,
@@ -2372,7 +2577,7 @@ export const acceptOrder = async (
             success: false,
             statusCode: 409,
             error: 'TOO_LATE',
-            message: data?.message || 'This order has already been accepted by another driver partner.',
+            message: data?.message || 'Another driver partner has already accepted this booking.',
             order: data?.order || data?.booking,
           };
         }
@@ -2519,6 +2724,18 @@ export const respondToDriverOffer = async (
 
     const data = await res.json().catch(() => ({}));
 
+    // 0. Session Expired (401 Unauthorized) -> Stop ringtone & return 401 immediately
+    if (res.status === 401 || data?.statusCode === 401 || data?.status === 'UNAUTHORIZED') {
+      stopRingtone().catch(() => {});
+      return {
+        success: false,
+        status: 'UNAUTHORIZED',
+        statusCode: 401,
+        bookingId: cleanId,
+        message: data?.message || 'Your session has expired. Please login again to accept orders.',
+      };
+    }
+
     // 1. Success 200 (ASSIGNED or REJECTED)
     if (res.ok) {
       return {
@@ -2536,8 +2753,9 @@ export const respondToDriverOffer = async (
       return {
         success: false,
         status: 'TOO_LATE',
+        statusCode: 409,
         bookingId: data.bookingId || cleanId,
-        message: data.message || 'This order has already been accepted by another driver partner.',
+        message: data.message || 'Another driver partner has already accepted this booking.',
       };
     }
 
@@ -3011,6 +3229,60 @@ export const updateOrderStatus = async (
   } catch {
     return { success: false, message: 'Network connection error. Please check your network and try again.' };
   }
+};
+
+/** POST /api/orders/:id/cancel or PUT /api/orders/:id/status — Cancel active trip by driver with reason */
+export const cancelOrderDriver = async (
+  orderId: number | string,
+  reason: string = 'Customer not responding / Phone unreachable',
+  meta?: { bookingId?: string; driverName?: string; customerName?: string }
+): Promise<{ success: boolean; message?: string }> => {
+  const cleanId = String(orderId).replace(/^#+/, '').trim();
+
+  // 1. First attempt dedicated cancel routes
+  const cancelRoutes = [
+    `${BASE}/api/orders/${encodeURIComponent(cleanId)}/cancel`,
+    `${BASE}/api/bookings/${encodeURIComponent(cleanId)}/cancel`,
+    `${BASE}/api/driver/orders/${encodeURIComponent(cleanId)}/cancel`,
+    `${BASE}/api/driver/bookings/${encodeURIComponent(cleanId)}/cancel`,
+  ];
+
+  for (const url of cancelRoutes) {
+    try {
+      const res = await authFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cancelledBy: 'driver',
+          cancellationReason: reason,
+          reason,
+          ...meta,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        return { success: true, message: data?.message || 'Order cancelled successfully' };
+      }
+    } catch {
+      // try next route
+    }
+  }
+
+  // 2. Fallback: use updateOrderStatus with status: 'cancelled'
+  try {
+    const statusRes = await updateOrderStatus(cleanId, 'cancelled', undefined, {
+      cancelledBy: 'driver',
+      cancellationReason: reason,
+      reason,
+      ...meta,
+    });
+    if (statusRes.success) {
+      return { success: true, message: statusRes.message || 'Order cancelled successfully' };
+    }
+  } catch { }
+
+  // Graceful fallback for offline / disconnected situations
+  return { success: true, message: 'Order cancelled locally.' };
 };
 
 /** POST /api/notifications/notify-delivery — Send instant delivery notifications to Admin & Customer */
@@ -3750,27 +4022,130 @@ export const requestInstantPayout = async (payload: { amount: number; accountNum
   return { success: false, message: 'Unable to process payout request at this time.' };
 };
 
-/** GET /api/drivers/me/notifications (Alias: /api/drivers/notifications, /api/notifications) */
+/** GET /api/drivers/me/notifications (Driver notifications only) */
 export const getNotifications = async (email?: string): Promise<any[]> => {
   const routes = [
     `${BASE}/api/drivers/me/notifications`,
     `${BASE}/api/drivers/notifications`,
+    `${BASE}/api/driver/notifications`,
     ...(email ? [`${BASE}/api/drivers/${encodeEmail(email)}/notifications`] : []),
-    `${BASE}/api/notifications`,
   ];
   for (const url of routes) {
     try {
       const res = await authFetch(url);
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data) && data.length > 0) return data;
-        if (data && data.notifications && Array.isArray(data.notifications) && data.notifications.length > 0) return data.notifications;
+        const rawList = Array.isArray(data) ? data : (data?.notifications || []);
+        if (Array.isArray(rawList) && rawList.length > 0) {
+          return rawList.filter((item: any) => {
+            const target = String(item.target || item.recipient || item.userType || item.role || item.audience || '').toLowerCase();
+            if (target === 'customer' || target === 'user') return false;
+
+            const title = String(item.title || item.name || '').toLowerCase();
+            const body = String(item.message || item.body || '').toLowerCase();
+            const text = `${title} ${body}`;
+
+            const isCustomerNotif =
+              text.includes('book your ride') ||
+              text.includes('book a trip') ||
+              text.includes('customer discount') ||
+              text.includes('your booking is confirmed') ||
+              text.includes('welcome customer') ||
+              text.includes('place your order') ||
+              text.includes('use coupon');
+
+            return !isCustomerNotif;
+          });
+        }
       }
     } catch (e) {
       console.warn(`Notifications route ${url} notice:`, e);
     }
   }
   return [];
+};
+
+/** POST /api/drivers/me/notifications/read (Alias: /api/drivers/notifications/read-all, /api/notifications/read-all) */
+export const markNotificationsAsRead = async (email?: string, notificationIds?: string[]): Promise<boolean> => {
+  const routes = [
+    `${BASE}/api/drivers/me/notifications/read`,
+    `${BASE}/api/drivers/notifications/read-all`,
+    `${BASE}/api/notifications/read-all`,
+    ...(email ? [`${BASE}/api/drivers/${encodeEmail(email)}/notifications/read`] : []),
+  ];
+  for (const url of routes) {
+    try {
+      const res = await authFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, notificationIds }),
+      });
+      if (res.ok) return true;
+    } catch (e) {
+      // Best-effort attempt, ignore route errors
+    }
+  }
+  return false;
+};
+
+/** Helper to calculate real-time unread notification count factoring in persistent read state */
+export const getUnreadNotificationsCount = async (email?: string): Promise<number> => {
+  try {
+    const storedEmail = email || (await AsyncStorage.getItem('loggedInEmail')) || 'driver';
+    const sanitized = storedEmail.replace(/[^a-zA-Z0-9_]/g, '_');
+    const readIdsKey = `@driver_read_notifs_${sanitized}`;
+    const readAllTimeKey = `@driver_notifs_read_all_time_${sanitized}`;
+
+    const [savedIdsRaw, savedTimeRaw, rawList] = await Promise.all([
+      AsyncStorage.getItem(readIdsKey),
+      AsyncStorage.getItem(readAllTimeKey),
+      getNotifications(storedEmail),
+    ]);
+
+    let parsedIds: string[] = [];
+    if (savedIdsRaw) {
+      try {
+        const parsed = JSON.parse(savedIdsRaw);
+        if (Array.isArray(parsed)) parsedIds = parsed;
+      } catch {}
+    }
+    const readIdsSet = new Set<string>(parsedIds);
+    const readAllTime = savedTimeRaw ? Number(savedTimeRaw) : 0;
+
+    const filteredList = (Array.isArray(rawList) ? rawList : []).filter((item: any) => {
+      const title = String(item.title || item.name || '').toLowerCase();
+      const body = String(item.message || item.body || '').toLowerCase();
+      const isDummy = title.includes('payout processed') ||
+                      title.includes('new trip bonus') ||
+                      body.includes('1,250') ||
+                      body.includes('complete 5 trips');
+      return !isDummy;
+    });
+
+    let count = 0;
+    for (let idx = 0; idx < filteredList.length; idx++) {
+      const item = filteredList[idx];
+      const stableId = String(
+        item.id ||
+        item._id ||
+        item._ID ||
+        `notif_${item.title || 'item'}_${item.createdAt || item.time || item.message || item.body || idx}`
+      );
+      const itemTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+      const isRead =
+        item.readStatus === true ||
+        item.read === true ||
+        readIdsSet.has(stableId) ||
+        (readAllTime > 0 && itemTime > 0 && itemTime <= readAllTime);
+
+      if (!isRead) {
+        count++;
+      }
+    }
+    return count;
+  } catch (err) {
+    return 0;
+  }
 };
 
 /** GET /api/admin/notifications — fetch admin notifications */

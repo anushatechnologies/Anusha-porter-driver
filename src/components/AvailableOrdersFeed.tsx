@@ -275,14 +275,16 @@ const styles = StyleSheet.create({
   cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: 14,
   },
   headerLeft: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
     flexWrap: 'wrap',
+    marginRight: 8,
   },
   serviceBadge: {
     flexDirection: 'row',
@@ -310,11 +312,15 @@ const styles = StyleSheet.create({
   },
   fareContainer: {
     alignItems: 'flex-end',
+    justifyContent: 'flex-start',
+    flexShrink: 0,
+    paddingTop: 2,
   },
   fareAmount: {
     fontSize: 18,
     fontWeight: '900',
     letterSpacing: -0.5,
+    textAlign: 'right',
   },
   routeSection: {
     paddingVertical: 6,

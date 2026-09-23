@@ -364,7 +364,11 @@ export const OrderDispatchProvider: React.FC<{
 
     const startLocationTracking = async () => {
       try {
-        const { status } = await Location.getForegroundPermissionsAsync();
+        let { status } = await Location.getForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          const reqRes = await Location.requestForegroundPermissionsAsync().catch(() => null);
+          if (reqRes) status = reqRes.status;
+        }
         if (status !== 'granted') return;
 
         const initialLoc = (await Location.getLastKnownPositionAsync().catch(() => null))
@@ -486,7 +490,8 @@ export const OrderDispatchProvider: React.FC<{
     const unsubscribeFCM = safeOnMessage(async (remoteMessage: any) => {
       if (!isOnlineRef.current) return;
       const data = remoteMessage?.data || {};
-      const action = data.action || data.type;
+      const action = data.action || data.type || data.notificationType;
+      const msgType = data.type || data.action || data.notificationType;
       const cleanBk = String(data.bookingId || data.orderId || data.id || '').replace(/^#+/, '');
 
       const isSilentStop =
@@ -502,6 +507,10 @@ export const OrderDispatchProvider: React.FC<{
         action === 'ORDER_OFFER_CANCELLED' ||
         action === 'OFFER_TOO_LATE' ||
         action === 'OFFER_DISMISSED' ||
+        msgType === 'STOP_RINGTONE' ||
+        msgType === 'STOP_DRIVER_OFFER' ||
+        msgType === 'OFFER_TOO_LATE' ||
+        msgType === 'OFFER_DISMISSED' ||
         data.status === 'TOO_LATE' ||
         data.status === 'STOPPED';
 
@@ -534,6 +543,12 @@ export const OrderDispatchProvider: React.FC<{
         action === 'RIDE_OFFER' ||
         action === 'RIDE_REQUEST' ||
         action === 'driver:offer:new' ||
+        msgType === 'ORDER_OFFER' ||
+        msgType === 'NEW_ORDER' ||
+        msgType === 'NEW_BOOKING' ||
+        msgType === 'BOOKING_OFFER' ||
+        msgType === 'RIDE_OFFER' ||
+        msgType === 'RIDE_REQUEST' ||
         Boolean(cleanBk && !isSilentStop);
 
       if (isOrderOfferAction && cleanBk) {
@@ -570,10 +585,77 @@ export const OrderDispatchProvider: React.FC<{
       }
     });
 
+    // Handle when driver taps notification from tray
+    const unsubscribeNotificationOpened = safeOnNotificationOpenedApp((remoteMessage: any) => {
+      if (!isOnlineRef.current) return;
+      console.log('[OrderDispatchContext FCM] Notification opened from tray:', remoteMessage);
+      const data = remoteMessage?.data || {};
+      const action = data.action || data.type || data.notificationType;
+      const isSilentStop =
+        data.stopSound === 'true' ||
+        data.stopSound === true ||
+        data.stopAudio === 'true' ||
+        data.stopAudio === true ||
+        data.stop_ringtone === 'true' ||
+        action === 'STOP_RINGTONE' ||
+        action === 'OFFER_TOO_LATE' ||
+        action === 'OFFER_DISMISSED' ||
+        data.status === 'TOO_LATE' ||
+        data.status === 'STOPPED';
+
+      if (isSilentStop) return;
+
+      let orderData: any = null;
+      if (data.order) {
+        try {
+          orderData = typeof data.order === 'string' ? JSON.parse(data.order) : data.order;
+        } catch (e) {
+          orderData = data;
+        }
+      } else if (data.bookingId || data.id || data.orderId) {
+        orderData = data;
+      }
+      if (orderData) {
+        const normalized = normalizeOrderPayload(orderData);
+        if (!isDriverBusy()) {
+          presentOffer(normalized);
+        }
+      }
+    });
+
     return () => {
       if (unsubscribeFCM) unsubscribeFCM();
+      if (unsubscribeNotificationOpened) unsubscribeNotificationOpened();
     };
   }, [addDismissedId, isDriverBusy, normalizeOrderPayload, presentOffer]);
+
+  // Helper to handle 401 Session Expiry
+  const handleSessionExpired = async () => {
+    await stopRingtone();
+    dismissIncomingOrderModal();
+    try {
+      await AsyncStorage.multiRemove(['authToken', 'userToken', 'driverData', 'driverProfile', 'adminToken', 'token']);
+    } catch (e) {}
+
+    Alert.alert(
+      'Session Expired',
+      'Your session has expired. Please login again to accept orders.',
+      [
+        {
+          text: 'Login Now',
+          onPress: () => {
+            if (navigationRef.isReady()) {
+              navigationRef.reset({
+                index: 0,
+                routes: [{ name: 'Login' as never }],
+              });
+            }
+          },
+        },
+      ],
+      { cancelable: false }
+    );
+  };
 
   // Driver accepts order
   const acceptOrder = async (bookingId: string | number, extraMeta?: any): Promise<any> => {
@@ -596,6 +678,12 @@ export const OrderDispatchProvider: React.FC<{
         return { success: true, order: orderData };
       }
 
+      // Check 401 Session Expired
+      if (res && (res.status === 'UNAUTHORIZED' || res.statusCode === 401 || (res as any).status === 401)) {
+        await handleSessionExpired();
+        return { success: false, statusCode: 401, message: res.message };
+      }
+
       if (res && (res.status === 'TOO_LATE' || (res as any).statusCode === 409 || (res as any).status === 409)) {
         await stopRingtone();
         addDismissedId(cleanBk);
@@ -608,14 +696,21 @@ export const OrderDispatchProvider: React.FC<{
           })
         );
         Alert.alert(
-          'Order Already Accepted',
-          res.message || 'Another driver partner has already accepted this booking.'
+          'Order Unavailable',
+          res.message || 'Another driver partner has already accepted this booking.',
+          [{ text: 'OK' }]
         );
         return { success: false, statusCode: 409, message: res.message };
       }
 
       // Fallback: direct atomic acceptOrder endpoint
       const directRes = await apiAcceptOrder(cleanBk, extraMeta);
+
+      if (directRes.statusCode === 401 || directRes.error === 'UNAUTHORIZED') {
+        await handleSessionExpired();
+        return directRes;
+      }
+
       if (directRes.success && directRes.statusCode === 200) {
         await stopRingtone();
         dismissIncomingOrderModal(cleanBk);
@@ -638,29 +733,55 @@ export const OrderDispatchProvider: React.FC<{
           })
         );
         Alert.alert(
-          'Order Already Accepted',
-          directRes.message || 'Another driver partner accepted this order.'
+          'Order Unavailable',
+          directRes.message || 'Another driver partner has already accepted this booking.',
+          [{ text: 'OK' }]
         );
         return directRes;
       }
 
-      // Other failure
-      Alert.alert('Order Unavailable', directRes.message || 'Could not accept this order.');
+      // Other failure (Network / 500 / etc.)
+      await stopRingtone();
+      dismissIncomingOrderModal(cleanBk);
+      Alert.alert(
+        'Unable to Accept',
+        directRes.message || 'Something went wrong. Please check your internet connection.',
+        [{ text: 'OK' }]
+      );
       return directRes;
     } catch (err: any) {
+      await stopRingtone();
+      dismissIncomingOrderModal(cleanBk);
       console.warn('[OrderDispatchContext] acceptOrder exception:', err);
-      if (err?.statusCode === 409 || err?.response?.status === 409) {
+
+      const status = err?.statusCode || err?.response?.status || err?.status;
+      if (status === 401) {
+        await handleSessionExpired();
+        return { success: false, statusCode: 401, error: 'UNAUTHORIZED' };
+      }
+
+      if (status === 409) {
         dismissedOfferIdsRef.current.add(cleanBk);
         dismissOffer(cleanBk);
-        dismissIncomingOrderModal(cleanBk);
         setAvailableOrders((prev) =>
           prev.filter((o) => {
             const oId = String(o.bookingId || o.orderId || o.id || '').replace(/^#+/, '');
             return oId !== cleanBk;
           })
         );
-        Alert.alert('Order Already Accepted', 'Another driver partner accepted this order.');
+        Alert.alert(
+          'Order Unavailable',
+          'Another driver partner has already accepted this booking.',
+          [{ text: 'OK' }]
+        );
+        return { success: false, statusCode: 409, message: 'Order Unavailable' };
       }
+
+      Alert.alert(
+        'Unable to Accept',
+        err?.message || 'Something went wrong. Please check your internet connection.',
+        [{ text: 'OK' }]
+      );
       return { success: false, error: err?.message };
     }
   };

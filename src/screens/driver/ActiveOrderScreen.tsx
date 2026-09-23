@@ -23,7 +23,7 @@ import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import Svg, { Path, Rect, Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
-import { updateOrderStatus, getActiveOrder, getOrderDetails, sendDeliveryNotification, createPaymentOrder, getPaymentStatus, verifyDeliveryOtpOnly, verifyStartRideOtp, confirmPaymentAndCompleteOrder, getDriverWallet, setDriverOnlineStatus } from '../../services/api';
+import { updateOrderStatus, getActiveOrder, getOrderDetails, sendDeliveryNotification, createPaymentOrder, getPaymentStatus, verifyDeliveryOtpOnly, verifyStartRideOtp, confirmPaymentAndCompleteOrder, getDriverWallet, setDriverOnlineStatus, cancelOrderDriver } from '../../services/api';
 import { telemetrySocket, dismissOffer } from '../../services/telemetrySocket';
 import { stopRingtone } from '../../services/soundManager';
 import { safeOnMessage } from '../../services/fcmService';
@@ -45,6 +45,14 @@ const PASSENGER_STEPS = [
   { key: 'reached_pickup', label: 'Reached Pickup', iconName: 'location', desc: 'Arrived at passenger pickup' },
   { key: 'start_ride', label: 'Start Ride', iconName: 'shield-checkmark', desc: 'Verify passenger 4-digit PIN' },
   { key: 'end_ride', label: 'End Ride & Collect Fare', iconName: 'flag', desc: 'Arrived at destination, collect fare' },
+];
+
+const DRIVER_CANCEL_REASONS = [
+  'Customer not responding / Phone unreachable',
+  'Customer refused or cancelled verbally',
+  'Incorrect pickup address / Location unreachable',
+  'Vehicle breakdown / Personal emergency',
+  'Other reason',
 ];
 
 const UBER_MAP_STYLE = [
@@ -89,6 +97,11 @@ const ActiveOrderScreen = () => {
   // Real live order data from params or live backend sync
   const [activeOrder, setActiveOrder] = useState<any>(route.params?.order || null);
   const isCancelledHandledRef = useRef(false);
+
+  // Driver cancellation state
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancellingOrder, setCancellingOrder] = useState(false);
+  const [selectedCancelReason, setSelectedCancelReason] = useState(DRIVER_CANCEL_REASONS[0]);
 
   // BUG-03 fix: reset handled flag whenever a NEW order arrives on this screen
   useEffect(() => {
@@ -511,6 +524,88 @@ const ActiveOrderScreen = () => {
         hasValidDrop ? { lat: parsedDrop.lat, lng: parsedDrop.lng } : null,
         dropAddress
       );
+    }
+  };
+
+  // Driver can cancel while on the way or waiting at pickup, BEFORE goods are collected or ride starts with OTP
+  const canDriverCancel = useMemo(() => {
+    if (completed) return false;
+    const s = String(activeOrder?.status || '').toLowerCase();
+    if (['in_transit', 'delivering', 'picked_up', 'ride_started', 'destination_reached', 'completed', 'cancelled', 'failed'].includes(s)) {
+      return false;
+    }
+    // Step 0: On way to pickup, Step 1: Arrived at pickup
+    // Step 2+: Goods picked up or Ride started
+    if (currentStep >= 2) return false;
+    return true;
+  }, [completed, activeOrder?.status, currentStep]);
+
+  const handleDriverCancelOrder = async () => {
+    setCancellingOrder(true);
+    try {
+      isCancelledHandledRef.current = true;
+      const targetOrderId = orderId || displayOrderId || activeOrder?.bookingId || activeOrder?.id;
+      const cleanId = String(targetOrderId || '').replace(/^#+/, '').trim();
+
+      // 1. Call backend cancellation
+      if (cleanId) {
+        await cancelOrderDriver(cleanId, selectedCancelReason, {
+          bookingId: displayOrderId,
+          driverName: driverName || 'Driver',
+          customerName,
+        }).catch(() => {});
+      }
+
+      // 2. Dismiss socket offer & stop any sounds
+      await stopRingtone().catch(() => {});
+      const currentKey = String(orderId || displayOrderId || '');
+      dismissOffer(currentKey);
+      if (orderId) dismissOffer(String(orderId));
+      if (displayOrderId) dismissOffer(String(displayOrderId));
+
+      // 3. Clear all active delivery local storage
+      await AsyncStorage.removeItem('@current_active_delivery_id');
+      if (currentKey) {
+        await AsyncStorage.removeItem(`@active_cargo_step_${currentKey}`);
+        await AsyncStorage.removeItem(`@active_order_${currentKey}`);
+        await AsyncStorage.removeItem(`@active_order_data_${currentKey}`);
+      }
+
+      // 4. Ensure driver remains online
+      await setDriverOnlineStatus('online').catch(() => {});
+      await AsyncStorage.setItem('@driver_is_online', 'true');
+
+      setShowCancelModal(false);
+
+      // 5. Alert driver & reset navigation to Dashboard
+      Alert.alert(
+        'Trip Cancelled',
+        `This order has been cancelled (${selectedCancelReason}). You are online and ready for new trips.`,
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              navigation.dispatch(
+                CommonActions.reset({
+                  index: 0,
+                  routes: [{ name: 'DriverTabs' as any }],
+                })
+              );
+            },
+          },
+        ],
+        { cancelable: false }
+      );
+    } catch (err) {
+      Alert.alert('Notice', 'An error occurred while cancelling. Returning to dashboard.');
+      navigation.dispatch(
+        CommonActions.reset({
+          index: 0,
+          routes: [{ name: 'DriverTabs' as any }],
+        })
+      );
+    } finally {
+      setCancellingOrder(false);
     }
   };
 
@@ -1187,6 +1282,26 @@ const ActiveOrderScreen = () => {
           </View>
         </View>
 
+        {/* Customer Not Responding Cancel Option */}
+        {canDriverCancel && (
+          <View style={styles.cancelBarContainer}>
+            <TouchableOpacity
+              style={[
+                styles.cancelTripBtn, 
+                { 
+                  borderColor: isDark ? 'rgba(239,68,68,0.3)' : 'rgba(239,68,68,0.25)', 
+                  backgroundColor: isDark ? 'rgba(239,68,68,0.08)' : '#FEF2F2' 
+                }
+              ]}
+              onPress={() => setShowCancelModal(true)}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="close-circle-outline" size={18} color="#EF4444" style={{ marginRight: 6 }} />
+              <Text style={styles.cancelTripBtnText}>Customer Not Responding? Cancel Trip</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Route Details */}
         <View style={[
           styles.routeCard, 
@@ -1436,6 +1551,113 @@ const ActiveOrderScreen = () => {
 
             <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setShowOtpModal(false)}>
               <Text style={[styles.modalCancelBtnText, { color: colors.textSecondary }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Driver Trip Cancellation Modal */}
+      <Modal
+        visible={showCancelModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => !cancellingOrder && setShowCancelModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <View style={[styles.modalIconBadge, { backgroundColor: isDark ? 'rgba(239, 68, 68, 0.2)' : '#FEE2E2' }]}>
+              <Ionicons name="warning-outline" size={28} color="#EF4444" />
+            </View>
+
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Cancel Order?</Text>
+            <Text style={[styles.modalSub, { color: colors.textSecondary }]}>
+              Please select a reason why you cannot complete this pickup:
+            </Text>
+
+            {/* Prompt to call customer if unreachable */}
+            {customerPhone && customerPhone.trim().length > 0 ? (
+              <TouchableOpacity
+                style={[styles.quickCallCustomerBtn, { borderColor: isDark ? 'rgba(16,185,129,0.3)' : 'rgba(16,185,129,0.2)' }]}
+                onPress={() => {
+                  Linking.openURL(`tel:${customerPhone}`).catch(() => {
+                    Alert.alert('Notice', 'Unable to dial customer.');
+                  });
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="call" size={16} color={colors.success} style={{ marginRight: 8 }} />
+                <Text style={[styles.quickCallText, { color: colors.success }]}>
+                  Try Calling Customer ({customerPhone})
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+
+            {/* Reason Selection List */}
+            <View style={styles.cancelReasonsList}>
+              {DRIVER_CANCEL_REASONS.map((reason, rIdx) => {
+                const isSelected = selectedCancelReason === reason;
+                return (
+                  <TouchableOpacity
+                    key={rIdx}
+                    style={[
+                      styles.cancelReasonRow,
+                      {
+                        backgroundColor: isSelected
+                          ? (isDark ? 'rgba(239, 68, 68, 0.12)' : 'rgba(239, 68, 68, 0.06)')
+                          : (isDark ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.02)'),
+                        borderColor: isSelected ? '#EF4444' : colors.border,
+                      },
+                    ]}
+                    onPress={() => setSelectedCancelReason(reason)}
+                    activeOpacity={0.7}
+                  >
+                    <View
+                      style={[
+                        styles.radioCircle,
+                        {
+                          borderColor: isSelected ? '#EF4444' : colors.border,
+                          backgroundColor: isSelected ? '#EF4444' : 'transparent',
+                        },
+                      ]}
+                    >
+                      {isSelected && <View style={styles.radioDot} />}
+                    </View>
+                    <Text
+                      style={[
+                        styles.cancelReasonText,
+                        {
+                          color: isSelected ? (isDark ? '#FCA5A5' : '#DC2626') : colors.text,
+                          fontWeight: isSelected ? '700' : '500',
+                        },
+                      ]}
+                    >
+                      {reason}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Confirm Cancellation Action Button */}
+            <TouchableOpacity
+              style={[styles.confirmCancelBtn, cancellingOrder && { opacity: 0.6 }]}
+              onPress={handleDriverCancelOrder}
+              disabled={cancellingOrder}
+              activeOpacity={0.8}
+            >
+              {cancellingOrder ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <Text style={styles.confirmCancelBtnText}>Confirm Cancellation</Text>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.modalCancelBtn}
+              onPress={() => setShowCancelModal(false)}
+              disabled={cancellingOrder}
+            >
+              <Text style={[styles.modalCancelBtnText, { color: colors.textSecondary }]}>Keep Order</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -2313,6 +2535,92 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     color: '#10B981',
+  },
+  cancelBarContainer: {
+    paddingHorizontal: 20,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  cancelTripBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  cancelTripBtnText: {
+    color: '#EF4444',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  quickCallCustomerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    width: '100%',
+  },
+  quickCallText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  cancelReasonsList: {
+    width: '100%',
+    marginBottom: 16,
+    gap: 8,
+  },
+  cancelReasonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  radioCircle: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  radioDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#FFFFFF',
+  },
+  cancelReasonText: {
+    fontSize: 13,
+    flex: 1,
+  },
+  confirmCancelBtn: {
+    width: '100%',
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: '#EF4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#EF4444',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+    marginBottom: 8,
+  },
+  confirmCancelBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
   },
 });
 

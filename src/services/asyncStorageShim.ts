@@ -50,6 +50,15 @@ const webStorage = {
       return Object.keys(memoryStore);
     }
   },
+  multiRemove: async (keys: string[]): Promise<void> => {
+    for (const key of keys) {
+      try {
+        window.localStorage.removeItem(key);
+      } catch {
+        delete memoryStore[key];
+      }
+    }
+  },
 };
 
 const nativeStorage = {
@@ -89,6 +98,34 @@ const nativeStorage = {
       return Object.keys(memoryStore);
     }
   },
+  multiRemove: async (keys: string[]): Promise<void> => {
+    try {
+      await AsyncStorage.multiRemove(keys);
+    } catch {
+      for (const key of keys) {
+        delete memoryStore[key];
+      }
+    }
+  },
+};
+
+export const clearSessionKeepNotifications = async (): Promise<void> => {
+  try {
+    const allKeys = await (Platform.OS === 'web' ? webStorage.getAllKeys() : nativeStorage.getAllKeys());
+    const keysToRemove = allKeys.filter(key =>
+      !key.startsWith('@driver_read_notifs_') &&
+      !key.startsWith('@driver_notifs_read_all_time_')
+    );
+    for (const key of keysToRemove) {
+      if (Platform.OS === 'web') {
+        await webStorage.removeItem(key);
+      } else {
+        await nativeStorage.removeItem(key);
+      }
+    }
+  } catch {
+    await (Platform.OS === 'web' ? webStorage.clear() : nativeStorage.clear());
+  }
 };
 
 export default Platform.OS === 'web' ? webStorage : nativeStorage;

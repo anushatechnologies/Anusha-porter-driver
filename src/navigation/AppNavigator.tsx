@@ -28,16 +28,7 @@ import OrderHistoryScreen from '../screens/driver/OrderHistoryScreen';
 import SupportScreen from '../screens/driver/SupportScreen';
 import PrivacyPolicyScreen from '../screens/PrivacyPolicyScreen';
 
-// Admin Screens
-import AdminDashboardScreen from '../screens/admin/AdminDashboardScreen';
-import DriverManagementScreen from '../screens/admin/DriverManagementScreen';
-import OrderManagementScreen from '../screens/admin/OrderManagementScreen';
-import UserManagementScreen from '../screens/admin/UserManagementScreen';
-import PaymentManagementScreen from '../screens/admin/PaymentManagementScreen';
-import AnalyticsScreen from '../screens/admin/AnalyticsScreen';
-import WalletSettingsScreen from '../screens/admin/WalletSettingsScreen';
-import VehicleManagementScreen from '../screens/admin/VehicleManagementScreen';
-import ServiceableAreasScreen from '../screens/admin/ServiceableAreasScreen';
+
 
 export type ActiveOrderData = {
   id: number | string;
@@ -65,7 +56,7 @@ export type ActiveOrderData = {
 
 export type RootStackParamList = {
   Splash: undefined;
-  Login: { role?: 'driver' | 'admin'; phone?: string; mobile?: string } | undefined;
+  Login: { role?: 'driver'; phone?: string; mobile?: string } | undefined;
   DriverRegistration: { mobile?: string; firebaseIdToken?: string; fullName?: string; registrationStep?: number; draftData?: any } | undefined;
   ApprovalPending: undefined;
   DriverTabs: undefined;
@@ -76,15 +67,6 @@ export type RootStackParamList = {
   Support: undefined;
   Wallet: undefined;
   PrivacyPolicy: undefined;
-  AdminDashboard: undefined;
-  DriverManagement: undefined;
-  VehicleManagement: undefined;
-  OrderManagement: undefined;
-  UserManagement: undefined;
-  PaymentManagement: undefined;
-  Analytics: undefined;
-  WalletSettings: undefined;
-  ServiceableAreas: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -162,16 +144,7 @@ const AppNavigator = () => {
         <Stack.Screen name="ApprovalPending" component={ApprovalPendingScreen} />
         <Stack.Screen name="DriverTabs" component={DriverTabNavigator} />
         
-        {/* Admin Stack Screens */}
-        <Stack.Screen name="AdminDashboard" component={AdminDashboardScreen} />
-        <Stack.Screen name="DriverManagement" component={DriverManagementScreen} />
-        <Stack.Screen name="VehicleManagement" component={VehicleManagementScreen} />
-        <Stack.Screen name="OrderManagement" component={OrderManagementScreen} />
-        <Stack.Screen name="UserManagement" component={UserManagementScreen} />
-        <Stack.Screen name="PaymentManagement" component={PaymentManagementScreen} />
-        <Stack.Screen name="Analytics" component={AnalyticsScreen} />
-        <Stack.Screen name="WalletSettings" component={WalletSettingsScreen} />
-        <Stack.Screen name="ServiceableAreas" component={ServiceableAreasScreen} />
+
         
         {/* Modals & Stack Screens */}
         <Stack.Screen

@@ -22,6 +22,7 @@ import { playOrderRingtone, stopOrderRingtone } from '../../services/orderSoundH
 import { stopRingtone } from '../../services/soundManager';
 import { telemetrySocket, dismissOffer } from '../../services/telemetrySocket';
 import { safeOnMessage } from '../../services/fcmService';
+import AsyncStorage from '../../services/asyncStorageShim';
 
 import * as Location from 'expo-location';
 import { calculateRouteEstimate, formatDistance, formatDuration } from '../../services/routeService';
@@ -384,39 +385,86 @@ const IncomingOrderScreen = () => {
         return;
       }
 
-      // Case B: Driver was TOO LATE (409 Conflict)
+      // Case B: Session Expired (401 Unauthorized)
+      if (res && (res.status === 'UNAUTHORIZED' || res.statusCode === 401 || (res as any).status === 401)) {
+        setAccepting(false);
+        await stopRingtone();
+        dismissOffer(cleanBk);
+        try {
+          await AsyncStorage.multiRemove(['authToken', 'userToken', 'driverData', 'driverProfile', 'adminToken', 'token']);
+        } catch (e) {}
+
+        Alert.alert(
+          'Session Expired',
+          'Your session has expired. Please login again to accept orders.',
+          [
+            {
+              text: 'Login Now',
+              onPress: () => {
+                navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+              },
+            },
+          ],
+          { cancelable: false }
+        );
+        return;
+      }
+
+      // Case C: Driver was TOO LATE (409 Conflict)
       if (res && (res.status === 'TOO_LATE' || (res as any).statusCode === 409 || (res as any).status === 409)) {
         setAccepting(false);
         await stopRingtone();
         dismissOffer(cleanBk);
         Alert.alert(
-          'Order Already Accepted',
+          'Order Unavailable',
           res.message || 'Another driver partner has already accepted this booking.',
           [{ text: 'OK', onPress: () => navigation.goBack() }]
         );
         return;
       }
 
-      // Case C: Other failure
+      // Case D: Other failure (Network / 500 / etc.)
       setAccepting(false);
       await stopRingtone();
       Alert.alert(
-        'Order Unavailable',
-        res?.message || 'This order could not be accepted.',
+        'Unable to Accept',
+        res?.message || 'Something went wrong. Please check your internet connection.',
         [{ text: 'OK', onPress: () => navigation.goBack() }]
       );
     } catch (err: any) {
       setAccepting(false);
       await stopRingtone();
-      if (err?.response?.status === 409 || err?.statusCode === 409 || err?.status === 'TOO_LATE') {
+
+      const status = err?.response?.status || err?.statusCode || err?.status;
+      if (status === 401 || err?.message?.includes('401') || err?.message?.includes('Unauthorized')) {
+        try {
+          await AsyncStorage.multiRemove(['authToken', 'userToken', 'driverData', 'driverProfile', 'adminToken', 'token']);
+        } catch (e) {}
+
+        Alert.alert(
+          'Session Expired',
+          'Your session has expired. Please login again to accept orders.',
+          [
+            {
+              text: 'Login Now',
+              onPress: () => navigation.reset({ index: 0, routes: [{ name: 'Login' }] }),
+            },
+          ],
+          { cancelable: false }
+        );
+      } else if (status === 409 || err?.status === 'TOO_LATE') {
         dismissOffer(cleanBk);
         Alert.alert(
-          'Order Already Accepted',
-          err?.response?.data?.message || 'Another driver partner has already accepted this booking.',
+          'Order Unavailable',
+          err?.response?.data?.message || err?.message || 'Another driver partner has already accepted this booking.',
           [{ text: 'OK', onPress: () => navigation.goBack() }]
         );
       } else {
-        Alert.alert('Error', err?.message || 'Failed to accept order.');
+        Alert.alert(
+          'Unable to Accept',
+          err?.message || 'Something went wrong. Please check your internet connection.',
+          [{ text: 'OK', onPress: () => navigation.goBack() }]
+        );
       }
     }
   };

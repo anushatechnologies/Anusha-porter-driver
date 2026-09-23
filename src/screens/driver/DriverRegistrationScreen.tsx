@@ -396,6 +396,16 @@ const DriverRegistrationScreen = () => {
     fetchAndPopulateBackendProfile();
   }, [initialMobile]);
 
+  // Auto-save form draft to local storage on input change so force-closing the app retains typed inputs
+  useEffect(() => {
+    if (!form.fullName && !form.mobile && !form.aadhaarNumber && !form.vehicleNumber) return;
+    const saveTimer = setTimeout(() => {
+      AsyncStorage.setItem('driverDraftStep', String(currentStep)).catch(() => {});
+      AsyncStorage.setItem('driverDraftData', JSON.stringify({ ...form, registrationStep: currentStep })).catch(() => {});
+    }, 500);
+    return () => clearTimeout(saveTimer);
+  }, [form, currentStep]);
+
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [uploadedDocs, setUploadedDocs] = useState<Record<string, { uploaded: boolean; filename: string; uri?: string }>>({});
   const [profilePhoto, setProfilePhoto] = useState<string | null>(null);
@@ -767,6 +777,20 @@ const DriverRegistrationScreen = () => {
   };
 
   // ── Scroll to the first field with an error ──
+  const handleInputFocus = (key: string) => {
+    setFocusedInput(key);
+    const fieldRef = fieldRefs.current[key];
+    if (fieldRef && scrollViewRef.current) {
+      fieldRef.measureLayout(
+        findNodeHandle(scrollViewRef.current) as any,
+        (_x: number, y: number) => {
+          scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 80), animated: true });
+        },
+        () => { }
+      );
+    }
+  };
+
   const scrollToFirstError = (errorKeys: string[]) => {
     if (errorKeys.length === 0) return;
     const firstKey = errorKeys[0];
@@ -1465,22 +1489,33 @@ const DriverRegistrationScreen = () => {
             }
 
             const profileData = {
-              fullName: form.fullName,
-              mobile: form.mobile,
-              email: form.email,
-              vehicleType: form.vehicleType,
+              fullName: cleanForm.fullName || form.fullName,
+              name: cleanForm.fullName || form.fullName,
+              mobile: cleanForm.mobile || form.mobile,
+              phone: cleanForm.mobile || form.mobile,
+              email: cleanForm.email || form.email,
+              dob: cleanForm.dob || form.dob,
+              gender: cleanForm.gender || form.gender,
+              addressLine1: cleanForm.addressLine1 || form.addressLine1,
+              address: cleanForm.addressLine1 || form.addressLine1,
+              city: cleanForm.city || form.city,
+              state: cleanForm.state || form.state,
+              pincode: cleanForm.pincode || form.pincode,
+              pin: cleanForm.pincode || form.pincode,
+              vehicleType: vehicleCategoryName || form.vehicleType,
+              vehicle: vehicleCategoryName || form.vehicleType,
               serviceType: finalServiceType,
               service_type: finalServiceType,
               serviceCategory: finalServiceType,
-              vehicleNumber: form.vehicleNumber,
-              rcNumber: form.rcNumber,
-              aadhaarNumber: form.aadhaarNumber,
-              panNumber: form.panNumber,
-              licenseNumber: form.licenseNumber,
-              bankName: form.bankName,
-              accountHolderName: form.accountHolderName,
-              accountNumber: form.accountNumber,
-              ifscCode: form.ifscCode,
+              vehicleNumber: cleanForm.vehicleNumber || form.vehicleNumber,
+              rcNumber: cleanForm.rcNumber || form.rcNumber,
+              aadhaarNumber: cleanForm.aadhaarNumber || form.aadhaarNumber,
+              panNumber: cleanForm.panNumber || form.panNumber,
+              licenseNumber: cleanForm.licenseNumber || form.licenseNumber,
+              bankName: cleanForm.bankName || form.bankName,
+              accountHolderName: cleanForm.accountHolderName || form.accountHolderName,
+              accountNumber: cleanForm.accountNumber || form.accountNumber,
+              ifscCode: cleanForm.ifscCode || form.ifscCode,
               partnerId: backendDriverId ? `PRT-${backendDriverId}` : 'PRT-PENDING',
               profilePhotoUri: safeUri(finalProfilePhoto, profilePhoto),
               aadhaarUri: safeUri(finalAadhaar, uploadedDocs.aadhaar?.uri),
@@ -1512,9 +1547,10 @@ const DriverRegistrationScreen = () => {
             Alert.alert(
               'Registration Complete!',
               'Your profile has been auto-approved and is active to take orders.',
-              [{ text: 'Start Delivering', onPress: () => navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] }) }]
+              [{ text: 'Start Delivering', onPress: () => navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] }) }],
+              { cancelable: false }
             );
-            navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
+            return;
           } else {
             // ── Safe Frontend API Error Handling & Re-upload Support ──
             setVerifying(false);
@@ -1548,25 +1584,31 @@ const DriverRegistrationScreen = () => {
 
               // 3. Save latest re-uploaded profile locally as verified
               const updatedProfile = {
-                fullName: cleanForm.fullName,
+                fullName: cleanForm.fullName || form.fullName,
+                name: cleanForm.fullName || form.fullName,
                 mobile: cleanForm.mobile || form.mobile,
-                email: cleanForm.email,
-                dob: cleanForm.dob,
-                gender: cleanForm.gender,
-                panNumber: cleanForm.panNumber,
-                vehicleType: vehicleCategoryName,
-                vehicleNumber: cleanForm.vehicleNumber,
-                rcNumber: cleanForm.rcNumber,
-                aadhaarNumber: cleanForm.aadhaarNumber,
-                licenseNumber: cleanForm.licenseNumber,
-                addressLine1: cleanForm.addressLine1,
-                city: cleanForm.city,
-                state: cleanForm.state,
-                pincode: cleanForm.pincode,
-                bankName: cleanForm.bankName,
-                accountHolderName: cleanForm.accountHolderName,
-                accountNumber: cleanForm.accountNumber,
-                ifscCode: cleanForm.ifscCode,
+                phone: cleanForm.mobile || form.mobile,
+                email: cleanForm.email || form.email,
+                dob: cleanForm.dob || form.dob,
+                gender: cleanForm.gender || form.gender,
+                panNumber: cleanForm.panNumber || form.panNumber,
+                vehicleType: vehicleCategoryName || form.vehicleType,
+                vehicle: vehicleCategoryName || form.vehicleType,
+                vehicleNumber: cleanForm.vehicleNumber || form.vehicleNumber,
+                rcNumber: cleanForm.rcNumber || form.rcNumber,
+                aadhaarNumber: cleanForm.aadhaarNumber || form.aadhaarNumber,
+                licenseNumber: cleanForm.licenseNumber || form.licenseNumber,
+                addressLine1: cleanForm.addressLine1 || form.addressLine1,
+                address: cleanForm.addressLine1 || form.addressLine1,
+                city: cleanForm.city || form.city,
+                state: cleanForm.state || form.state,
+                pincode: cleanForm.pincode || form.pincode,
+                pin: cleanForm.pincode || form.pincode,
+                bankName: cleanForm.bankName || form.bankName,
+                accountHolderName: cleanForm.accountHolderName || form.accountHolderName,
+                accountNumber: cleanForm.accountNumber || form.accountNumber,
+                ifscCode: cleanForm.ifscCode || form.ifscCode,
+                partnerId: targetDriverId ? `PRT-${targetDriverId}` : 'PRT-PENDING',
                 profilePhotoUri: safeUri(finalProfilePhoto, profilePhoto),
                 aadhaarUri: safeUri(finalAadhaar, uploadedDocs.aadhaar?.uri),
                 panUri: safeUri(finalPan, uploadedDocs.pan?.uri),
@@ -1582,7 +1624,11 @@ const DriverRegistrationScreen = () => {
                 hasDraft: false,
               };
 
-              await AsyncStorage.clear();
+              await AsyncStorage.removeItem('driverDraft').catch(() => {});
+              await AsyncStorage.removeItem('registrationProgress').catch(() => {});
+              await AsyncStorage.removeItem('driverDraftStep').catch(() => {});
+              await AsyncStorage.removeItem('driverDraftData').catch(() => {});
+              await AsyncStorage.removeItem('driverDraftServiceTrack').catch(() => {});
               await AsyncStorage.setItem('driverProfile', JSON.stringify(updatedProfile));
               await AsyncStorage.setItem('userToken', form.mobile);
               await AsyncStorage.setItem('loggedInEmail', form.email);
@@ -1592,9 +1638,9 @@ const DriverRegistrationScreen = () => {
               Alert.alert(
                 'Registration Updated!',
                 'Your profile updates have been auto-approved and are active.',
-                [{ text: 'Start Delivering', onPress: () => navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] }) }]
+                [{ text: 'Start Delivering', onPress: () => navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] }) }],
+                { cancelable: false }
               );
-              navigation.reset({ index: 0, routes: [{ name: 'DriverTabs' }] });
               return;
             }
 
@@ -1855,7 +1901,7 @@ const DriverRegistrationScreen = () => {
                 maxLength={item.maxLength}
                 editable={!item.disabled}
                 secureTextEntry={false}
-                onFocus={() => setFocusedInput(item.key)}
+                onFocus={() => handleInputFocus(item.key)}
                 onBlur={() => handleFieldBlur(item.key)}
               />
             </View>
@@ -1944,7 +1990,7 @@ const DriverRegistrationScreen = () => {
                 onChangeText={text => updateForm(item.key, text)}
                 keyboardType={item.keyType || 'default'}
                 maxLength={item.maxLength}
-                onFocus={() => setFocusedInput(item.key)}
+                onFocus={() => handleInputFocus(item.key)}
                 onBlur={() => handleFieldBlur(item.key)}
               />
             </View>
@@ -2273,7 +2319,7 @@ const DriverRegistrationScreen = () => {
                 maxLength={item.maxLength}
                 value={form[item.key as keyof typeof form]}
                 onChangeText={text => updateForm(item.key, text)}
-                onFocus={() => setFocusedInput(item.key)}
+                onFocus={() => handleInputFocus(item.key)}
                 onBlur={() => handleFieldBlur(item.key)}
               />
             </View>
@@ -2540,7 +2586,7 @@ const DriverRegistrationScreen = () => {
                 keyboardType={item.keyType || 'default'}
                 maxLength={item.maxLength}
                 autoCapitalize={item.autoCapitalize || 'none'}
-                onFocus={() => setFocusedInput(item.key)}
+                onFocus={() => handleInputFocus(item.key)}
                 onBlur={() => handleFieldBlur(item.key)}
               />
             </View>
@@ -2775,7 +2821,7 @@ const DriverRegistrationScreen = () => {
   return (
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: colors.background }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
     >
       <StatusBar barStyle={theme === 'dark' ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
@@ -2790,7 +2836,7 @@ const DriverRegistrationScreen = () => {
       <ScrollView
         ref={scrollViewRef}
         style={{ flex: 1 }}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 180 }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >

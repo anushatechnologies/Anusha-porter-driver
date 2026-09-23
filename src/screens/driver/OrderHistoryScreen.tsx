@@ -112,7 +112,12 @@ const OrderHistoryScreen = () => {
         try {
           if (o.createdAt) {
             const d = new Date(o.createdAt);
-            formattedDate = d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            if (!isNaN(d.getTime())) {
+              // Force display in Indian Standard Time (IST) regardless of device timezone
+              formattedDate = d.toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'Asia/Kolkata' })
+                + ' '
+                + d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+            }
           }
         } catch (err) {}
 
@@ -267,12 +272,14 @@ const OrderHistoryScreen = () => {
         >
           {/* Top Row: ID, Date, Status */}
           <View style={styles.cardHeader}>
-            <View>
+            <View style={styles.cardHeaderLeft}>
               <View style={styles.orderIdRow}>
                 <View style={[styles.idIconBox, { backgroundColor: statusConfig.bg }]}>
                   <Ionicons name="receipt" size={12} color={statusConfig.text} />
                 </View>
-                <Text style={[styles.orderNumber, { color: colors.text }]}>{item.orderNumber}</Text>
+                <Text style={[styles.orderNumber, { color: colors.text }]} numberOfLines={1} ellipsizeMode="tail">
+                  {item.orderNumber}
+                </Text>
               </View>
               <Text style={[styles.orderDate, { color: colors.textMuted }]}>{item.date}</Text>
             </View>
@@ -377,11 +384,6 @@ const OrderHistoryScreen = () => {
           <View style={styles.statBox}>
             <Text style={styles.statVal}>{activeCount}</Text>
             <Text style={styles.statLabel}>Active Now</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statBox}>
-            <Text style={styles.statVal}>{formattedEarnings}</Text>
-            <Text style={styles.statLabel}>Total Fare</Text>
           </View>
         </View>
 
@@ -710,9 +712,9 @@ const styles = StyleSheet.create({
   },
   statsRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'space-evenly',
     alignItems: 'center',
-    paddingHorizontal: 30,
+    paddingHorizontal: 20,
     marginBottom: 24,
   },
   statBox: {
@@ -741,12 +743,12 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
   },
   tabScrollContent: {
-    paddingHorizontal: 20,
-    gap: 12,
+    paddingHorizontal: 16,
+    gap: 8,
   },
   glassTab: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
     borderRadius: 20,
     backgroundColor: 'rgba(255,255,255,0.15)',
     borderWidth: 1,
@@ -797,6 +799,10 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     marginBottom: 16,
   },
+  cardHeaderLeft: {
+    flex: 1,
+    marginRight: 10,
+  },
   orderIdRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -809,9 +815,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 8,
+    flexShrink: 0,
   },
   orderNumber: {
-    fontSize: 16,
+    flex: 1,
+    fontSize: 15,
     fontFamily: 'Inter-Bold',
     letterSpacing: 0.3,
   },
@@ -822,10 +830,11 @@ const styles = StyleSheet.create({
   statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 20,
     borderWidth: 1,
+    flexShrink: 0,
   },
   statusDot: {
     width: 6,

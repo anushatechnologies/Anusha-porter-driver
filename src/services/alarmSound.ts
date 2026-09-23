@@ -73,7 +73,7 @@ export const startAlarm = async () => {
       allowsRecordingIOS: false,
       staysActiveInBackground: true,
       playsInSilentModeIOS: true,
-      shouldDuckAndroid: false,
+      shouldDuckAndroid: true,
       playThroughEarpieceAndroid: false,
     });
 
@@ -83,11 +83,14 @@ export const startAlarm = async () => {
     // If stopAlarm was called externally while we were awaiting, abort
     if (sessionId !== currentAlarmSession) return;
 
-    // Load and play alarm sound
+    // Start clear branded voice announcement IMMEDIATELY so driver hears it without delay
+    _startSpeechVoice(sessionId);
+
+    // Concurrently load and play subtle background chime tone
     try {
       const { sound: newSound } = await Audio.Sound.createAsync(
         require('../../assets/loud_alarm.wav'),
-        { shouldPlay: true, isLooping: true, volume: 1.0 }
+        { shouldPlay: true, isLooping: true, volume: 0.25 }
       );
 
       // CRITICAL: If stop was called while createAsync was in-flight, clean up immediately
@@ -102,11 +105,6 @@ export const startAlarm = async () => {
       sound = newSound;
     } catch (soundErr) {
       console.warn('[alarmSound] expo-av chime notice:', soundErr);
-    }
-
-    // Start clear branded voice announcement: "Anusha Porter order received! Please accept!"
-    if (sessionId === currentAlarmSession) {
-      _startSpeechVoice(sessionId);
     }
   } catch (e) {
     if (sessionId === currentAlarmSession) {
@@ -123,7 +121,7 @@ const _startSpeechVoice = (sessionId: number) => {
     alarmInterval = null;
   }
 
-  const announce = () => {
+  const announce = async () => {
     if (sessionId !== currentAlarmSession) {
       if (alarmInterval) {
         clearInterval(alarmInterval);
@@ -131,19 +129,42 @@ const _startSpeechVoice = (sessionId: number) => {
       }
       return;
     }
+
     try {
-      Speech.speak('Anusha Porter order received! Please accept!', {
-        language: 'en-IN',
-        rate: 0.95,
-        pitch: 1.05,
+      // Stop previous utterance so they do not overlap
+      Speech.stop();
+
+      // Check if device TTS has English (India) installed; if not, use device default English
+      let voiceLanguage: string | undefined = undefined;
+      try {
+        const voices = await Speech.getAvailableVoicesAsync();
+        if (voices && voices.some(v => (v.language || '').toLowerCase().replace('_', '-').includes('en-in'))) {
+          voiceLanguage = 'en-IN';
+        }
+      } catch {}
+
+      Speech.speak('New order from Anusha Porter! Please accept!', {
+        ...(voiceLanguage ? { language: voiceLanguage } : {}),
+        rate: 0.9,
+        pitch: 1.0,
         volume: 1.0,
+        onError: () => {
+          // Universal fallback without options if device TTS rejects custom locale
+          try {
+            Speech.speak('New order from Anusha Porter! Please accept!');
+          } catch {}
+        },
       });
-    } catch {}
+    } catch (err) {
+      try {
+        Speech.speak('New order from Anusha Porter! Please accept!');
+      } catch {}
+    }
   };
 
-  // Announce immediately, then repeat every 3.8 seconds until accepted or rejected
+  // Announce immediately, then repeat every 3.5 seconds until accepted or rejected
   announce();
-  alarmInterval = setInterval(announce, 3800);
+  alarmInterval = setInterval(announce, 3500);
 };
 
 /**

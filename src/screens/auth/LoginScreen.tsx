@@ -408,70 +408,81 @@ const LoginScreen = () => {
 
       const token = effectiveToken;
 
-      // Completely wipe any previous session to guarantee 100% multi-user isolation
-      await AsyncStorage.clear();
+      // Wipe previous auth session while preserving user read notification history
+      const { clearSessionKeepNotifications } = require('../../services/asyncStorageShim');
+      await clearSessionKeepNotifications();
 
       await AsyncStorage.setItem('userToken', cleanPhone || phone);
       await AsyncStorage.setItem('authToken', token);
       await AsyncStorage.setItem('firebasePhone', firebasePhone);
       await AsyncStorage.setItem('firebaseUid', firebaseUid);
 
-      if (selectedRole === 'admin') {
-        setLoading(false);
-        navigation.reset({ index: 0, routes: [{ name: 'AdminDashboard' }] });
-        return;
-      }
+
 
       // Helper to serialize and save driver profile in local storage
       const saveDriverProfileLocal = async (driverDb: any, forceVerified = false) => {
+        let existingLocal: any = null;
+        try {
+          const rawLocal = await AsyncStorage.getItem('driverProfile');
+          if (rawLocal) existingLocal = JSON.parse(rawLocal);
+        } catch {}
+
         // Normalize "approved" (backend auto-approve value) to canonical "verified"
-        const rawKyc = String(driverDb.kyc || driverDb.kycStatus || 'pending').toLowerCase();
+        const rawKyc = String(driverDb.kyc || driverDb.kycStatus || existingLocal?.kyc || 'pending').toLowerCase();
         const kycStatus = forceVerified
           ? 'verified'
           : (rawKyc === 'approved' || rawKyc === 'verified' ? 'verified' : rawKyc === 'rejected' ? 'rejected' : 'pending');
+
         const profileData = {
-          fullName: String(driverDb.name || fullName || 'Driver'),
-          mobile: String(driverDb.phone || cleanPhone || phone),
-          email: String(driverDb.email || ''),
-          dob: String(driverDb.dob || ''),
-          gender: String(driverDb.gender || ''),
-          addressLine1: String(driverDb.addressLine1 || ''),
-          city: String(driverDb.city || ''),
-          state: String(driverDb.state || ''),
-          pincode: String(driverDb.pincode || ''),
-          vehicleType: String(driverDb.vehicleType || ''),
-          vehicleNumber: String(driverDb.vehicleNumber || ''),
-          rcNumber: String(driverDb.rcNumber || ''),
-          aadhaarNumber: String(driverDb.aadhaarNumber || ''),
-          panNumber: String(driverDb.panNumber || ''),
-          licenseNumber: String(driverDb.licenseNumber || ''),
-          bankName: String(driverDb.bankName || ''),
-          accountHolderName: String(driverDb.accountHolderName || ''),
-          accountNumber: String(driverDb.accountNumber || ''),
-          ifscCode: String(driverDb.ifscCode || ''),
-          partnerId: driverDb.id ? 'PRT-' + driverDb.id : 'PRT-' + (cleanPhone || phone).slice(-4),
+          ...(existingLocal || {}),
+          fullName: String(driverDb.name || driverDb.fullName || existingLocal?.fullName || existingLocal?.name || fullName || 'Driver'),
+          name: String(driverDb.name || driverDb.fullName || existingLocal?.name || existingLocal?.fullName || fullName || 'Driver'),
+          mobile: String(driverDb.phone || driverDb.mobile || existingLocal?.mobile || existingLocal?.phone || cleanPhone || phone),
+          phone: String(driverDb.phone || driverDb.mobile || existingLocal?.phone || existingLocal?.mobile || cleanPhone || phone),
+          email: String(driverDb.email || existingLocal?.email || ''),
+          dob: String(driverDb.dob || driverDb.dateOfBirth || driverDb.date_of_birth || existingLocal?.dob || ''),
+          gender: String(driverDb.gender || existingLocal?.gender || ''),
+          addressLine1: String(driverDb.addressLine1 || driverDb.address || driverDb.address_line_1 || existingLocal?.addressLine1 || existingLocal?.address || ''),
+          address: String(driverDb.addressLine1 || driverDb.address || driverDb.address_line_1 || existingLocal?.address || existingLocal?.addressLine1 || ''),
+          city: String(driverDb.city || existingLocal?.city || ''),
+          state: String(driverDb.state || existingLocal?.state || ''),
+          pincode: String(driverDb.pincode || driverDb.pin || driverDb.postal_code || existingLocal?.pincode || existingLocal?.pin || ''),
+          pin: String(driverDb.pincode || driverDb.pin || driverDb.postal_code || existingLocal?.pin || existingLocal?.pincode || ''),
+          vehicleType: String(driverDb.vehicleType || driverDb.vehicle || driverDb.vehicle_type || existingLocal?.vehicleType || existingLocal?.vehicle || ''),
+          vehicle: String(driverDb.vehicleType || driverDb.vehicle || driverDb.vehicle_type || existingLocal?.vehicle || existingLocal?.vehicleType || ''),
+          vehicleNumber: String(driverDb.vehicleNumber || driverDb.vehicle_number || driverDb.vehicleNo || existingLocal?.vehicleNumber || ''),
+          rcNumber: String(driverDb.rcNumber || driverDb.rc_number || existingLocal?.rcNumber || ''),
+          aadhaarNumber: String(driverDb.aadhaarNumber || driverDb.aadhaar_number || driverDb.aadhaar || existingLocal?.aadhaarNumber || ''),
+          panNumber: String(driverDb.panNumber || driverDb.pan_number || driverDb.pan || existingLocal?.panNumber || ''),
+          licenseNumber: String(driverDb.licenseNumber || driverDb.license_number || driverDb.drivingLicense || existingLocal?.licenseNumber || ''),
+          bankName: String(driverDb.bankName || driverDb.bank_name || driverDb.bankDetails?.bankName || existingLocal?.bankName || existingLocal?.bank_name || ''),
+          accountHolderName: String(driverDb.accountHolderName || driverDb.account_holder_name || driverDb.bankAccountName || existingLocal?.accountHolderName || ''),
+          accountNumber: String(driverDb.accountNumber || driverDb.account_number || driverDb.bankAccountNumber || existingLocal?.accountNumber || ''),
+          ifscCode: String(driverDb.ifscCode || driverDb.ifsc_code || driverDb.bankIfscCode || existingLocal?.ifscCode || ''),
+          partnerId: driverDb.id ? 'PRT-' + driverDb.id : (existingLocal?.partnerId || ('PRT-' + (cleanPhone || phone).slice(-4))),
           profilePhotoUri: cleanUrl(
             driverDb.profilePhotoUri ||
             driverDb.documents?.profilePhotoUrl ||
             driverDb.documents?.profilePhotoUri ||
             (driverDb as any).profilePhotoUrl ||
             (driverDb as any).profilePhoto ||
+            existingLocal?.profilePhotoUri ||
             ''
           ),
-          aadhaarUri: cleanUrl(driverDb.aadhaarUri || driverDb.documents?.aadhaarUrl || ''),
-          panUri: cleanUrl(driverDb.panUri || driverDb.panUrl || driverDb.documents?.panUrl || driverDb.documents?.panUri || ''),
-          licenseUri: cleanUrl(driverDb.licenseUri || driverDb.documents?.licenseUrl || ''),
-          rcUri: cleanUrl(driverDb.rcUri || driverDb.documents?.rcUrl || ''),
-          bankPassbookUri: cleanUrl(driverDb.bankPassbookUri || driverDb.documents?.bankPassbookUrl || ''),
+          aadhaarUri: cleanUrl(driverDb.aadhaarUri || driverDb.documents?.aadhaarUrl || existingLocal?.aadhaarUri || ''),
+          panUri: cleanUrl(driverDb.panUri || driverDb.panUrl || driverDb.documents?.panUrl || driverDb.documents?.panUri || existingLocal?.panUri || ''),
+          licenseUri: cleanUrl(driverDb.licenseUri || driverDb.documents?.licenseUrl || existingLocal?.licenseUri || ''),
+          rcUri: cleanUrl(driverDb.rcUri || driverDb.documents?.rcUrl || existingLocal?.rcUri || ''),
+          bankPassbookUri: cleanUrl(driverDb.bankPassbookUri || driverDb.documents?.bankPassbookUrl || existingLocal?.bankPassbookUri || ''),
           kyc: kycStatus,
           kycStatus: kycStatus,
-          isRegistered: Boolean(driverDb.isRegistered || driverDb.registrationCompleted || Number(driverDb.registrationStep) >= 5 || forceVerified),
-          registrationCompleted: Boolean(driverDb.isRegistered || driverDb.registrationCompleted || Number(driverDb.registrationStep) >= 5 || forceVerified),
-          registrationStep: Number(driverDb.registrationStep || (forceVerified ? 5 : 1)),
-          rejectedReason: String(driverDb.rejectedReason || ''),
-          rating: String(driverDb.rating || '5.0'),
-          trips: driverDb.trips !== undefined ? Number(driverDb.trips) : 0,
-          tenure: String(driverDb.tenure || '0m'),
+          isRegistered: Boolean(driverDb.isRegistered || driverDb.registrationCompleted || Number(driverDb.registrationStep) >= 5 || existingLocal?.isRegistered || forceVerified),
+          registrationCompleted: Boolean(driverDb.isRegistered || driverDb.registrationCompleted || Number(driverDb.registrationStep) >= 5 || existingLocal?.registrationCompleted || forceVerified),
+          registrationStep: Number(driverDb.registrationStep || existingLocal?.registrationStep || (forceVerified ? 5 : 1)),
+          rejectedReason: String(driverDb.rejectedReason || existingLocal?.rejectedReason || ''),
+          rating: String(driverDb.rating || existingLocal?.rating || '5.0'),
+          trips: driverDb.trips !== undefined ? Number(driverDb.trips) : (existingLocal?.trips || 0),
+          tenure: String(driverDb.tenure || existingLocal?.tenure || '0m'),
         };
         await AsyncStorage.setItem('driverProfile', JSON.stringify(profileData));
         if (profileData.email) await AsyncStorage.setItem('loggedInEmail', profileData.email);

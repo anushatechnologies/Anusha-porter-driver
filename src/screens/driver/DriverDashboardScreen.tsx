@@ -37,6 +37,7 @@ import {
   updateDriverKyc,
   updateDriverKycStatusAdmin,
   getActiveDriverOffers,
+  getUnreadNotificationsCount,
 } from '../../services/api';
 import { startAlarm, stopAlarm } from '../../services/alarmSound';
 import { playOrderRingtone, stopOrderRingtone } from '../../services/orderSoundHelper';
@@ -147,6 +148,7 @@ const DriverDashboardScreen = () => {
   const [historyOrders, setHistoryOrders] = useState<any[]>([]);
   const [driverProfilePhoto, setDriverProfilePhoto] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [unreadNotifCount, setUnreadNotifCount] = useState<number>(0);
   const currentCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
   const dismissedOfferIdsRef = useRef<Set<string>>(new Set());
 
@@ -154,7 +156,10 @@ const DriverDashboardScreen = () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      // 0. Refresh driver profile info
+      // 0. Refresh unread notifications count
+      getUnreadNotificationsCount(driverEmail).then(setUnreadNotifCount).catch(() => {});
+
+      // 0b. Refresh driver profile info
       const driverDb = await getDriverProfile();
       if (driverDb) {
         if (typeof driverDb.name === 'string' && driverDb.name.trim().length > 0) {
@@ -467,188 +472,12 @@ const DriverDashboardScreen = () => {
           console.warn('Failed to upload refreshed token', err);
         }
       });
-
-      // Handle FCM Push Notifications received while app is in foreground
-      unsubscribeOnMessage = safeOnMessage(async (remoteMessage: any) => {
-        console.log('[FCM] Foreground notification received:', remoteMessage);
-
-        const data = remoteMessage.data || {};
-        const action = data.action || data.type || data.notificationType;
-        const msgType = data.type || data.action || data.notificationType;
-        const isSilentStop =
-          data.stopSound === 'true' ||
-          data.stopSound === true ||
-          data.stopAudio === 'true' ||
-          data.stopAudio === true ||
-          data.stop_ringtone === 'true' ||
-          action === 'STOP_RINGTONE' ||
-          action === 'OFFER_TOO_LATE' ||
-          action === 'OFFER_DISMISSED' ||
-          action === 'STOP_DRIVER_OFFER' ||
-          action === 'ORDER_ACCEPTED_STOP_RING' ||
-          action === 'ORDER_REJECTED_DISMISS' ||
-          action === 'ORDER_OFFER_CANCELLED' ||
-          msgType === 'STOP_RINGTONE' ||
-          msgType === 'STOP_DRIVER_OFFER' ||
-          msgType === 'OFFER_TOO_LATE' ||
-          msgType === 'OFFER_DISMISSED' ||
-          msgType === 'ORDER_ACCEPTED_STOP_RING' ||
-          msgType === 'ORDER_REJECTED_DISMISS' ||
-          msgType === 'ORDER_OFFER_CANCELLED' ||
-          data.notificationType === 'STOP_DRIVER_OFFER' ||
-          data.status === 'TOO_LATE' ||
-          data.status === 'ACCEPTED_BY_ANOTHER' ||
-          data.status === 'STOPPED';
-
-        // 1. Silent stop pushes: silence ringtone and dismiss offer modal without alerts
-        if (isSilentStop) {
-          console.log(`[FCM] ${action || msgType || 'stopSound'} received, silencing alarm silently`);
-          stopRingtone().catch(() => {});
-          const cleanBk = String(data.bookingId || data.orderId || data.id || '').replace(/^#+/, '');
-          if (cleanBk) {
-            dismissedOfferIdsRef.current.add(cleanBk);
-            dismissOffer(cleanBk);
-            dismissIncomingOrderModal(cleanBk);
-          } else {
-            dismissIncomingOrderModal();
-          }
-          return;
-        }
-
-        // 2. Handle ORDER_OFFER or NEW_ORDER or any new booking type directly into IncomingOrder screen
-        const isOrderOfferAction =
-          msgType === 'ORDER_OFFER' ||
-          action === 'ORDER_OFFER' ||
-          msgType === 'NEW_ORDER' ||
-          action === 'NEW_ORDER' ||
-          msgType === 'NEW_BOOKING' ||
-          action === 'NEW_BOOKING' ||
-          msgType === 'BOOKING_OFFER' ||
-          action === 'BOOKING_OFFER' ||
-          msgType === 'RIDE_OFFER' ||
-          action === 'RIDE_OFFER' ||
-          msgType === 'RIDE_REQUEST' ||
-          action === 'RIDE_REQUEST' ||
-          msgType === 'driver:offer:new' ||
-          action === 'driver:offer:new' ||
-          Boolean((data.bookingId || data.orderId) && !isSilentStop);
-
-        if (isOrderOfferAction) {
-          const cleanBk = String(data.bookingId || data.orderId || data.id || '').replace(/^#+/, '');
-          if (cleanBk && (dismissedOfferIdsRef.current.has(cleanBk) || isOfferDismissed(cleanBk))) {
-            console.log(`[FCM] Ignored offer ${cleanBk} because it is already dismissed`);
-            return;
-          }
-          console.log('[FCM] 🚨 Incoming order push notification received:', data);
-          let parsedOrder: any = null;
-          if (data.order) {
-            try {
-              parsedOrder = typeof data.order === 'string'
-                ? JSON.parse(data.order)
-                : data.order;
-            } catch {}
-          }
-          let pDist = Number(data.pickupDistanceKm || parsedOrder?.pickupDistanceKm);
-          if (isNaN(pDist) && currentCoordsRef.current) {
-            const pCoords = resolveCoordinates(
-              data.pickupLat ?? parsedOrder?.pickupLat ?? parsedOrder?.pickupLatitude,
-              data.pickupLng ?? parsedOrder?.pickupLng ?? parsedOrder?.pickupLongitude,
-              data.pickupAddress || data.pickup || parsedOrder?.pickupAddress || parsedOrder?.pickup
-            );
-            if (pCoords.lat && pCoords.lng) {
-              pDist = Number(calculateDistanceKm(currentCoordsRef.current.lat, currentCoordsRef.current.lng, pCoords.lat, pCoords.lng).toFixed(1));
-            }
-          }
-          if (!isNaN(pDist) && pDist > MAX_PICKUP_RADIUS_KM) {
-            console.log(`[Dashboard] 🚫 Dropping FCM order ${cleanBk} — pickup is ${pDist}km away (> ${MAX_PICKUP_RADIUS_KM}km limit)`);
-            return;
-          }
-
-          const orderPayload = {
-            ...(parsedOrder || {}),
-            id: cleanBk,
-            bookingId: cleanBk,
-            serviceName: data.serviceName || parsedOrder?.serviceName || 'Vehicle',
-            pickup: formatAddressString(data.pickupAddress || data.pickup || parsedOrder?.pickupAddress || parsedOrder?.pickup, 'Pickup Location'),
-            pickupAddress: formatAddressString(data.pickupAddress || data.pickup || parsedOrder?.pickupAddress || parsedOrder?.pickup, 'Pickup Location'),
-            drop: formatAddressString(data.dropAddress || data.drop || parsedOrder?.dropAddress || parsedOrder?.drop, 'Drop Location'),
-            dropAddress: formatAddressString(data.dropAddress || data.drop || parsedOrder?.dropAddress || parsedOrder?.drop, 'Drop Location'),
-            amount: Number(data.amount || data.offeredFare || data.fare || parsedOrder?.amount || parsedOrder?.fare) || 0,
-            offeredFare: Number(data.amount || data.offeredFare || data.fare || parsedOrder?.amount || parsedOrder?.fare) || 0,
-            pickupDistanceKm: !isNaN(pDist) ? pDist : (data.pickupDistanceKm || parsedOrder?.pickupDistanceKm),
-            remainingSeconds: Number(data.remainingSeconds || parsedOrder?.remainingSeconds) || 60,
-            status: 'OFFERED',
-          };
-          // Alarm sound is started by IncomingOrderScreen on mount — no duplicate trigger here
-          navigation.navigate('IncomingOrder', { order: orderPayload });
-          return;
-        }
-
-        // 3. Fallback only for genuine user-facing broadcast notifications
-        if (remoteMessage.notification?.title || remoteMessage.notification?.body) {
-          Alert.alert(
-            remoteMessage.notification.title || 'Notification',
-            remoteMessage.notification.body || ''
-          );
-        }
-      });
-
-      // Handle when driver taps notification from tray
-      unsubscribeNotificationOpened = safeOnNotificationOpenedApp((remoteMessage: any) => {
-        console.log('[FCM] Notification opened app from tray:', remoteMessage);
-        const data = remoteMessage?.data || {};
-        const action = data.action || data.type;
-        if (
-          data.stopSound === 'true' ||
-          data.stopSound === true ||
-          data.stopAudio === 'true' ||
-          data.stopAudio === true ||
-          data.stop_ringtone === 'true' ||
-          action === 'STOP_RINGTONE' ||
-          action === 'OFFER_TOO_LATE' ||
-          action === 'OFFER_DISMISSED' ||
-          data.status === 'TOO_LATE' ||
-          data.status === 'STOPPED'
-        ) {
-          return;
-        }
-
-        let orderData: any = null;
-        if (data.order) {
-          try {
-            orderData = typeof data.order === 'string' 
-              ? JSON.parse(data.order) 
-              : data.order;
-          } catch (e) {
-            orderData = data;
-          }
-        } else if (data.bookingId || data.id) {
-          orderData = data;
-        }
-        if (orderData) {
-          const cleanBk = String(orderData.bookingId || orderData.orderId || orderData.id || '').replace(/^#+/, '');
-          navigation.navigate('IncomingOrder', {
-            order: {
-              ...orderData,
-              id: cleanBk,
-              bookingId: cleanBk,
-              pickup: formatAddressString(orderData.pickupAddress || orderData.pickup, 'Pickup Location'),
-              pickupAddress: formatAddressString(orderData.pickupAddress || orderData.pickup, 'Pickup Location'),
-              drop: formatAddressString(orderData.dropAddress || orderData.drop, 'Drop Location'),
-              dropAddress: formatAddressString(orderData.dropAddress || orderData.drop, 'Drop Location'),
-            },
-          });
-        }
-      });
-
     } catch (e) {
       console.warn('Firebase Messaging listener register failed', e);
     }
 
     return () => {
       if (unsubscribeTokenRefresh) unsubscribeTokenRefresh();
-      if (unsubscribeOnMessage) unsubscribeOnMessage();
-      if (unsubscribeNotificationOpened) unsubscribeNotificationOpened();
     };
   }, [navigation]);
 
@@ -800,6 +629,9 @@ const DriverDashboardScreen = () => {
     React.useCallback(() => {
       let interval: NodeJS.Timeout;
 
+      // Refresh unread notifications count whenever dashboard is focused
+      getUnreadNotificationsCount(driverEmail).then(setUnreadNotifCount).catch(() => {});
+
       const checkAndRestoreActiveOrder = async () => {
         try {
           // 1. Check local storage for active ongoing delivery
@@ -943,7 +775,7 @@ const DriverDashboardScreen = () => {
       };
 
       checkAndRestoreActiveOrder();
-    }, [navigation, isOnline])
+    }, [navigation, isOnline, driverEmail])
   );
 
   
@@ -983,9 +815,19 @@ const DriverDashboardScreen = () => {
           <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.card, borderColor: colors.border }]} onPress={() => navigation.navigate('Support')}>
             <Ionicons name="help-circle-outline" size={22} color={colors.text} />
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.card, borderColor: colors.border }]} onPress={() => navigation.navigate('Notifications')}>
+          <TouchableOpacity 
+            style={[styles.actionBtn, { backgroundColor: colors.card, borderColor: colors.border }]} 
+            onPress={() => navigation.navigate('Notifications')}
+            activeOpacity={0.7}
+          >
             <Ionicons name="notifications-outline" size={22} color={colors.text} />
-            <View style={[styles.notifDot, { backgroundColor: colors.error, borderColor: colors.card }]} />
+            {unreadNotifCount > 0 && (
+              <View style={[styles.notifBadge, { borderColor: colors.card }]}>
+                <Text style={styles.notifBadgeText}>
+                  {unreadNotifCount > 99 ? '99+' : unreadNotifCount}
+                </Text>
+              </View>
+            )}
           </TouchableOpacity>
         </View>
       </View>
@@ -1252,7 +1094,9 @@ const DriverDashboardScreen = () => {
                     try {
                       if (item.createdAt) {
                         const d = new Date(item.createdAt);
-                        timeText = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        if (!isNaN(d.getTime())) {
+                          timeText = d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+                        }
                       }
                     } catch (e) {}
 
@@ -1367,15 +1211,30 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
   },
-  notifDot: {
+  notifBadge: {
     position: 'absolute',
-    top: 9,
-    right: 11,
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
+    top: -4,
+    right: -4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#EF4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
     borderWidth: 1.5,
+    zIndex: 10,
+    elevation: 4,
+  },
+  notifBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '700',
+    textAlign: 'center',
+    includeFontPadding: false,
+    lineHeight: 12,
   },
   scrollContent: {
     paddingBottom: 40,
