@@ -9,11 +9,13 @@ import {
   acceptOrder as apiAcceptOrder,
   rejectDriverOffer,
   respondToDriverOffer,
+  saveActiveOrderToStorage,
+  clearActiveOrderFromStorage,
   DriverOffer,
 } from '../services/api';
 import { playRingtone, stopRingtone, dismissIncomingOrderModal } from '../services/soundManager';
 import { telemetrySocket, dismissOffer, isOfferDismissed } from '../services/telemetrySocket';
-import { safeOnMessage, safeOnNotificationOpenedApp, safeGetInitialNotification } from '../services/fcmService';
+import { safeOnMessage, safeOnNotificationOpenedApp, safeGetInitialNotification, isDriverNotification } from '../services/fcmService';
 import { navigationRef } from '../navigation/navigationRef';
 import { formatAddressString } from '../utils/urlHelpers';
 import { resolveCoordinates, calculateDistanceKm } from '../utils/navigationHelper';
@@ -239,6 +241,10 @@ export const OrderDispatchProvider: React.FC<{
 
       if (activeOrder && activeOrder.id) {
         const status = (activeOrder.status || '').toLowerCase();
+        if (['cancelled', 'customer_cancelled', 'driver_cancelled', 'trip_cancelled', 'order_cancelled', 'failed', 'completed', 'delivered', 'rejected', 'closed'].includes(status)) {
+          clearActiveOrderFromStorage(activeOrder.id).catch(() => {});
+          return;
+        }
         const activeStatuses = [
           'accepted', 'picked_up', 'transit', 'arrived', 'in_transit',
           'payment_confirmation_pending', 'delivering', 'otp_verified',
@@ -489,6 +495,10 @@ export const OrderDispatchProvider: React.FC<{
   useEffect(() => {
     const unsubscribeFCM = safeOnMessage(async (remoteMessage: any) => {
       if (!isOnlineRef.current) return;
+      if (!isDriverNotification(remoteMessage)) {
+        console.log('[OrderDispatchContext FCM] Ignored non-driver/customer push message:', remoteMessage);
+        return;
+      }
       const data = remoteMessage?.data || {};
       const action = data.action || data.type || data.notificationType;
       const msgType = data.type || data.action || data.notificationType;
@@ -549,7 +559,11 @@ export const OrderDispatchProvider: React.FC<{
         msgType === 'BOOKING_OFFER' ||
         msgType === 'RIDE_OFFER' ||
         msgType === 'RIDE_REQUEST' ||
-        Boolean(cleanBk && !isSilentStop);
+        Boolean(
+          cleanBk &&
+          !isSilentStop &&
+          (data.pickupAddress || data.dropAddress || data.amount !== undefined || data.estimatedFare !== undefined || data.fare !== undefined)
+        );
 
       if (isOrderOfferAction && cleanBk) {
         if (dismissedOfferIdsRef.current.has(cleanBk) || isOfferDismissed(cleanBk)) {
@@ -588,6 +602,7 @@ export const OrderDispatchProvider: React.FC<{
     // Handle when driver taps notification from tray
     const unsubscribeNotificationOpened = safeOnNotificationOpenedApp((remoteMessage: any) => {
       if (!isOnlineRef.current) return;
+      if (!isDriverNotification(remoteMessage)) return;
       console.log('[OrderDispatchContext FCM] Notification opened from tray:', remoteMessage);
       const data = remoteMessage?.data || {};
       const action = data.action || data.type || data.notificationType;
@@ -672,6 +687,7 @@ export const OrderDispatchProvider: React.FC<{
         await stopRingtone();
         dismissIncomingOrderModal(cleanBk);
         const orderData = res.order || { id: cleanBk, bookingId: cleanBk, ...(extraMeta || {}) };
+        saveActiveOrderToStorage(orderData).catch(() => {});
         if (navigationRef.isReady()) {
           navigationRef.navigate('ActiveOrder', { order: orderData });
         }
@@ -715,6 +731,7 @@ export const OrderDispatchProvider: React.FC<{
         await stopRingtone();
         dismissIncomingOrderModal(cleanBk);
         const orderData = directRes.order || { id: cleanBk, bookingId: cleanBk, ...(extraMeta || {}) };
+        saveActiveOrderToStorage(orderData).catch(() => {});
         if (navigationRef.isReady()) {
           navigationRef.navigate('ActiveOrder', { order: orderData });
         }

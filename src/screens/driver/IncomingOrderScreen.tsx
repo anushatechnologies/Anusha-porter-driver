@@ -16,7 +16,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Speech from 'expo-speech';
 import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
-import { updateOrderStatus, acceptOrder, respondToDriverOffer, rejectDriverOffer } from '../../services/api';
+import { updateOrderStatus, acceptOrder, respondToDriverOffer, rejectDriverOffer, saveActiveOrderToStorage } from '../../services/api';
 import { startAlarm, stopAlarm, getAlarmSound } from '../../services/alarmSound';
 import { playOrderRingtone, stopOrderRingtone } from '../../services/orderSoundHelper';
 import { stopRingtone } from '../../services/soundManager';
@@ -381,6 +381,7 @@ const IncomingOrderScreen = () => {
         setAccepting(false);
         await stopRingtone();
         const finalOrder = res.order ? { ...order, ...res.order } : order;
+        saveActiveOrderToStorage(finalOrder).catch(() => {});
         navigation.replace('ActiveOrder', { order: finalOrder });
         return;
       }

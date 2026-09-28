@@ -1,6 +1,6 @@
 {
   "name": "anusha-porter-driver",
-  "version": "2.28.39",
+  "version": "2.28.54",
   "main": "index.ts",
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

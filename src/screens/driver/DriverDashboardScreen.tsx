@@ -30,6 +30,7 @@ import {
   getDriverProfile, 
   getOrderHistory, 
   getActiveOrder, 
+  getOrderDetails,
   updateOrderStatus, 
   setDriverOnlineStatus,
   registerDeviceToken,
@@ -38,6 +39,7 @@ import {
   updateDriverKycStatusAdmin,
   getActiveDriverOffers,
   getUnreadNotificationsCount,
+  clearActiveOrderFromStorage,
 } from '../../services/api';
 import { startAlarm, stopAlarm } from '../../services/alarmSound';
 import { playOrderRingtone, stopOrderRingtone } from '../../services/orderSoundHelper';
@@ -640,16 +642,82 @@ const DriverDashboardScreen = () => {
           if (savedActiveId) {
             const savedDataStr = await AsyncStorage.getItem(`@active_order_data_${savedActiveId}`);
             if (savedDataStr) {
-              savedOrderData = JSON.parse(savedDataStr);
+              try { savedOrderData = JSON.parse(savedDataStr); } catch (e) {}
+            }
+          }
+
+          // If local storage has an order explicitly marked cancelled/inactive, purge it immediately
+          if (savedOrderData && savedOrderData.status) {
+            const savedStatus = String(savedOrderData.status).toLowerCase();
+            if (['cancelled', 'customer_cancelled', 'driver_cancelled', 'trip_cancelled', 'order_cancelled', 'failed', 'completed', 'delivered', 'rejected', 'closed'].includes(savedStatus)) {
+              if (savedActiveId) {
+                clearActiveOrderFromStorage(savedActiveId).catch(() => {});
+                AsyncStorage.removeItem(`@active_cargo_step_${savedActiveId}`).catch(() => {});
+                AsyncStorage.removeItem(`@active_order_${savedActiveId}`).catch(() => {});
+                AsyncStorage.removeItem(`@active_order_data_${savedActiveId}`).catch(() => {});
+              }
+              AsyncStorage.removeItem('@current_active_delivery_id').catch(() => {});
+              savedOrderData = null;
             }
           }
 
           // 2. Query live backend for active order
           const liveOrderRes = await getActiveOrder().catch(() => null);
-          const activeOrder = liveOrderRes?.order || liveOrderRes;
+          let activeOrder = liveOrderRes?.order || liveOrderRes;
 
-          if (activeOrder && activeOrder.id) {
-            const status = (activeOrder.status || '').toLowerCase();
+          // If live getActiveOrder is null but savedActiveId exists in phone storage, verify with backend before restoring!
+          if (!activeOrder && savedActiveId) {
+            try {
+              const liveDetails = await getOrderDetails(savedActiveId).catch(() => null);
+              if (liveDetails) {
+                const detStatus = String(liveDetails.status || '').toLowerCase();
+                if (['cancelled', 'customer_cancelled', 'driver_cancelled', 'trip_cancelled', 'order_cancelled', 'failed', 'completed', 'delivered', 'rejected', 'closed'].includes(detStatus)) {
+                  // Order was cancelled/completed on backend! Purge phone storage!
+                  clearActiveOrderFromStorage(savedActiveId).catch(() => {});
+                  AsyncStorage.removeItem(`@active_cargo_step_${savedActiveId}`).catch(() => {});
+                  AsyncStorage.removeItem(`@active_order_${savedActiveId}`).catch(() => {});
+                  AsyncStorage.removeItem(`@active_order_data_${savedActiveId}`).catch(() => {});
+                  AsyncStorage.removeItem('@current_active_delivery_id').catch(() => {});
+                  savedOrderData = null;
+                } else if (['accepted', 'picked_up', 'transit', 'arrived', 'in_transit', 'payment_confirmation_pending', 'delivering', 'otp_verified', 'active', 'arrived_pickup', 'at_pickup', 'started', 'ride_started', 'destination_reached'].includes(detStatus)) {
+                  activeOrder = liveDetails;
+                }
+              } else {
+                // Backend details returned null or 404 - purge stale local storage!
+                clearActiveOrderFromStorage(savedActiveId).catch(() => {});
+                AsyncStorage.removeItem(`@active_cargo_step_${savedActiveId}`).catch(() => {});
+                AsyncStorage.removeItem(`@active_order_${savedActiveId}`).catch(() => {});
+                AsyncStorage.removeItem(`@active_order_data_${savedActiveId}`).catch(() => {});
+                AsyncStorage.removeItem('@current_active_delivery_id').catch(() => {});
+                savedOrderData = null;
+              }
+            } catch (e) {}
+          }
+
+          if (!activeOrder && savedOrderData && savedOrderData.id) {
+            const savedStatus = String(savedOrderData.status || '').toLowerCase();
+            if (['accepted', 'picked_up', 'transit', 'arrived', 'in_transit', 'payment_confirmation_pending', 'delivering', 'otp_verified', 'active', 'arrived_pickup', 'at_pickup', 'started', 'ride_started', 'destination_reached'].includes(savedStatus)) {
+              activeOrder = savedOrderData;
+            }
+          }
+
+          if (activeOrder && (activeOrder.id || activeOrder.bookingId)) {
+            const status = (activeOrder.status || 'accepted').toLowerCase();
+
+            // If cancelled or completed, clean up local cache and DO NOT navigate!
+            if (['cancelled', 'customer_cancelled', 'driver_cancelled', 'trip_cancelled', 'order_cancelled', 'failed', 'completed', 'delivered', 'rejected', 'closed'].includes(status)) {
+              const cancelId = String(activeOrder.id || activeOrder.bookingId || savedActiveId || '').replace(/^#+/, '');
+              if (cancelId) {
+                clearActiveOrderFromStorage(cancelId).catch(() => {});
+                AsyncStorage.removeItem(`@active_cargo_step_${cancelId}`).catch(() => {});
+                AsyncStorage.removeItem(`@active_order_${cancelId}`).catch(() => {});
+                AsyncStorage.removeItem(`@active_order_data_${cancelId}`).catch(() => {});
+                dismissOffer(cancelId);
+              }
+              AsyncStorage.removeItem('@current_active_delivery_id').catch(() => {});
+              return;
+            }
+
             if (['accepted', 'picked_up', 'transit', 'arrived', 'in_transit', 'payment_confirmation_pending', 'delivering', 'otp_verified', 'active', 'arrived_pickup', 'at_pickup', 'started', 'ride_started', 'destination_reached'].includes(status)) {
               navigation.navigate('ActiveOrder', { order: activeOrder });
               return;

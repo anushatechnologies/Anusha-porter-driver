@@ -56,15 +56,49 @@ const NotificationsScreen = () => {
       const readIdsSet = new Set<string>(safeParseJsonArray(savedIdsRaw));
       const readAllTime = savedTimeRaw ? Number(savedTimeRaw) : 0;
 
-      // Filter out legacy static sample items from backend
+      // Filter out legacy static sample items and customer-targeted notifications
       const filteredList = (Array.isArray(rawList) ? rawList : []).filter((item: any) => {
         const title = String(item.title || item.name || '').toLowerCase();
         const body = String(item.message || item.body || '').toLowerCase();
-        const isDummy = title.includes('payout processed') ||
-                        title.includes('new trip bonus') ||
-                        body.includes('1,250') ||
-                        body.includes('complete 5 trips');
-        return !isDummy;
+        const fullText = `${title} ${body}`;
+
+        const isDummy =
+          title.includes('payout processed') ||
+          title.includes('new trip bonus') ||
+          body.includes('1,250') ||
+          body.includes('complete 5 trips');
+        if (isDummy) return false;
+
+        // Role check
+        const role = String(
+          item.role || item.userRole || item.targetRole || item.recipientType || item.target || item.userType || ''
+        ).toLowerCase();
+        if (role === 'customer' || role === 'user' || role === 'passenger' || role === 'passenger_user' || role === 'client') {
+          return false;
+        }
+
+        // Customer phrase check
+        const isCustomerContent =
+          fullText.includes('your order') ||
+          fullText.includes('your ride') ||
+          fullText.includes('your trip') ||
+          fullText.includes('your booking') ||
+          fullText.includes('your delivery') ||
+          fullText.includes('searching for driver') ||
+          fullText.includes('driver assigned') ||
+          fullText.includes('driver is on') ||
+          fullText.includes('driver has arrived') ||
+          fullText.includes('driver reached') ||
+          fullText.includes('order booked successfully') ||
+          fullText.includes('booking confirmed') ||
+          fullText.includes('order confirmed') ||
+          fullText.includes('rate your driver') ||
+          fullText.includes('rate your ride') ||
+          fullText.includes('thank you for riding') ||
+          fullText.includes('share otp') ||
+          fullText.includes('share this otp');
+
+        return !isCustomerContent;
       });
 
       const formatted: NotificationItem[] = filteredList.map((item: any, idx: number) => {

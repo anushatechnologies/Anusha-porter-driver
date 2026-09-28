@@ -23,7 +23,7 @@ import { RootStackParamList } from '../../navigation/AppNavigator';
 import { useTheme } from '../../theme/ThemeContext';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import Svg, { Path, Rect, Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
-import { updateOrderStatus, getActiveOrder, getOrderDetails, sendDeliveryNotification, createPaymentOrder, getPaymentStatus, verifyDeliveryOtpOnly, verifyStartRideOtp, confirmPaymentAndCompleteOrder, getDriverWallet, setDriverOnlineStatus, cancelOrderDriver } from '../../services/api';
+import { updateOrderStatus, getActiveOrder, getOrderDetails, sendDeliveryNotification, createPaymentOrder, getPaymentStatus, verifyDeliveryOtpOnly, verifyStartRideOtp, confirmPaymentAndCompleteOrder, getDriverWallet, setDriverOnlineStatus, cancelOrderDriver, clearActiveOrderFromStorage } from '../../services/api';
 import { telemetrySocket, dismissOffer } from '../../services/telemetrySocket';
 import { stopRingtone } from '../../services/soundManager';
 import { safeOnMessage } from '../../services/fcmService';
@@ -97,15 +97,72 @@ const ActiveOrderScreen = () => {
   // Real live order data from params or live backend sync
   const [activeOrder, setActiveOrder] = useState<any>(route.params?.order || null);
   const isCancelledHandledRef = useRef(false);
+  const isCancelAlertActiveRef = useRef(false);
 
   // Driver cancellation state
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [cancellingOrder, setCancellingOrder] = useState(false);
   const [selectedCancelReason, setSelectedCancelReason] = useState(DRIVER_CANCEL_REASONS[0]);
 
+  const showTripCancelledAlert = (messageText?: string, onDismiss?: () => void) => {
+    if (completed || isCancelledHandledRef.current || isCancelAlertActiveRef.current) {
+      return;
+    }
+    isCancelledHandledRef.current = true;
+    isCancelAlertActiveRef.current = true;
+
+    stopRingtone().catch(() => {});
+
+    // Clean up local order cache immediately to prevent Dashboard restore loop
+    const targetOrderId = activeOrder?.bookingId || activeOrder?.id || route.params?.order?.bookingId || route.params?.order?.id;
+    const cleanId = String(targetOrderId || '').replace(/^#+/, '').trim();
+    if (cleanId) {
+      clearActiveOrderFromStorage(cleanId).catch(() => {});
+      AsyncStorage.removeItem(`@active_cargo_step_${cleanId}`).catch(() => {});
+      AsyncStorage.removeItem(`@active_order_${cleanId}`).catch(() => {});
+      AsyncStorage.removeItem(`@active_order_data_${cleanId}`).catch(() => {});
+      dismissOffer(cleanId);
+    }
+    AsyncStorage.removeItem('@current_active_delivery_id').catch(() => {});
+
+    Alert.alert(
+      'Trip Cancelled',
+      messageText || 'The customer has cancelled this ride.',
+      [
+        {
+          text: 'OK',
+          onPress: async () => {
+            isCancelAlertActiveRef.current = false;
+            if (cleanId) {
+              await clearActiveOrderFromStorage(cleanId).catch(() => {});
+              await AsyncStorage.removeItem(`@active_cargo_step_${cleanId}`).catch(() => {});
+              await AsyncStorage.removeItem(`@active_order_${cleanId}`).catch(() => {});
+              await AsyncStorage.removeItem(`@active_order_data_${cleanId}`).catch(() => {});
+              dismissOffer(cleanId);
+            }
+            await AsyncStorage.removeItem('@current_active_delivery_id').catch(() => {});
+
+            if (onDismiss) {
+              onDismiss();
+            } else {
+              navigation.dispatch(
+                CommonActions.reset({
+                  index: 0,
+                  routes: [{ name: 'DriverTabs' as any }],
+                })
+              );
+            }
+          },
+        },
+      ],
+      { cancelable: false }
+    );
+  };
+
   // BUG-03 fix: reset handled flag whenever a NEW order arrives on this screen
   useEffect(() => {
     isCancelledHandledRef.current = false;
+    isCancelAlertActiveRef.current = false;
   }, [route.params?.order?.id]);
 
   // Listen for customer cancellation push notifications while on active trip
@@ -118,27 +175,8 @@ const ActiveOrderScreen = () => {
       ''
     ).replace(/^#+/, '');
 
-    const handleCancelledNotification = async (messageText?: string) => {
-      if (!completed && !isCancelledHandledRef.current) {
-        isCancelledHandledRef.current = true;
-        await stopRingtone().catch(() => {});
-        Alert.alert(
-          'Trip Cancelled',
-          messageText || 'The customer has cancelled this ride.',
-          [
-            {
-              text: 'OK',
-              onPress: () => {
-                navigation.reset({
-                  index: 0,
-                  routes: [{ name: 'DriverTabs' }],
-                });
-              },
-            },
-          ],
-          { cancelable: false }
-        );
-      }
+    const handleCancelledNotification = (messageText?: string) => {
+      showTripCancelledAlert(messageText);
     };
 
     const unsubscribeFcm = safeOnMessage(async (remoteMessage: any) => {
@@ -156,7 +194,7 @@ const ActiveOrderScreen = () => {
         String(remoteMessage?.notification?.body || '').toLowerCase().includes('cancelled');
 
       if (isCancellation) {
-        await handleCancelledNotification(data.message || remoteMessage?.notification?.body);
+        handleCancelledNotification(data.message || remoteMessage?.notification?.body);
       }
     });
 
@@ -169,13 +207,13 @@ const ActiveOrderScreen = () => {
 
     // Active trip status polling to catch cancellations from backend
     const pollInterval = setInterval(async () => {
-      if (completed || isCancelledHandledRef.current || !currentBk) return;
+      if (completed || isCancelledHandledRef.current || isCancelAlertActiveRef.current || !currentBk) return;
       try {
         const details = await getOrderDetails(currentBk);
         if (details) {
           const status = String(details.status || '').toLowerCase();
-          if (status === 'cancelled' || status === 'trip_cancelled' || status === 'order_cancelled') {
-            await handleCancelledNotification('The customer has cancelled this booking.');
+          if (['cancelled', 'trip_cancelled', 'order_cancelled', 'customer_cancelled', 'driver_cancelled'].includes(status)) {
+            showTripCancelledAlert('The customer has cancelled this booking.');
           }
         }
       } catch {}
@@ -335,26 +373,7 @@ const ActiveOrderScreen = () => {
         if (live === null || live === undefined) return;
 
         if (isCancelled) {
-          if (!completed && !isCancelledHandledRef.current) {
-            isCancelledHandledRef.current = true;
-            await stopRingtone().catch(() => {});
-            Alert.alert(
-              'Trip Cancelled',
-              'The customer has cancelled this ride.',
-              [
-                {
-                  text: 'OK',
-                  onPress: () => {
-                    navigation.reset({
-                      index: 0,
-                      routes: [{ name: 'DriverTabs' }],
-                    });
-                  },
-                },
-              ],
-              { cancelable: false }
-            );
-          }
+          showTripCancelledAlert('The customer has cancelled this ride.');
           return;
         }
 
@@ -415,7 +434,7 @@ const ActiveOrderScreen = () => {
     };
     syncLiveOrder();
     const interval = setInterval(() => {
-      if (completed) {
+      if (completed || isCancelledHandledRef.current || isCancelAlertActiveRef.current) {
         clearInterval(interval);
         return;
       }
@@ -541,9 +560,11 @@ const ActiveOrderScreen = () => {
   }, [completed, activeOrder?.status, currentStep]);
 
   const handleDriverCancelOrder = async () => {
+    if (cancellingOrder) return;
     setCancellingOrder(true);
+    isCancelledHandledRef.current = true;
+    isCancelAlertActiveRef.current = true;
     try {
-      isCancelledHandledRef.current = true;
       const targetOrderId = orderId || displayOrderId || activeOrder?.bookingId || activeOrder?.id;
       const cleanId = String(targetOrderId || '').replace(/^#+/, '').trim();
 
@@ -585,6 +606,7 @@ const ActiveOrderScreen = () => {
           {
             text: 'OK',
             onPress: () => {
+              isCancelAlertActiveRef.current = false;
               navigation.dispatch(
                 CommonActions.reset({
                   index: 0,
@@ -597,6 +619,7 @@ const ActiveOrderScreen = () => {
         { cancelable: false }
       );
     } catch (err) {
+      isCancelAlertActiveRef.current = false;
       Alert.alert('Notice', 'An error occurred while cancelling. Returning to dashboard.');
       navigation.dispatch(
         CommonActions.reset({
@@ -679,20 +702,36 @@ const ActiveOrderScreen = () => {
 
   // Persist modal and step changes whenever state updates
   useEffect(() => {
-    const currentKey = String(orderId || displayOrderId || '');
-    if (!currentKey || completed || completionState === 'success') return;
+    const currentKey = String(orderId || displayOrderId || '').replace(/^#+/, '');
+    const ordStatus = String(activeOrder?.status || route.params?.order?.status || '').toLowerCase();
+    const isOrderDead = ['cancelled', 'customer_cancelled', 'driver_cancelled', 'trip_cancelled', 'order_cancelled', 'failed', 'completed', 'delivered', 'rejected', 'closed'].includes(ordStatus);
 
+    if (
+      !currentKey ||
+      completed ||
+      completionState === 'success' ||
+      isCancelledHandledRef.current ||
+      isCancelAlertActiveRef.current ||
+      isOrderDead
+    ) {
+      return;
+    }
+
+    AsyncStorage.setItem('@current_active_delivery_id', currentKey).catch(() => {});
     AsyncStorage.setItem(`@active_cargo_step_${currentKey}`, String(currentStep)).catch(() => {});
     AsyncStorage.setItem(
       `@active_order_data_${currentKey}`,
       JSON.stringify({
+        ...(activeOrder || {}),
+        id: activeOrder?.id || currentKey,
+        bookingId: activeOrder?.bookingId || currentKey,
         currentStep,
         showPaymentQrModal,
         paymentDetails,
         updatedAt: Date.now(),
       })
     ).catch(() => {});
-  }, [orderId, displayOrderId, currentStep, showPaymentQrModal, paymentDetails, completed, completionState]);
+  }, [orderId, displayOrderId, currentStep, showPaymentQrModal, paymentDetails, completed, completionState, activeOrder]);
 
   const handleStepComplete = async () => {
     if (isTransitioning) {

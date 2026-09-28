@@ -295,6 +295,28 @@ class TelemetrySocketService {
   private handleIncomingMessage(msg: any): void {
     if (!msg) return;
 
+    // Filter out messages targeted to customer/passenger
+    const targetRole = String(
+      msg.role ||
+      msg.targetRole ||
+      msg.recipientType ||
+      msg.target ||
+      msg.data?.role ||
+      msg.data?.targetRole ||
+      msg.data?.recipientType ||
+      ''
+    ).toLowerCase().trim();
+
+    if (
+      targetRole === 'customer' ||
+      targetRole === 'user' ||
+      targetRole === 'passenger_user' ||
+      targetRole === 'passenger' ||
+      targetRole === 'client'
+    ) {
+      return;
+    }
+
     const rawEventName = msg.event || msg.action || msg.type || msg.data?.action || msg.data?.type || msg.data?.event;
     const eventName = typeof rawEventName === 'string' ? rawEventName.trim() : '';
 

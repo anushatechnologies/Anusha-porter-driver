@@ -919,11 +919,31 @@ const DriverRegistrationScreen = () => {
 
     // Save current step data to database via POST /api/drivers/register
     try {
-      const selectedVehicleObj = vehicleList.find(
-        v => (form.vehicleId && v.id === form.vehicleId) || v.name === form.vehicleType || v.type === form.vehicleType
-      ) || (vehicleList.length > 0 ? vehicleList[0] : null);
-      const vehicleCategoryName = selectedVehicleObj?.name || form.vehicleType || '';
-      const vLower = (vehicleCategoryName + ' ' + (selectedVehicleObj?.type || '')).toLowerCase();
+      const userVehicleInputNav = (form.vehicleType || '').trim();
+      const userVehicleIdNav = (form.vehicleId || '').trim();
+      let selectedVehicleObj: VehicleOption | null = null;
+
+      if (vehicleList && vehicleList.length > 0) {
+        if (userVehicleIdNav) {
+          const cleanId = userVehicleIdNav.replace(/^veh_/, '').toLowerCase();
+          selectedVehicleObj = vehicleList.find(v => String(v.id).replace(/^veh_/, '').toLowerCase() === cleanId || String(v.id) === userVehicleIdNav) || null;
+        }
+        if (!selectedVehicleObj && userVehicleInputNav) {
+          const inputLower = userVehicleInputNav.toLowerCase();
+          selectedVehicleObj = vehicleList.find(v => (v.name || '').toLowerCase() === inputLower || (v.type || '').toLowerCase() === inputLower) || null;
+        }
+        if (!selectedVehicleObj && userVehicleInputNav) {
+          const inputLower = userVehicleInputNav.toLowerCase();
+          selectedVehicleObj = vehicleList.find(v => `${v.name || ''} ${v.type || ''} ${v.description || ''}`.toLowerCase().includes(inputLower)) || null;
+        }
+      }
+
+      const vehicleCategoryName = userVehicleInputNav || selectedVehicleObj?.name || 'Vehicle';
+      const rawTypeCode = selectedVehicleObj?.type || (userVehicleInputNav ? userVehicleInputNav.toLowerCase().replace(/\s+/g, '_') : 'scooter');
+      const vehicleTypeCode = (rawTypeCode.includes('scooter') || rawTypeCode.includes('moped')) ? 'scooter' : rawTypeCode;
+      const resolvedVehicleId = String(selectedVehicleObj?.id || form.vehicleId || vehicleTypeCode);
+
+      const vLower = (vehicleCategoryName + ' ' + vehicleTypeCode).toLowerCase();
       // Prefer the explicit serviceTrack chosen by the driver; fall back to vehicle-name heuristic
       let determinedServiceType: 'PASSENGER' | 'OUR_SERVICES' = serviceTrack || 'OUR_SERVICES';
       if (!serviceTrack) {
@@ -945,10 +965,11 @@ const DriverRegistrationScreen = () => {
         date_of_birth: formatToIsoDob(form.dob),
         gender: form.gender,
         panNumber: form.panNumber,
-        vehicleId: selectedVehicleObj?.id || form.vehicleId || undefined,
-        vehicle_id: selectedVehicleObj?.id || form.vehicleId || undefined,
+        vehicleId: resolvedVehicleId,
+        vehicle_id: resolvedVehicleId,
         vehicle: vehicleCategoryName,
         vehicleType: vehicleCategoryName,
+        vehicle_type: vehicleTypeCode,
         serviceType: determinedServiceType,
         service_type: determinedServiceType,
         serviceCategory: determinedServiceType,
@@ -1352,12 +1373,58 @@ const DriverRegistrationScreen = () => {
           }
 
           // ── STEP 3: Create driver profile in database ──────────────
-          const selectedVehicleObj = vehicleList.find(
-            v => (form.vehicleId && v.id === form.vehicleId) || v.name === form.vehicleType || v.type === form.vehicleType
-          ) || (vehicleList.length > 0 ? vehicleList[0] : null);
+          const userVehicleInput = (form.vehicleType || cleanForm.vehicleType || '').trim();
+          const userVehicleId = (form.vehicleId || '').trim();
 
-          const vehicleCategoryName = selectedVehicleObj?.name || cleanForm.vehicleType || form.vehicleType || '';
-          const vehicleTypeCode = selectedVehicleObj?.type || (cleanForm.vehicleType ? cleanForm.vehicleType.toLowerCase().replace(/\s+/g, '_') : (form.vehicleType ? form.vehicleType.toLowerCase().replace(/\s+/g, '_') : ''));
+          let selectedVehicleObj: VehicleOption | null = null;
+
+          if (vehicleList && vehicleList.length > 0) {
+            // 1. Try exact ID match (handling string vs number and veh_ prefix)
+            if (userVehicleId) {
+              const cleanUserVehId = userVehicleId.replace(/^veh_/, '').toLowerCase();
+              selectedVehicleObj = vehicleList.find(v => {
+                const cleanVId = String(v.id).replace(/^veh_/, '').toLowerCase();
+                return cleanVId === cleanUserVehId || String(v.id) === userVehicleId;
+              }) || null;
+            }
+
+            // 2. Try exact name or type match
+            if (!selectedVehicleObj && userVehicleInput) {
+              const inputLower = userVehicleInput.toLowerCase();
+              selectedVehicleObj = vehicleList.find(v => {
+                const vNameLower = (v.name || '').toLowerCase();
+                const vTypeLower = (v.type || '').toLowerCase();
+                return vNameLower === inputLower || vTypeLower === inputLower;
+              }) || null;
+            }
+
+            // 3. Try flexible keyword match (e.g., "scooter" inside "2 Wheeler (Bike/Scooter)")
+            if (!selectedVehicleObj && userVehicleInput) {
+              const inputLower = userVehicleInput.toLowerCase();
+              selectedVehicleObj = vehicleList.find(v => {
+                const vCombined = `${v.name || ''} ${v.type || ''} ${v.description || ''}`.toLowerCase();
+                if (inputLower.includes('scooter') || inputLower.includes('moped') || inputLower.includes('bike') || inputLower.includes('2')) {
+                  return vCombined.includes('scooter') || vCombined.includes('bike') || vCombined.includes('2') || vCombined.includes('motorbike');
+                }
+                if (inputLower.includes('auto') || inputLower.includes('rickshaw') || inputLower.includes('3')) {
+                  return vCombined.includes('auto') || vCombined.includes('rickshaw') || vCombined.includes('3');
+                }
+                if (inputLower.includes('cab') || inputLower.includes('car') || inputLower.includes('taxi') || inputLower.includes('sedan') || inputLower.includes('suv')) {
+                  return vCombined.includes('cab') || vCombined.includes('car') || vCombined.includes('taxi') || vCombined.includes('sedan') || vCombined.includes('suv');
+                }
+                if (inputLower.includes('ace') || inputLower.includes('tata') || inputLower.includes('truck') || inputLower.includes('pickup')) {
+                  return vCombined.includes('ace') || vCombined.includes('tata') || vCombined.includes('truck') || vCombined.includes('pickup');
+                }
+                return vCombined.includes(inputLower);
+              }) || null;
+            }
+          }
+
+          // Preserve user selected vehicle name and code without forcing vehicleList[0]
+          const vehicleCategoryName = userVehicleInput || selectedVehicleObj?.name || 'Vehicle';
+          const rawTypeCode = selectedVehicleObj?.type || (userVehicleInput ? userVehicleInput.toLowerCase().replace(/\s+/g, '_') : 'scooter');
+          const vehicleTypeCode = (rawTypeCode.includes('scooter') || rawTypeCode.includes('moped')) ? 'scooter' : rawTypeCode;
+          const resolvedVehicleId = String(selectedVehicleObj?.id || form.vehicleId || vehicleTypeCode);
 
           const vFinalLower = (vehicleCategoryName + ' ' + vehicleTypeCode).toLowerCase();
           let finalServiceType: 'PASSENGER' | 'OUR_SERVICES' = 'OUR_SERVICES';
@@ -1396,8 +1463,8 @@ const DriverRegistrationScreen = () => {
               state: cleanForm.state,
               pincode: cleanForm.pincode,
               pin: cleanForm.pincode,
-              vehicleId: selectedVehicleObj?.id || form.vehicleId || undefined,
-              vehicle_id: selectedVehicleObj?.id || form.vehicleId || undefined,
+              vehicleId: resolvedVehicleId,
+              vehicle_id: resolvedVehicleId,
               vehicle: vehicleCategoryName,
               vehicleType: vehicleCategoryName,
               vehicle_type: vehicleTypeCode,

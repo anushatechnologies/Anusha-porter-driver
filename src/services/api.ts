@@ -1197,10 +1197,11 @@ export const saveRegistrationStep = async (stepPayload: any, customToken?: strin
     gender: stepPayload.gender || 'Male',
 
     // Step 2 Vehicle & DL Details
-    vehicle: stepPayload.vehicle || stepPayload.vehicleType || stepPayload.vehicle_type || '',
-    vehicleType: stepPayload.vehicleType || stepPayload.vehicle || stepPayload.vehicle_type || '',
-    vehicle_type: stepPayload.vehicleType || stepPayload.vehicle || stepPayload.vehicle_type || '',
-    serviceType: stepPayload.serviceType || 'PASSENGER',
+    vehicle: stepPayload.vehicle || stepPayload.vehicleType || 'Vehicle',
+    vehicleType: stepPayload.vehicleType || stepPayload.vehicle || 'Vehicle',
+    vehicle_type: stepPayload.vehicle_type || (stepPayload.vehicleType ? stepPayload.vehicleType.toLowerCase().replace(/\s+/g, '_') : (stepPayload.vehicle ? stepPayload.vehicle.toLowerCase().replace(/\s+/g, '_') : '')),
+    serviceType: stepPayload.serviceType || stepPayload.service_type || stepPayload.serviceTrack || 'OUR_SERVICES',
+    service_type: stepPayload.serviceType || stepPayload.service_type || stepPayload.serviceTrack || 'OUR_SERVICES',
     vehicleNumber: stepPayload.vehicleNumber || stepPayload.vehicle_number || stepPayload.vehicleNo || '',
     vehicle_number: stepPayload.vehicleNumber || stepPayload.vehicle_number || stepPayload.vehicleNo || '',
     rcNumber: stepPayload.rcNumber || stepPayload.rc || '',
@@ -1291,18 +1292,12 @@ export const createDriverProfile = async (payload: any, customToken?: string) =>
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 
+  const resolvedVehicleType = payload.vehicle_type || (payload.vehicleType ? payload.vehicleType.toLowerCase().replace(/\s+/g, '_') : (payload.vehicle ? payload.vehicle.toLowerCase().replace(/\s+/g, '_') : ''));
   const normalizedPayload = {
     ...payload,
-    ...(payload.vehicle ? {
-      vehicle: payload.vehicle,
-      vehicleType: payload.vehicle,
-      vehicle_type: payload.vehicle,
-    } : {}),
-    ...(payload.vehicleType && !payload.vehicle ? {
-      vehicle: payload.vehicleType,
-      vehicleType: payload.vehicleType,
-      vehicle_type: payload.vehicleType,
-    } : {}),
+    vehicle: payload.vehicle || payload.vehicleType || 'Vehicle',
+    vehicleType: payload.vehicleType || payload.vehicle || 'Vehicle',
+    vehicle_type: resolvedVehicleType,
     ...(payload.name && !payload.fullName ? { fullName: payload.name } : {}),
     ...(payload.fullName && !payload.name ? { name: payload.fullName } : {}),
     ...(payload.phone && !payload.mobile ? { mobile: payload.phone } : {}),
@@ -1455,14 +1450,19 @@ export const getActiveVehicles = async (serviceType?: 'OUR_SERVICES' | 'PASSENGE
   const stParam = serviceType ? `?serviceType=${serviceType}` : '';
   const stAndParam = serviceType ? `&serviceType=${serviceType}` : '';
 
-  // Routes aligned with Complete Frontend Integration & API Flow Guide:
-  // Driver App: GET /api/driver/vehicle-types (Returns active Admin vehicles)
-  // Customer App / General: GET /api/vehicle/types, GET /api/vehicle-types?status=active, GET /api/customer/services
+  // Routes aligned with FRONTEND_DRIVER_VEHICLE_REGISTRATION_FLOW spec:
+  // Driver App: GET /api/driver/vehicle-types?status=active&serviceType=OUR_SERVICES | PASSENGER
   const routes = [
-    // 1. Primary Driver App dedicated endpoint (Returns array of active Admin vehicles)
+    // 1. Primary Driver App dedicated endpoint per FRONTEND_DRIVER_VEHICLE_REGISTRATION_FLOW spec
+    serviceType ? `${BASE}/api/driver/vehicle-types?status=active&serviceType=${serviceType}` : `${BASE}/api/driver/vehicle-types?status=active`,
     serviceType ? `${BASE}/api/driver/vehicle-types?serviceType=${serviceType}` : `${BASE}/api/driver/vehicle-types`,
     `${BASE}/api/driver/vehicle-types`,
-    // 2. Active vehicles public/app endpoints
+    // 2. Admin & Customer Services endpoints
+    serviceType ? `${BASE}/api/services?serviceType=${serviceType}` : `${BASE}/api/services`,
+    `${BASE}/api/services`,
+    serviceType ? `${BASE}/api/admin/services?serviceType=${serviceType}` : `${BASE}/api/admin/services`,
+    `${BASE}/api/admin/services`,
+    // 3. Active vehicles public/app endpoints
     serviceType ? `${BASE}/api/vehicle/types?serviceType=${serviceType}` : `${BASE}/api/vehicle/types`,
     `${BASE}/api/vehicle/types`,
     serviceType ? `${BASE}/api/vehicle-types?status=active&serviceType=${serviceType}` : `${BASE}/api/vehicle-types?status=active`,
@@ -1640,7 +1640,8 @@ export const getActiveVehicles = async (serviceType?: 'OUR_SERVICES' | 'PASSENGE
             const isExplicitGoods =
               explicitSvcType === 'OUR_SERVICES' || explicitSvcType === 'GOODS' || explicitSvcType === 'DELIVERY' ||
               s.includes('truck') || s.includes('mini truck') || s.includes('ace') || s.includes('pickup') ||
-              s.includes('lorry') || s.includes('14ft') || s.includes('17ft') || s.includes('packers');
+              s.includes('lorry') || s.includes('ft') || s.includes('packers') || s.includes('3w') ||
+              s.includes('cargo') || s.includes('freight') || s.includes('courier') || s.includes('wheeler');
 
             const resolvedSvcType: 'PASSENGER' | 'OUR_SERVICES' =
               isFromPassengerRoute
@@ -1669,10 +1670,6 @@ export const getActiveVehicles = async (serviceType?: 'OUR_SERVICES' | 'PASSENGE
               serviceType: resolvedSvcType,
             });
           }
-        }
-        if (activeList.length > 0 && (url.includes('/api/driver/vehicle-types') || url.includes('/api/vehicle/types') || url.includes('/api/vehicle-types?status=active'))) {
-          // Official Admin vehicle API responded with active vehicles - no need to poll legacy fallback endpoints
-          break;
         }
       }
     } catch (err) {
@@ -1883,12 +1880,18 @@ export const setDriverOnlineStatus = async (
       console.warn('[API] Option A /me/status failed:', e);
     }
 
-    // 2. Option B: Generic /api/drivers/status (PUT & POST)
+    // 2. Option B: Generic & Passenger /api/drivers/status (PUT & POST)
     const genericRoutes = [
+      { url: `${BASE}/api/passenger/driver/status`, method: 'PUT' },
+      { url: `${BASE}/api/passenger/driver/status`, method: 'POST' },
+      { url: `${BASE}/api/passenger/drivers/status`, method: 'PUT' },
+      { url: `${BASE}/api/passenger/driver/online`, method: 'PUT' },
+      { url: `${BASE}/api/passenger/driver/online`, method: 'POST' },
       { url: `${BASE}/api/drivers/status`, method: 'PUT' },
       { url: `${BASE}/api/drivers/status`, method: 'POST' },
       { url: `${BASE}/api/driver/status`, method: 'PUT' },
       { url: `${BASE}/api/driver/status`, method: 'POST' },
+      { url: `${BASE}/api/rides/driver/status`, method: 'PUT' },
     ];
     for (const route of genericRoutes) {
       try {
@@ -1981,6 +1984,10 @@ export const registerDeviceToken = async (fcmToken: string): Promise<boolean> =>
       fcmToken,
       token: fcmToken,
       pushToken: fcmToken,
+      role: 'driver',
+      userType: 'driver',
+      targetRole: 'driver',
+      appType: 'driver',
     };
     for (const url of routes) {
       try {
@@ -2053,8 +2060,13 @@ export const getActiveOrder = async (): Promise<any | null> => {
       const o = data.order || data.data || (data.bookingId || data.id || data.orderId || data.hasActiveOrder ? data : null);
       if (!o) continue;
 
-      const inactiveStatuses = ['completed', 'delivered', 'rejected'];
+      const inactiveStatuses = [
+        'completed', 'delivered', 'rejected',
+        'cancelled', 'customer_cancelled', 'driver_cancelled',
+        'trip_cancelled', 'order_cancelled', 'failed', 'closed'
+      ];
       if (o.status && inactiveStatuses.includes(String(o.status).toLowerCase())) {
+        clearActiveOrderFromStorage(o.id || o.bookingId).catch(() => {});
         return null;
       }
 
@@ -2467,6 +2479,41 @@ export const getOrderHistory = async (): Promise<OrderHistoryResponse> => {
   };
 };
 
+/** Save active order details immediately into AsyncStorage for process survival */
+export const saveActiveOrderToStorage = async (orderData: any) => {
+  try {
+    if (!orderData) return;
+    const cleanId = String(orderData.bookingId || orderData.id || orderData.orderId || orderData.offerId || '').replace(/^#+/, '');
+    if (!cleanId) return;
+    await AsyncStorage.setItem('@current_active_delivery_id', cleanId);
+    await AsyncStorage.setItem(
+      `@active_order_data_${cleanId}`,
+      JSON.stringify({
+        ...orderData,
+        id: orderData.id || cleanId,
+        bookingId: orderData.bookingId || cleanId,
+        status: orderData.status || 'accepted',
+        acceptedAt: orderData.acceptedAt || new Date().toISOString(),
+      })
+    );
+  } catch (e) {
+    console.warn('[Storage] Failed to save active order:', e);
+  }
+};
+
+/** Clear active order details from AsyncStorage when completed or cancelled */
+export const clearActiveOrderFromStorage = async (orderId?: string | number) => {
+  try {
+    const activeId = orderId ? String(orderId).replace(/^#+/, '') : await AsyncStorage.getItem('@current_active_delivery_id');
+    await AsyncStorage.removeItem('@current_active_delivery_id');
+    if (activeId) {
+      await AsyncStorage.removeItem(`@active_order_data_${activeId}`);
+    }
+  } catch (e) {
+    console.warn('[Storage] Failed to clear active order:', e);
+  }
+};
+
 /** 
  * Dedicated Atomic Single-Driver Order Accept Endpoint
  * Implements Multi-Driver Collision & Race Condition Resolution:
@@ -2563,11 +2610,13 @@ export const acceptOrder = async (
 
         // 2. Winner Driver (200 OK)
         if (res.status === 200 && data?.success !== false) {
+          const acceptedOrder = data?.booking || data?.order || data || { id: cleanBkId, bookingId: cleanBkId };
+          saveActiveOrderToStorage(acceptedOrder).catch(() => {});
           return {
             success: true,
             statusCode: 200,
             message: data?.message || 'Order accepted successfully',
-            order: data?.booking || data?.order || data
+            order: acceptedOrder
           };
         }
 
@@ -2738,13 +2787,17 @@ export const respondToDriverOffer = async (
 
     // 1. Success 200 (ASSIGNED or REJECTED)
     if (res.ok) {
+      const returnedOrder = data.booking || data.order || data || { id: cleanId, bookingId: cleanId };
+      if (accept) {
+        saveActiveOrderToStorage(returnedOrder).catch(() => {});
+      }
       return {
         success: data.success !== false,
         status: data.status || (accept ? 'ASSIGNED' : 'REJECTED'),
         bookingId: data.bookingId || cleanId,
         driverId: data.driverId,
         message: data.message || (accept ? 'Order accepted successfully' : 'Offer rejected.'),
-        order: data.booking || data.order || data,
+        order: returnedOrder,
       };
     }
 
